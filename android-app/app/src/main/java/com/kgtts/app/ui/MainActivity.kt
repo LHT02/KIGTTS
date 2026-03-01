@@ -9,13 +9,17 @@ import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -31,7 +35,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -58,6 +61,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
@@ -67,12 +71,15 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -81,6 +88,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -89,6 +101,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
@@ -115,6 +128,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import androidx.recyclerview.widget.ItemTouchHelper
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 import kotlin.math.cos
 import kotlin.math.sin
@@ -1508,6 +1524,9 @@ fun AppScaffold(viewModel: MainViewModel) {
         isLandscape && state.landscapeDrawerMode == UserPrefs.DRAWER_MODE_PERMANENT
     val editorOverlayOpen = page == pageQuickSubtitleEditor
     val basePage = if (editorOverlayOpen) pageQuickSubtitle else page
+    BackHandler(enabled = editorOverlayOpen) {
+        page = pageQuickSubtitle
+    }
     var drawerExpanded by rememberSaveable { mutableStateOf(false) }
     val showRunningStrip = state.running && !(drawingFullscreen && basePage == pageDrawing)
     val topMicLevel = viewModel.realtimeInputLevel
@@ -2140,20 +2159,14 @@ private fun rememberAvatarBitmap(file: File): android.graphics.Bitmap? {
 @Composable
 fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
     val context = LocalContext.current
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val defaultItemStepPx = with(density) { 148.dp.toPx() }
-    var editPack by remember { mutableStateOf<VoicePackInfo?>(null) }
-    var editName by remember { mutableStateOf("") }
-    var editRemark by remember { mutableStateOf("") }
+    var detailPackPath by remember { mutableStateOf<String?>(null) }
+    var detailName by remember { mutableStateOf("") }
+    var detailRemark by remember { mutableStateOf("") }
     var deletePack by remember { mutableStateOf<VoicePackInfo?>(null) }
     var avatarTarget by remember { mutableStateOf<VoicePackInfo?>(null) }
-    val displayPacks = remember { mutableStateListOf<VoicePackInfo>() }
-    var draggingPath by remember { mutableStateOf<String?>(null) }
-    var draggingBaseIndex by remember { mutableIntStateOf(-1) }
-    var draggingIndex by remember { mutableIntStateOf(-1) }
-    var draggingRawOffsetY by remember { mutableFloatStateOf(0f) }
-    var draggingItemStepPx by remember { mutableFloatStateOf(defaultItemStepPx) }
-    var reorderedDuringDrag by remember { mutableStateOf(false) }
+    val detailPack = detailPackPath?.let { path ->
+        state.voicePacks.firstOrNull { it.dir.absolutePath == path }
+    }
 
     val cropLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
         val target = avatarTarget
@@ -2191,242 +2204,110 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
     LaunchedEffect(Unit) {
         viewModel.refreshVoicePacks()
     }
-    LaunchedEffect(state.voicePacks) {
-        if (draggingPath == null) {
-            displayPacks.clear()
-            displayPacks.addAll(state.voicePacks)
-        }
-    }
 
-    LazyColumn(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(
-            top = UiTokens.PageTopBlank,
-            bottom = UiTokens.PageBottomBlank
-        )
+            .padding(horizontal = 16.dp)
     ) {
-        if (displayPacks.isEmpty()) {
-            item {
+        Spacer(Modifier.height(UiTokens.PageTopBlank))
+        if (state.voicePacks.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.TopStart
+            ) {
                 Text("暂无语音包，请点击主标题栏导入按钮。")
             }
         } else {
-            itemsIndexed(displayPacks, key = { _, item -> item.dir.absolutePath }) { index, pack ->
-                    val isCurrent = state.voiceDir?.absolutePath == pack.dir.absolutePath
-                    val avatarFile = File(pack.dir, pack.meta.avatar)
-                    val avatarBitmap = rememberAvatarBitmap(avatarFile)
-                    val isDragging = draggingPath == pack.dir.absolutePath
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 10.dp)
-                            .zIndex(if (isDragging) 1f else 0f)
-                            .onSizeChanged {
-                                if (isDragging && it.height > 0) {
-                                    draggingItemStepPx = it.height.toFloat()
-                                }
-                            }
-                            .graphicsLayer {
-                                translationY = if (isDragging) {
-                                    val step = draggingItemStepPx.takeIf { v -> v > 1f } ?: defaultItemStepPx
-                                    draggingRawOffsetY - ((draggingIndex - draggingBaseIndex) * step)
-                                } else {
-                                    0f
-                                }
-                            }
-                            .pointerInput(pack.dir.absolutePath, displayPacks.size) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = {
-                                        draggingPath = pack.dir.absolutePath
-                                        draggingBaseIndex = index
-                                        draggingIndex = index
-                                        draggingRawOffsetY = 0f
-                                        draggingItemStepPx = defaultItemStepPx
-                                        reorderedDuringDrag = false
-                                    },
-                                    onDragCancel = {
-                                        draggingPath = null
-                                        draggingBaseIndex = -1
-                                        draggingIndex = -1
-                                        draggingRawOffsetY = 0f
-                                    },
-                                    onDragEnd = {
-                                        if (reorderedDuringDrag) {
-                                            viewModel.reorderVoicePacks(displayPacks.toList())
-                                        }
-                                        draggingPath = null
-                                        draggingBaseIndex = -1
-                                        draggingIndex = -1
-                                        draggingRawOffsetY = 0f
-                                    },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        if (draggingIndex !in displayPacks.indices) return@detectDragGesturesAfterLongPress
-                                        val step = draggingItemStepPx.takeIf { v -> v > 1f } ?: defaultItemStepPx
-                                        draggingRawOffsetY += dragAmount.y
-                                        val targetIndex = (draggingBaseIndex + (draggingRawOffsetY / step).toInt())
-                                            .coerceIn(0, displayPacks.lastIndex)
-
-                                        while (draggingIndex < targetIndex) {
-                                            val next = draggingIndex + 1
-                                            val currentPinned = displayPacks[draggingIndex].meta.pinned
-                                            val nextPinned = displayPacks[next].meta.pinned
-                                            if (currentPinned != nextPinned) break
-                                            displayPacks.move(draggingIndex, next)
-                                            draggingIndex = next
-                                            reorderedDuringDrag = true
-                                        }
-                                        while (draggingIndex > targetIndex) {
-                                            val prev = draggingIndex - 1
-                                            val currentPinned = displayPacks[draggingIndex].meta.pinned
-                                            val prevPinned = displayPacks[prev].meta.pinned
-                                            if (currentPinned != prevPinned) break
-                                            displayPacks.move(draggingIndex, prev)
-                                            draggingIndex = prev
-                                            reorderedDuringDrag = true
-                                        }
-                                    }
-                                )
-                            },
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        backgroundColor = md2CardContainerColor(),
-                        elevation = UiTokens.CardElevation
-                    ) {
-                        Column {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (avatarBitmap != null) {
-                                    androidx.compose.foundation.Image(
-                                        bitmap = avatarBitmap.asImageBitmap(),
-                                        contentDescription = null,
-                                        modifier = Modifier
-                                            .size(72.dp)
-                                            .clip(RoundedCornerShape(UiTokens.Radius))
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(72.dp)
-                                            .clip(RoundedCornerShape(UiTokens.Radius))
-                                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text("无头像", style = MaterialTheme.typography.bodySmall)
-                                    }
-                                }
-                                Spacer(Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(pack.meta.name, fontWeight = FontWeight.SemiBold)
-                                        if (pack.meta.pinned) {
-                                            Spacer(Modifier.width(6.dp))
-                                            Text("置顶", style = MaterialTheme.typography.bodySmall)
-                                        }
-                                        if (isCurrent) {
-                                            Spacer(Modifier.width(6.dp))
-                                            Text("当前", style = MaterialTheme.typography.bodySmall)
-                                        }
-                                    }
-                                    if (pack.meta.remark.isNotBlank()) {
-                                        Text(pack.meta.remark, style = MaterialTheme.typography.bodySmall)
-                                    }
-                                    Text(pack.dir.name, style = MaterialTheme.typography.bodySmall)
-                                    Text("长按卡片可拖动排序", style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState())
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Md2IconButton(
-                                    icon = if (isCurrent) "check_circle" else "play_circle",
-                                    contentDescription = if (isCurrent) "当前使用" else "使用该语音包",
-                                    onClick = { viewModel.selectVoice(pack.dir) },
-                                    enabled = !isCurrent
-                                )
-                                Md2IconButton(
-                                    icon = if (pack.meta.pinned) "keep_off" else "push_pin",
-                                    contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
-                                    onClick = { viewModel.toggleVoicePin(pack) }
-                                )
-                                Md2IconButton(
-                                    icon = "edit",
-                                    contentDescription = "编辑名称备注",
-                                    onClick = {
-                                        editPack = pack
-                                        editName = pack.meta.name
-                                        editRemark = pack.meta.remark
-                                    }
-                                )
-                                Md2IconButton(
-                                    icon = "image",
-                                    contentDescription = "更换头像",
-                                    onClick = {
-                                        avatarTarget = pack
-                                        imagePicker.launch("image/*")
-                                    }
-                                )
-                                Md2IconButton(
-                                    icon = "share",
-                                    contentDescription = "分享语音包",
-                                    onClick = { viewModel.shareVoice(pack) }
-                                )
-                                Md2IconButton(
-                                    icon = "delete",
-                                    contentDescription = "删除语音包",
-                                    onClick = { deletePack = pack }
-                                )
-                                Md2IconButton(
-                                    icon = "drag_indicator",
-                                    contentDescription = "长按并拖动排序",
-                                    onClick = {}
-                                )
-                            }
-                        }
-                    }
-                }
+            VoicePackRecyclerList(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                packs = state.voicePacks,
+                currentVoicePath = state.voiceDir?.absolutePath,
+                onSelect = { viewModel.selectVoice(it.dir) },
+                onTogglePin = { viewModel.toggleVoicePin(it) },
+                onDetail = { pack ->
+                    detailPackPath = pack.dir.absolutePath
+                    detailName = pack.meta.name
+                    detailRemark = pack.meta.remark
+                },
+                onShare = { viewModel.shareVoice(it) },
+                onDelete = { deletePack = it },
+                onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
+            )
         }
+        Spacer(Modifier.height(UiTokens.PageBottomBlank))
     }
 
-    if (editPack != null) {
+    if (detailPack != null) {
+        val avatarFile = remember(detailPack.dir.absolutePath, detailPack.meta.avatar) {
+            File(detailPack.dir, detailPack.meta.avatar)
+        }
+        val avatarBitmap = rememberAvatarBitmap(avatarFile)
         AlertDialog(
-            onDismissRequest = { editPack = null },
-            title = { Text("编辑语音包") },
+            onDismissRequest = { detailPackPath = null },
+            title = { Text("语音包详细信息") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (avatarBitmap != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = avatarBitmap.asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("无头像", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("文件名：${detailPack.dir.name}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Md2IconButton(
+                            icon = "image",
+                            contentDescription = "更换头像",
+                            onClick = {
+                                avatarTarget = detailPack
+                                imagePicker.launch("image/*")
+                            }
+                        )
+                    }
                     Md2OutlinedField(
-                        value = editName,
-                        onValueChange = { editName = it },
+                        value = detailName,
+                        onValueChange = { detailName = it },
                         label = "名称"
                     )
                     Md2OutlinedField(
-                        value = editRemark,
-                        onValueChange = { editRemark = it },
+                        value = detailRemark,
+                        onValueChange = { detailRemark = it },
                         label = "备注"
                     )
                 }
             },
             confirmButton = {
                 Md2TextButton(onClick = {
-                    val pack = editPack
-                    if (pack != null) {
-                        viewModel.updateVoiceMeta(pack, editName, editRemark)
-                    }
-                    editPack = null
+                    viewModel.updateVoiceMeta(detailPack, detailName, detailRemark)
+                    detailPackPath = null
                 }) {
                     Text("保存")
                 }
             },
             dismissButton = {
-                Md2TextButton(onClick = { editPack = null }) {
-                    Text("取消")
+                Md2TextButton(onClick = { detailPackPath = null }) {
+                    Text("关闭")
                 }
             }
         )
@@ -2454,6 +2335,324 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun VoicePackRecyclerList(
+    modifier: Modifier = Modifier,
+    packs: List<VoicePackInfo>,
+    currentVoicePath: String?,
+    onSelect: (VoicePackInfo) -> Unit,
+    onTogglePin: (VoicePackInfo) -> Unit,
+    onDetail: (VoicePackInfo) -> Unit,
+    onShare: (VoicePackInfo) -> Unit,
+    onDelete: (VoicePackInfo) -> Unit,
+    onReorder: (List<VoicePackInfo>) -> Unit
+) {
+    val parentComposition = rememberCompositionContext()
+
+    val onSelectState = rememberUpdatedState(onSelect)
+    val onTogglePinState = rememberUpdatedState(onTogglePin)
+    val onDetailState = rememberUpdatedState(onDetail)
+    val onShareState = rememberUpdatedState(onShare)
+    val onDeleteState = rememberUpdatedState(onDelete)
+    val onReorderState = rememberUpdatedState(onReorder)
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            val recycler = RecyclerView(ctx).apply {
+                layoutManager = LinearLayoutManager(ctx)
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                clipToPadding = false
+                clipChildren = false
+            }
+
+            val adapter = VoicePackRecyclerAdapter(
+                parentComposition = parentComposition,
+                onSelect = { onSelectState.value(it) },
+                onTogglePin = { onTogglePinState.value(it) },
+                onDetail = { onDetailState.value(it) },
+                onShare = { onShareState.value(it) },
+                onDelete = { onDeleteState.value(it) }
+            )
+            recycler.adapter = adapter
+
+            val touchCallback = object : ItemTouchHelper.Callback() {
+                private var moved = false
+
+                override fun isLongPressDragEnabled(): Boolean = false
+                override fun isItemViewSwipeEnabled(): Boolean = false
+
+                override fun getMovementFlags(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder
+                ): Int {
+                    val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
+                    return makeMovementFlags(dragFlags, 0)
+                }
+
+                override fun onMove(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    target: RecyclerView.ViewHolder
+                ): Boolean {
+                    val from = viewHolder.bindingAdapterPosition
+                    val to = target.bindingAdapterPosition
+                    val ok = adapter.moveWithinPinnedGroup(from, to)
+                    moved = moved || ok
+                    return ok
+                }
+
+                override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
+
+                override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
+                    super.onSelectedChanged(viewHolder, actionState)
+                    adapter.isDragging = actionState == ItemTouchHelper.ACTION_STATE_DRAG
+                }
+
+                override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    super.clearView(recyclerView, viewHolder)
+                    adapter.isDragging = false
+                    if (moved) {
+                        onReorderState.value(adapter.snapshot())
+                        moved = false
+                    }
+                }
+            }
+            val touchHelper = ItemTouchHelper(touchCallback)
+            touchHelper.attachToRecyclerView(recycler)
+            adapter.onStartDrag = { vh ->
+                touchHelper.startDrag(vh)
+            }
+            recycler
+        },
+        update = { recycler ->
+            val adapter = recycler.adapter as? VoicePackRecyclerAdapter ?: return@AndroidView
+            adapter.currentVoicePath = currentVoicePath
+            adapter.submitFromState(packs)
+        }
+    )
+}
+
+private class VoicePackRecyclerAdapter(
+    private val parentComposition: CompositionContext,
+    private val onSelect: (VoicePackInfo) -> Unit,
+    private val onTogglePin: (VoicePackInfo) -> Unit,
+    private val onDetail: (VoicePackInfo) -> Unit,
+    private val onShare: (VoicePackInfo) -> Unit,
+    private val onDelete: (VoicePackInfo) -> Unit
+) : RecyclerView.Adapter<VoicePackRecyclerAdapter.VoicePackViewHolder>() {
+
+    private val items = mutableListOf<VoicePackInfo>()
+    var isDragging: Boolean = false
+    var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
+
+    var currentVoicePath: String? = null
+        set(value) {
+            if (field != value) {
+                field = value
+                notifyDataSetChanged()
+            }
+        }
+
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long =
+        items[position].dir.absolutePath.hashCode().toLong()
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VoicePackViewHolder {
+        val composeView = ComposeView(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindowOrReleasedFromPool)
+            setParentCompositionContext(parentComposition)
+        }
+        return VoicePackViewHolder(composeView)
+    }
+
+    override fun onBindViewHolder(holder: VoicePackViewHolder, position: Int) {
+        val pack = items[position]
+        holder.bind(
+            pack = pack,
+            isCurrent = currentVoicePath == pack.dir.absolutePath,
+            onSelect = onSelect,
+            onTogglePin = onTogglePin,
+            onDetail = onDetail,
+            onShare = onShare,
+            onDelete = onDelete,
+            onStartDrag = { onStartDrag?.invoke(holder) }
+        )
+    }
+
+    override fun getItemCount(): Int = items.size
+
+    fun submitFromState(newItems: List<VoicePackInfo>) {
+        if (isDragging) return
+        if (items == newItems) return
+        items.clear()
+        items.addAll(newItems)
+        notifyDataSetChanged()
+    }
+
+    fun snapshot(): List<VoicePackInfo> = items.toList()
+
+    fun moveWithinPinnedGroup(from: Int, to: Int): Boolean {
+        if (from == to || from !in items.indices || to !in items.indices) return false
+        val fromPinned = items[from].meta.pinned
+        val toPinned = items[to].meta.pinned
+        if (fromPinned != toPinned) return false
+        items.move(from, to)
+        notifyItemMoved(from, to)
+        return true
+    }
+
+    class VoicePackViewHolder(
+        private val composeView: ComposeView
+    ) : RecyclerView.ViewHolder(composeView) {
+        fun bind(
+            pack: VoicePackInfo,
+            isCurrent: Boolean,
+            onSelect: (VoicePackInfo) -> Unit,
+            onTogglePin: (VoicePackInfo) -> Unit,
+            onDetail: (VoicePackInfo) -> Unit,
+            onShare: (VoicePackInfo) -> Unit,
+            onDelete: (VoicePackInfo) -> Unit,
+            onStartDrag: () -> Unit
+        ) {
+            composeView.setContent {
+                VoicePackCardContent(
+                    pack = pack,
+                    isCurrent = isCurrent,
+                    onSelect = { onSelect(pack) },
+                    onTogglePin = { onTogglePin(pack) },
+                    onDetail = { onDetail(pack) },
+                    onShare = { onShare(pack) },
+                    onDelete = { onDelete(pack) },
+                    onStartDrag = onStartDrag
+                )
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalComposeUiApi::class)
+private fun VoicePackCardContent(
+    pack: VoicePackInfo,
+    isCurrent: Boolean,
+    onSelect: () -> Unit,
+    onTogglePin: () -> Unit,
+    onDetail: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+    onStartDrag: () -> Unit
+) {
+    val avatarFile = File(pack.dir, pack.meta.avatar)
+    val avatarBitmap = rememberAvatarBitmap(avatarFile)
+
+    Box(modifier = Modifier.padding(horizontal = 2.dp, vertical = 6.dp)) {
+        Card(
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (avatarBitmap != null) {
+                        androidx.compose.foundation.Image(
+                            bitmap = avatarBitmap.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(UiTokens.Radius))
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(UiTokens.Radius))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("无头像", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(pack.meta.name, fontWeight = FontWeight.SemiBold)
+                            if (pack.meta.pinned) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("置顶", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (isCurrent) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("当前", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        if (pack.meta.remark.isNotBlank()) {
+                            Text(pack.meta.remark, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text("文件名：${pack.dir.name}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Md2IconButton(
+                        icon = "drag_indicator",
+                        contentDescription = "按住拖动排序",
+                        onClick = {},
+                        modifier = Modifier.pointerInteropFilter { ev ->
+                            if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                                onStartDrag()
+                            }
+                            false
+                        }
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Md2IconButton(
+                        icon = if (isCurrent) "check_circle" else "play_circle",
+                        contentDescription = if (isCurrent) "当前使用" else "使用该语音包",
+                        onClick = onSelect,
+                        enabled = !isCurrent
+                    )
+                    Md2IconButton(
+                        icon = if (pack.meta.pinned) "keep_off" else "push_pin",
+                        contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
+                        onClick = onTogglePin
+                    )
+                    Md2IconButton(
+                        icon = "info",
+                        contentDescription = "语音包详细信息",
+                        onClick = onDetail
+                    )
+                    Md2IconButton(
+                        icon = "share",
+                        contentDescription = "分享语音包",
+                        onClick = onShare
+                    )
+                    Md2IconButton(
+                        icon = "delete",
+                        contentDescription = "删除语音包",
+                        onClick = onDelete
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -2753,6 +2952,14 @@ fun QuickSubtitleScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    val sendInput = {
+                        if (inputFieldValue.text.trim().isNotEmpty()) {
+                            viewModel.submitQuickSubtitleInput(
+                                playVoice = playOnSend && hasVoice
+                            )
+                            inputFieldValue = TextFieldValue("")
+                        }
+                    }
                     OutlinedTextField(
                         value = inputFieldValue,
                         onValueChange = {
@@ -2762,6 +2969,16 @@ fun QuickSubtitleScreen(
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         placeholder = { Text("请输入文本") },
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Sentences,
+                            autoCorrect = true,
+                            keyboardType = KeyboardType.Text,
+                            imeAction = ImeAction.Send
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onSend = { sendInput() },
+                            onDone = { sendInput() }
+                        ),
                         trailingIcon = {
                             if (inputFieldValue.text.isNotEmpty()) {
                                 IconButton(
@@ -2784,12 +3001,7 @@ fun QuickSubtitleScreen(
                         )
                     )
                     IconButton(
-                        onClick = {
-                            viewModel.submitQuickSubtitleInput(
-                                playVoice = playOnSend && hasVoice
-                            )
-                            inputFieldValue = TextFieldValue("")
-                        },
+                        onClick = sendInput,
                         enabled = inputFieldValue.text.trim().isNotEmpty()
                     ) {
                         MsIcon(
