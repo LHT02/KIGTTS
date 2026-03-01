@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
@@ -33,7 +34,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -61,6 +61,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
@@ -70,6 +71,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
@@ -2188,6 +2190,8 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                 fixAspectRatio = true,
                 aspectRatioX = 1,
                 aspectRatioY = 1,
+                activityTitle = "裁剪头像",
+                cropMenuCropButtonTitle = "确认",
                 outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
                 outputCompressQuality = 100,
                 outputRequestWidth = 400,
@@ -2266,7 +2270,7 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.Top
                     ) {
                         if (avatarBitmap != null) {
                             androidx.compose.foundation.Image(
@@ -2289,11 +2293,13 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                         }
                         Spacer(Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(detailPack.meta.name, fontWeight = FontWeight.SemiBold)
-                            if (detailPack.meta.remark.isNotBlank()) {
-                                Text(detailPack.meta.remark, style = MaterialTheme.typography.bodySmall)
+                            if (!detailEditing) {
+                                Text("名称：${detailPack.meta.name}", style = MaterialTheme.typography.bodyMedium)
+                                val remarkText = detailPack.meta.remark.ifBlank { "无" }
+                                Text("备注：$remarkText", style = MaterialTheme.typography.bodySmall)
+                            } else {
+                                Text("文件名：${detailPack.dir.name}", style = MaterialTheme.typography.bodySmall)
                             }
-                            Text("文件名：${detailPack.dir.name}", style = MaterialTheme.typography.bodySmall)
                         }
                         if (detailEditing) {
                             Md2IconButton(
@@ -2317,6 +2323,8 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                             onValueChange = { detailRemark = it },
                             label = "备注"
                         )
+                    } else {
+                        Text("文件名：${detailPack.dir.name}", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
@@ -2579,6 +2587,7 @@ private class VoicePackRecyclerAdapter(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 private fun VoicePackCardContent(
     pack: VoicePackInfo,
     isCurrent: Boolean,
@@ -2643,13 +2652,17 @@ private fun VoicePackCardContent(
                         icon = "drag_indicator",
                         contentDescription = "按住拖动排序",
                         onClick = {},
-                        modifier = Modifier.pointerInput(pack.dir.absolutePath) {
-                            detectTapGestures(
-                                onPress = {
+                        modifier = Modifier.pointerInteropFilter { ev ->
+                            when (ev.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> {
                                     onStartDrag()
-                                    tryAwaitRelease()
+                                    true
                                 }
-                            )
+                                MotionEvent.ACTION_UP,
+                                MotionEvent.ACTION_CANCEL,
+                                MotionEvent.ACTION_MOVE -> true
+                                else -> false
+                            }
                         }
                     )
                 }
