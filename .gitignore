@@ -1,0 +1,118 @@
+# -----------------------------
+# OS / Editor
+# -----------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.iml
+*.suo
+*.user
+*.swp
+*.swo
+*.orig
+
+# -----------------------------
+# Logs / Temp
+# -----------------------------
+*.log
+debug.log
+logs/
+**/logs/
+_tmp/
+tmp*/
+tmp_voicepack_inspect_*/
+
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
+pip-wheel-metadata/
+*.egg-info/
+
+# -----------------------------
+# Node / Electron
+# -----------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+Electron_Trainer/node_modules/
+Electron_Trainer/dist/
+Electron_Trainer/dist-renderer/
+Electron_Trainer/release/
+Electron_Trainer/out/
+Electron_Trainer/.vite/
+Electron_Trainer/.cache/
+Electron_Trainer/.electron-cache/
+
+# -----------------------------
+# Android / Gradle
+# -----------------------------
+android-app/.gradle/
+android-app/.idea/
+android-app/local.properties
+android-app/**/build/
+android-app/app/.cxx/
+android-app/app/.externalNativeBuild/
+
+# -----------------------------
+# Build artifacts / extracted outputs
+# -----------------------------
+kgt_trainer.exe_extracted/
+pc_trainer/build/
+pc_trainer/dist/
+pc_trainer/dist_new*/
+Electron_Trainer/dist/win-unpacked/
+Electron_Trainer/dist/win-*/
+*.apk
+*.aab
+
+# Keep Electron source build scripts and config tracked
+!Electron_Trainer/build_exe.ps1
+!Electron_Trainer/package.json
+!Electron_Trainer/tsconfig*.json
+
+# -----------------------------
+# Trainer runtime generated dirs
+# -----------------------------
+pc_trainer/projects/
+pc_trainer/resources_pack/projects/
+
+# -----------------------------
+# Large binary/runtime assets (keep out of GitHub source repo)
+# -----------------------------
+pc_trainer/Model/
+pc_trainer/CKPT/
+pc_trainer/piper_env/
+pc_trainer/piper_wheels/
+pc_trainer/_torch_wheels/
+pc_trainer/dist_new*.zip
+pc_trainer/resources_pack/Model/
+pc_trainer/resources_pack/piper_env/
+pc_trainer/dist/kgt_trainer/Model/
+pc_trainer/dist/kgt_trainer/piper_env/
+pc_trainer/dist/kgt_trainer/projects/
+android-app/app/src/main/assets/sosv*.zip
+唯一正常的训练器/
+*.ckpt
+*.whl
+*.onnx

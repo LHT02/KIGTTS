@@ -1,0 +1,83 @@
+{
+  "name": "kgtts-trainer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron electron/main.cjs\"",
+    "start": "electron electron/main.cjs",
+    "build": "tsc -b && vite build",
+    "dist": "npm run build && electron-builder",
+    "dist:inno": "powershell -ExecutionPolicy Bypass -File scripts/build_inno.ps1",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "build": {
+    "appId": "com.kgtts.trainer",
+    "productName": "KGTTS Trainer",
+    "asar": true,
+    "asarUnpack": [
+      "backend/**"
+    ],
+    "files": [
+      "dist-renderer/**",
+      "electron/**",
+      "backend/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../pc_trainer/piper_env",
+        "to": "piper_env"
+      },
+      {
+        "from": "../pc_trainer/resources_pack",
+        "to": "resources_pack",
+        "filter": [
+          "data/**",
+          "tools/**",
+          "logs/**",
+          "Model/*.zip",
+          "Model/sosv-int8/**",
+          "Model/piper_voices/**",
+          "Model/piper_checkpoints/**"
+        ]
+      },
+      {
+        "from": "../pc_trainer/CKPT",
+        "to": "CKPT",
+        "filter": [
+          "**/*.ckpt"
+        ]
+      }
+    ]
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/icons-material": "^7.3.7",
+    "@mui/material": "^7.3.7",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-easy-crop": "^5.5.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
+    "electron": "^40.2.1",
+    "electron-builder": "^26.7.0",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.5.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^7.2.4",
+    "wait-on": "^9.0.3"
+  }
+}

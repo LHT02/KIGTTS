@@ -1,0 +1,47 @@
+@font-face {
+  font-family: 'Material Symbols Sharp';
+  font-style: normal;
+  font-weight: 500;
+  src: url('./assets/fonts/MaterialSymbolsSharp-opsz24-wght500-fill0-grad0.ttf') format('truetype');
+}
+
+.material-symbols-sharp {
+  font-family: 'Material Symbols Sharp';
+  font-weight: 500;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  direction: ltr;
+  -webkit-font-smoothing: antialiased;
+  font-variation-settings: 'FILL' 0, 'wght' 500, 'GRAD' 0, 'opsz' 24;
+}
+
+:root {
+  font-family: 'Roboto', 'Noto Sans SC', 'Segoe UI', sans-serif;
+  line-height: 1.4;
+  font-weight: 400;
+  color: #e0e0e0;
+  background-color: #121212;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: #121212;
+}
+
+#root {
+  min-height: 100vh;
+}

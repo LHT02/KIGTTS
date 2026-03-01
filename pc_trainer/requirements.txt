@@ -1,0 +1,14 @@
+# 核心依赖
+numpy>=1.26
+scipy>=1.11
+soundfile>=0.12
+librosa>=0.10
+pydub>=0.25
+webrtcvad>=2.0.10
+tqdm>=4.66
+onnxruntime>=1.16
+sherpa-onnx>=1.9.13
+
+# GUI / 打包
+tkinterdnd2>=0.4.2
+pyinstaller>=6.4
