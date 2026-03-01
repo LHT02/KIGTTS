@@ -1433,6 +1433,8 @@ private object QuickSubtitleRoutes {
 
 class MainActivity : ComponentActivity() {
     private var lastDecorFitsSystemWindows: Boolean = false
+    private var pendingBackgroundReturnFix: Boolean = false
+    private var delayedResumeFixRunnable: Runnable? = null
 
     private val viewModel: MainViewModel by viewModels {
         val repo = ModelRepository(this@MainActivity)
@@ -1487,6 +1489,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (pendingBackgroundReturnFix) {
+            pendingBackgroundReturnFix = false
+            delayedResumeFixRunnable?.let { window.decorView.removeCallbacks(it) }
+            delayedResumeFixRunnable = Runnable {
+                val stateMask =
+                    window.attributes.softInputMode and WindowManager.LayoutParams.SOFT_INPUT_MASK_STATE
+                window.setSoftInputMode(stateMask or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                lastDecorFitsSystemWindows = false
+                AppLogger.i(
+                    "MainActivity.delayedResumeFix applied delayMs=500 " +
+                            "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
+                )
+            }
+            window.decorView.postDelayed(delayedResumeFixRunnable, 500L)
+            AppLogger.i("MainActivity.delayedResumeFix scheduled delayMs=500")
+        }
         AppLogger.i(
             "MainActivity.onResume inMultiWindow=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInMultiWindowMode else false} " +
                     "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
@@ -1494,11 +1513,19 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        delayedResumeFixRunnable?.let { window.decorView.removeCallbacks(it) }
+        delayedResumeFixRunnable = null
         AppLogger.i(
             "MainActivity.onPause inMultiWindow=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInMultiWindowMode else false} " +
                     "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
         )
         super.onPause()
+    }
+
+    override fun onStop() {
+        pendingBackgroundReturnFix = true
+        AppLogger.i("MainActivity.onStop markPendingBackgroundReturnFix=true")
+        super.onStop()
     }
 
     private fun applyWindowInsetPolicyForMode() {
