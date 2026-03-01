@@ -3,4 +3,11 @@
         <item name="android:statusBarColor" tools:targetApi="l">?attr/colorPrimary</item>
         <item name="android:navigationBarColor" tools:targetApi="l">?attr/colorSurface</item>
     </style>
+
+    <style name="Theme.KGTTS.Cropper" parent="Theme.Material3.DayNight">
+        <item name="colorPrimary">#038387</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="android:statusBarColor" tools:targetApi="l">#038387</item>
+        <item name="android:navigationBarColor" tools:targetApi="l">#000000</item>
+    </style>
 </resources>

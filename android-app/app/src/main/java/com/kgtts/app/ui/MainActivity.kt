@@ -105,6 +105,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
+import androidx.interpolator.view.animation.FastOutSlowInInterpolator
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
@@ -2192,6 +2193,13 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                 aspectRatioY = 1,
                 activityTitle = "裁剪头像",
                 cropMenuCropButtonTitle = "确认",
+                activityMenuIconColor = 0xFFFFFFFF.toInt(),
+                activityMenuTextColor = 0xFFFFFFFF.toInt(),
+                activityBackgroundColor = 0xFF121212.toInt(),
+                toolbarColor = 0xFF038387.toInt(),
+                toolbarTitleColor = 0xFFFFFFFF.toInt(),
+                toolbarBackButtonColor = 0xFFFFFFFF.toInt(),
+                toolbarTintColor = 0xFFFFFFFF.toInt(),
                 outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
                 outputCompressQuality = 100,
                 outputRequestWidth = 400,
@@ -2422,6 +2430,7 @@ private fun VoicePackRecyclerList(
 
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var moved = false
+                private var activeViewHolder: RecyclerView.ViewHolder? = null
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -2450,11 +2459,23 @@ private fun VoicePackRecyclerList(
 
                 override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                     super.onSelectedChanged(viewHolder, actionState)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
+                        if (activeViewHolder !== viewHolder) {
+                            activeViewHolder?.let { animateDragElevation(it.itemView, elevated = false) }
+                        }
+                        activeViewHolder = viewHolder
+                        animateDragElevation(viewHolder.itemView, elevated = true)
+                    } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        activeViewHolder?.let { animateDragElevation(it.itemView, elevated = false) }
+                        activeViewHolder = null
+                    }
                     adapter.isDragging = actionState == ItemTouchHelper.ACTION_STATE_DRAG
                 }
 
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
                     super.clearView(recyclerView, viewHolder)
+                    animateDragElevation(viewHolder.itemView, elevated = false)
+                    if (activeViewHolder === viewHolder) activeViewHolder = null
                     adapter.isDragging = false
                     if (moved) {
                         onReorderState.value(adapter.snapshot())
@@ -2518,6 +2539,9 @@ private class VoicePackRecyclerAdapter(
     }
 
     override fun onBindViewHolder(holder: VoicePackViewHolder, position: Int) {
+        if (!isDragging) {
+            holder.itemView.translationZ = 0f
+        }
         val pack = items[position]
         holder.bind(
             pack = pack,
@@ -2710,6 +2734,18 @@ private fun MutableList<VoicePackInfo>.move(from: Int, to: Int) {
     if (from == to || from !in indices || to !in indices) return
     val item = removeAt(from)
     add(to, item)
+}
+
+private fun animateDragElevation(view: View, elevated: Boolean) {
+    val targetZ = if (elevated) 12f * view.resources.displayMetrics.density else 0f
+    val duration = if (elevated) 120L else 160L
+    view.animate()
+        .cancel()
+    view.animate()
+        .translationZ(targetZ)
+        .setDuration(duration)
+        .setInterpolator(FastOutSlowInInterpolator())
+        .start()
 }
 
 @Composable
