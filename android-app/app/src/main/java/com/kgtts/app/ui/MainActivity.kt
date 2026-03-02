@@ -2,15 +2,18 @@ package com.kgtts.app.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.BitmapFactory
+import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
@@ -156,7 +159,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import java.io.FileOutputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -189,6 +191,26 @@ private fun softInputModeSummary(mode: Int): String {
     return "adjust=$adjust,state=$state,raw=0x${mode.toString(16)}"
 }
 
+private fun normalizeDrawingSaveRelativePath(raw: String): String {
+    val cleaned = raw
+        .trim()
+        .replace('\\', '/')
+        .trim('/')
+    if (cleaned.isEmpty()) {
+        return UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+    }
+    val normalized = cleaned
+        .split('/')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && it != "." && it != ".." }
+        .joinToString("/")
+    return if (normalized.isEmpty()) {
+        UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+    } else {
+        normalized
+    }
+}
+
 data class UiState(
     val asrDir: File? = null,
     val voiceDir: File? = null,
@@ -211,6 +233,7 @@ data class UiState(
     val numberReplaceMode: Int = 0,
     val landscapeDrawerMode: Int = UserPrefs.DRAWER_MODE_PERMANENT,
     val solidTopBar: Boolean = true,
+    val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val inputLevel: Float = 0f,
     val inputDeviceLabel: String = "未知",
     val outputDeviceLabel: String = "未知"
@@ -239,6 +262,10 @@ data class DrawStrokeData(
     val color: Color,
     val width: Float,
     val eraser: Boolean
+)
+
+data class DrawingSaveResult(
+    val fullPath: String
 )
 
 private fun defaultQuickSubtitleGroups(): List<QuickSubtitleGroup> = listOf(
@@ -709,7 +736,8 @@ class MainViewModel(
                 keepAlive = settings.keepAlive,
                 numberReplaceMode = settings.numberReplaceMode,
                 landscapeDrawerMode = settings.landscapeDrawerMode,
-                solidTopBar = settings.solidTopBar
+                solidTopBar = settings.solidTopBar,
+                drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath)
             )
             applySettingsToController(settings)
         }
@@ -917,6 +945,17 @@ class MainViewModel(
         }
     }
 
+    fun setDrawingSaveRelativePath(path: String) {
+        val normalized = normalizeDrawingSaveRelativePath(path)
+        uiState = uiState.copy(
+            drawingSaveRelativePath = normalized,
+            status = "画板保存路径：$normalized"
+        )
+        viewModelScope.launch {
+            UserPrefs.setDrawingSaveRelativePath(appContext, normalized)
+        }
+    }
+
     fun updateDrawColor(color: Color) {
         drawColor = color
         drawEraser = false
@@ -989,29 +1028,67 @@ class MainViewModel(
                     }
                 }
 
-                val saveDir = appContext.getExternalFilesDir("drawings")
-                    ?: File(appContext.filesDir, "drawings")
-                if (!saveDir.exists()) {
-                    saveDir.mkdirs()
-                }
                 val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                val outFile = File(saveDir, "drawing_$ts.png")
-                FileOutputStream(outFile).use { fos ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos)
+                val fileName = "drawing_$ts.png"
+                val relativePath = normalizeDrawingSaveRelativePath(uiState.drawingSaveRelativePath)
+                val resolver = appContext.contentResolver
+                val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
                 }
-                bitmap.recycle()
-                outFile
+                val uri = resolver.insert(collection, values)
+                    ?: error("无法创建图片媒体条目")
+                try {
+                    resolver.openOutputStream(uri)?.use { out ->
+                        val ok = bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        if (!ok) error("图片编码失败")
+                    } ?: error("无法打开图片输出流")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        resolver.update(
+                            uri,
+                            ContentValues().apply {
+                                put(MediaStore.Images.Media.IS_PENDING, 0)
+                            },
+                            null,
+                            null
+                        )
+                    }
+                } catch (e: Exception) {
+                    resolver.delete(uri, null, null)
+                    throw e
+                } finally {
+                    bitmap.recycle()
+                }
+
+                val fullPath = "/storage/emulated/0/${relativePath.trim('/')}/$fileName"
+                runCatching {
+                    MediaScannerConnection.scanFile(
+                        appContext,
+                        arrayOf(fullPath),
+                        arrayOf("image/png"),
+                        null
+                    )
+                    appContext.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, uri))
+                }
+                DrawingSaveResult(fullPath = fullPath)
             }
 
-            result.onSuccess { file ->
-                AppLogger.i("drawing saved: ${file.absolutePath}")
+            result.onSuccess { saved ->
+                AppLogger.i("drawing saved: ${saved.fullPath}")
                 withContext(Dispatchers.Main) {
-                    uiState = uiState.copy(status = "画板已保存：${file.name}")
+                    uiState = uiState.copy(status = "画板已保存：${saved.fullPath}")
+                    Toast.makeText(appContext, "画板已保存：${saved.fullPath}", Toast.LENGTH_LONG).show()
                 }
             }.onFailure { e ->
                 AppLogger.e("drawing save failed", e)
                 withContext(Dispatchers.Main) {
                     uiState = uiState.copy(status = "画板保存失败：${e.message ?: "未知错误"}")
+                    Toast.makeText(appContext, "画板保存失败", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -5261,6 +5338,9 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     var drawerModeExpanded by remember { mutableStateOf(false) }
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
+    var drawingSavePathText by remember(state.drawingSaveRelativePath) {
+        mutableStateOf(state.drawingSaveRelativePath)
+    }
     val asrPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.importAsr(uri) else toast(context, "未选择文件")
     }
@@ -5333,6 +5413,52 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                     Text("使用纯色顶栏")
                 }
                 Text("开启后顶栏与状态栏颜色改为卡片同款自适应配色。", style = MaterialTheme.typography.bodySmall)
+
+                Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
+                OutlinedTextField(
+                    value = drawingSavePathText,
+                    onValueChange = { drawingSavePathText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text(UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH) },
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.None,
+                        autoCorrect = false,
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            viewModel.setDrawingSaveRelativePath(drawingSavePathText)
+                        }
+                    ),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    colors = TextFieldDefaults.outlinedTextFieldColors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        focusedLabelColor = MaterialTheme.colorScheme.primary,
+                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        cursorColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2OutlinedButton(onClick = {
+                        viewModel.setDrawingSaveRelativePath(drawingSavePathText)
+                    }) {
+                        Text("应用路径")
+                    }
+                    Md2TextButton(onClick = {
+                        val def = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+                        drawingSavePathText = def
+                        viewModel.setDrawingSaveRelativePath(def)
+                    }) {
+                        Text("恢复默认")
+                    }
+                }
+                Text("示例：Pictures/KGTTS/Drawings", style = MaterialTheme.typography.bodySmall)
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

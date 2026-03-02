@@ -15,6 +15,7 @@ private val Context.dataStore by preferencesDataStore(name = "user_prefs")
 object UserPrefs {
     const val DRAWER_MODE_HIDDEN = 0
     const val DRAWER_MODE_PERMANENT = 1
+    const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
 
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
     private val KEY_MUTE_WHILE_PLAYING = booleanPreferencesKey("mute_while_playing")
@@ -32,6 +33,7 @@ object UserPrefs {
     private val KEY_NUMBER_REPLACE_MODE = intPreferencesKey("number_replace_mode")
     private val KEY_LANDSCAPE_DRAWER_MODE = intPreferencesKey("landscape_drawer_mode")
     private val KEY_SOLID_TOP_BAR = booleanPreferencesKey("solid_top_bar")
+    private val KEY_DRAWING_SAVE_RELATIVE_PATH = stringPreferencesKey("drawing_save_relative_path")
     private val KEY_QUICK_SUBTITLE_CONFIG = stringPreferencesKey("quick_subtitle_config")
 
     data class AppSettings(
@@ -48,6 +50,7 @@ object UserPrefs {
         val numberReplaceMode: Int = 0,
         val landscapeDrawerMode: Int = DRAWER_MODE_PERMANENT,
         val solidTopBar: Boolean = true,
+        val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val allowSystemAecWithAec3: Boolean = true
     )
 
@@ -83,6 +86,8 @@ object UserPrefs {
             landscapeDrawerMode = (prefs[KEY_LANDSCAPE_DRAWER_MODE] ?: DRAWER_MODE_PERMANENT)
                 .coerceIn(DRAWER_MODE_HIDDEN, DRAWER_MODE_PERMANENT),
             solidTopBar = prefs[KEY_SOLID_TOP_BAR] ?: true,
+            drawingSaveRelativePath = (prefs[KEY_DRAWING_SAVE_RELATIVE_PATH]
+                ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             allowSystemAecWithAec3 = true
         )
     }
@@ -169,6 +174,13 @@ object UserPrefs {
     suspend fun setSolidTopBar(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_SOLID_TOP_BAR] = enabled
+        }
+    }
+
+    suspend fun setDrawingSaveRelativePath(context: Context, path: String) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_DRAWING_SAVE_RELATIVE_PATH] =
+                path.ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH }
         }
     }
 
