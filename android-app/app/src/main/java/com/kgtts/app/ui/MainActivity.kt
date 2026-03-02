@@ -91,6 +91,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -2709,7 +2710,6 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
         if (state.voicePacks.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -2717,7 +2717,13 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                     .fillMaxWidth(),
                 contentAlignment = Alignment.TopStart
             ) {
-                Text("暂无语音包，请点击主标题栏导入按钮。")
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Spacer(Modifier.height(UiTokens.PageTopBlank))
+                    Text("暂无语音包，请点击主标题栏导入按钮。")
+                    Spacer(Modifier.height(UiTokens.PageBottomBlank))
+                }
             }
         } else {
             Md2StaggeredFloatIn(
@@ -2730,6 +2736,8 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                     modifier = Modifier.fillMaxSize(),
                     packs = state.voicePacks,
                     currentVoicePath = state.voiceDir?.absolutePath,
+                    topBlankHeight = UiTokens.PageTopBlank,
+                    bottomBlankHeight = UiTokens.PageBottomBlank,
                     onSelect = { viewModel.selectVoice(it.dir) },
                     onTogglePin = { viewModel.toggleVoicePin(it) },
                     onDetail = { pack ->
@@ -2744,7 +2752,6 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                 )
             }
         }
-        Spacer(Modifier.height(UiTokens.PageBottomBlank))
     }
 
     if (detailPack != null) {
@@ -2885,6 +2892,8 @@ private fun VoicePackRecyclerList(
     modifier: Modifier = Modifier,
     packs: List<VoicePackInfo>,
     currentVoicePath: String?,
+    topBlankHeight: Dp,
+    bottomBlankHeight: Dp,
     onSelect: (VoicePackInfo) -> Unit,
     onTogglePin: (VoicePackInfo) -> Unit,
     onDetail: (VoicePackInfo) -> Unit,
@@ -2893,6 +2902,9 @@ private fun VoicePackRecyclerList(
     onReorder: (List<VoicePackInfo>) -> Unit
 ) {
     val parentComposition = rememberCompositionContext()
+    val density = LocalDensity.current
+    val topBlankPx = with(density) { topBlankHeight.roundToPx() }
+    val bottomBlankPx = with(density) { bottomBlankHeight.roundToPx() }
 
     val onSelectState = rememberUpdatedState(onSelect)
     val onTogglePinState = rememberUpdatedState(onTogglePin)
@@ -2919,6 +2931,8 @@ private fun VoicePackRecyclerList(
                 onShare = { onShareState.value(it) },
                 onDelete = { onDeleteState.value(it) }
             )
+            adapter.topSpacerPx = topBlankPx
+            adapter.bottomSpacerPx = bottomBlankPx
             recycler.adapter = adapter
 
             val touchCallback = object : ItemTouchHelper.Callback() {
@@ -2932,6 +2946,9 @@ private fun VoicePackRecyclerList(
                     recyclerView: RecyclerView,
                     viewHolder: RecyclerView.ViewHolder
                 ): Int {
+                    if (!adapter.isDraggableAdapterPosition(viewHolder.bindingAdapterPosition)) {
+                        return makeMovementFlags(0, 0)
+                    }
                     val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
                     return makeMovementFlags(dragFlags, 0)
                 }
@@ -2943,7 +2960,7 @@ private fun VoicePackRecyclerList(
                 ): Boolean {
                     val from = viewHolder.bindingAdapterPosition
                     val to = target.bindingAdapterPosition
-                    val ok = adapter.moveWithinPinnedGroup(from, to)
+                    val ok = adapter.moveWithinPinnedGroupAdapterPositions(from, to)
                     moved = moved || ok
                     return ok
                 }
@@ -2992,6 +3009,8 @@ private fun VoicePackRecyclerList(
         },
         update = { recycler ->
             val adapter = recycler.adapter as? VoicePackRecyclerAdapter ?: return@AndroidView
+            adapter.topSpacerPx = topBlankPx
+            adapter.bottomSpacerPx = bottomBlankPx
             adapter.currentVoicePath = currentVoicePath
             adapter.submitFromState(packs)
         }
@@ -3005,7 +3024,15 @@ private class VoicePackRecyclerAdapter(
     private val onDetail: (VoicePackInfo) -> Unit,
     private val onShare: (VoicePackInfo) -> Unit,
     private val onDelete: (VoicePackInfo) -> Unit
-) : RecyclerView.Adapter<VoicePackRecyclerAdapter.VoicePackViewHolder>() {
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+
+    companion object {
+        private const val VIEW_TYPE_TOP_SPACER = 0
+        private const val VIEW_TYPE_PACK = 1
+        private const val VIEW_TYPE_BOTTOM_SPACER = 2
+        private const val STABLE_ID_TOP_SPACER = Long.MIN_VALUE + 1
+        private const val STABLE_ID_BOTTOM_SPACER = Long.MIN_VALUE + 2
+    }
 
     private val items = mutableListOf<VoicePackInfo>()
     private val stagedAppearedIds = hashSetOf<Long>()
@@ -3021,15 +3048,51 @@ private class VoicePackRecyclerAdapter(
                 notifyDataSetChanged()
             }
         }
+    var topSpacerPx: Int = 0
+        set(value) {
+            if (field != value) {
+                field = value.coerceAtLeast(0)
+                if (itemCount > 0) notifyItemChanged(0)
+            }
+        }
+    var bottomSpacerPx: Int = 0
+        set(value) {
+            if (field != value) {
+                field = value.coerceAtLeast(0)
+                if (itemCount > 0) notifyItemChanged(itemCount - 1)
+            }
+        }
 
     init {
         setHasStableIds(true)
     }
 
-    override fun getItemId(position: Int): Long =
-        items[position].dir.absolutePath.hashCode().toLong()
+    override fun getItemId(position: Int): Long = when (getItemViewType(position)) {
+        VIEW_TYPE_TOP_SPACER -> STABLE_ID_TOP_SPACER
+        VIEW_TYPE_BOTTOM_SPACER -> STABLE_ID_BOTTOM_SPACER
+        else -> {
+            val dataIndex = position - 1
+            items[dataIndex].dir.absolutePath.hashCode().toLong()
+        }
+    }
 
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VoicePackViewHolder {
+    override fun getItemViewType(position: Int): Int {
+        if (position == 0) return VIEW_TYPE_TOP_SPACER
+        if (position == itemCount - 1) return VIEW_TYPE_BOTTOM_SPACER
+        return VIEW_TYPE_PACK
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        if (viewType == VIEW_TYPE_TOP_SPACER || viewType == VIEW_TYPE_BOTTOM_SPACER) {
+            val spacer = View(parent.context).apply {
+                layoutParams = RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0
+                )
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+            return SpacerViewHolder(spacer)
+        }
         val composeView = ComposeView(parent.context).apply {
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -3041,7 +3104,16 @@ private class VoicePackRecyclerAdapter(
         return VoicePackViewHolder(composeView)
     }
 
-    override fun onBindViewHolder(holder: VoicePackViewHolder, position: Int) {
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        if (holder is SpacerViewHolder) {
+            val height = if (position == 0) topSpacerPx else bottomSpacerPx
+            holder.bind(height)
+            holder.itemView.translationZ = 0f
+            holder.itemView.alpha = 1f
+            holder.itemView.translationY = 0f
+            return
+        }
+        holder as VoicePackViewHolder
         if (!isDragging) {
             holder.itemView.translationZ = 0f
         }
@@ -3049,7 +3121,8 @@ private class VoicePackRecyclerAdapter(
         val shouldStagger = runStaggerOnNextBind && !stagedAppearedIds.contains(itemId)
         if (shouldStagger) {
             stagedAppearedIds.add(itemId)
-            animateVoicePackStaggerEnter(holder.itemView, position)
+            val dataIndex = (position - 1).coerceAtLeast(0)
+            animateVoicePackStaggerEnter(holder.itemView, dataIndex)
             if (!staggerReleaseScheduled) {
                 staggerReleaseScheduled = true
                 holder.itemView.postDelayed(
@@ -3063,7 +3136,9 @@ private class VoicePackRecyclerAdapter(
             holder.itemView.translationY = 0f
         }
         holder.setDragged(false)
-        val pack = items[position]
+        val dataIndex = position - 1
+        if (dataIndex !in items.indices) return
+        val pack = items[dataIndex]
         holder.bind(
             pack = pack,
             isCurrent = currentVoicePath == pack.dir.absolutePath,
@@ -3080,10 +3155,12 @@ private class VoicePackRecyclerAdapter(
         )
     }
 
-    override fun getItemCount(): Int = items.size
+    override fun getItemCount(): Int = if (items.isEmpty()) 0 else items.size + 2
 
-    override fun onViewRecycled(holder: VoicePackViewHolder) {
-        holder.setDragged(false)
+    override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+        if (holder is VoicePackViewHolder) {
+            holder.setDragged(false)
+        }
         holder.itemView.translationZ = 0f
         holder.itemView.alpha = 1f
         holder.itemView.translationY = 0f
@@ -3106,14 +3183,40 @@ private class VoicePackRecyclerAdapter(
 
     fun snapshot(): List<VoicePackInfo> = items.toList()
 
-    fun moveWithinPinnedGroup(from: Int, to: Int): Boolean {
+    fun isDraggableAdapterPosition(position: Int): Boolean {
+        if (position == RecyclerView.NO_POSITION) return false
+        return position in 1..items.size
+    }
+
+    fun moveWithinPinnedGroupAdapterPositions(fromAdapter: Int, toAdapter: Int): Boolean {
+        if (!isDraggableAdapterPosition(fromAdapter) || !isDraggableAdapterPosition(toAdapter)) {
+            return false
+        }
+        val from = fromAdapter - 1
+        val to = toAdapter - 1
         if (from == to || from !in items.indices || to !in items.indices) return false
         val fromPinned = items[from].meta.pinned
         val toPinned = items[to].meta.pinned
         if (fromPinned != toPinned) return false
         items.move(from, to)
-        notifyItemMoved(from, to)
+        notifyItemMoved(fromAdapter, toAdapter)
         return true
+    }
+
+    class SpacerViewHolder(
+        itemView: View
+    ) : RecyclerView.ViewHolder(itemView) {
+        fun bind(heightPx: Int) {
+            val lp = (itemView.layoutParams as? RecyclerView.LayoutParams)
+                ?: RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    heightPx
+                )
+            if (lp.height != heightPx) {
+                lp.height = heightPx
+                itemView.layoutParams = lp
+            }
+        }
     }
 
     class VoicePackViewHolder(
