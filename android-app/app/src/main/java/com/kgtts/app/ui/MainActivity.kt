@@ -3599,7 +3599,7 @@ fun QuickSubtitleScreen(
     val quickSubtitleBottomBlank = if (isLandscape) {
         UiTokens.PageBottomBlank + 6.dp
     } else {
-        UiTokens.PageBottomBlank + 92.dp
+        UiTokens.PageBottomBlank + 68.dp
     }
     val quickPanelExpanded = !quickInputCollapsed
     val quickPanelAnimatedWidth by animateDpAsState(
@@ -4079,7 +4079,7 @@ fun QuickSubtitleScreen(
                         index = 2,
                         enabled = false,
                         modifier = Modifier
-                            .padding(horizontal = 16.dp)
+                            .padding(horizontal = 16.dp, vertical = 3.dp)
                             .fillMaxWidth()
                     ) {
                         Card(
@@ -4193,6 +4193,9 @@ fun QuickSubtitleScreen(
                             }
                         }
                     }
+                    // Reserve a tiny shadow gutter so tab card elevation won't be clipped
+                    // during expand/collapse in portrait mode.
+                    Spacer(Modifier.height(3.dp))
                     }
                 }
             }
