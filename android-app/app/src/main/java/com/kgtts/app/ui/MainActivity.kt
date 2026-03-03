@@ -372,7 +372,11 @@ class MainViewModel(
         private set
     var quickSubtitlePlayOnSend by mutableStateOf(true)
         private set
+    var quickSubtitleInputCollapsed by mutableStateOf(false)
+        private set
     var quickSubtitleFontSizeSp by mutableFloatStateOf(56f)
+        private set
+    var drawingToolbarCollapsed by mutableStateOf(false)
         private set
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
@@ -513,6 +517,10 @@ class MainViewModel(
     fun updateQuickSubtitlePlayOnSend(enabled: Boolean) {
         quickSubtitlePlayOnSend = enabled
         saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitleInputCollapsed(collapsed: Boolean) {
+        quickSubtitleInputCollapsed = collapsed
     }
 
     fun updateQuickSubtitleGroupMeta(index: Int, title: String, icon: String) {
@@ -1024,6 +1032,10 @@ class MainViewModel(
 
     fun updateDrawEraser(enabled: Boolean) {
         drawEraser = enabled
+    }
+
+    fun updateDrawingToolbarCollapsed(collapsed: Boolean) {
+        drawingToolbarCollapsed = collapsed
     }
 
     fun clearDrawingBoard() {
@@ -3556,7 +3568,7 @@ fun QuickSubtitleScreen(
     val subtitleSize = viewModel.quickSubtitleFontSizeSp
     val inputText = viewModel.quickSubtitleInputText
     val playOnSend = viewModel.quickSubtitlePlayOnSend
-    var quickInputCollapsed by rememberSaveable { mutableStateOf(false) }
+    val quickInputCollapsed = viewModel.quickSubtitleInputCollapsed
     var inputFieldValue by remember {
         mutableStateOf(
             TextFieldValue(
@@ -3663,7 +3675,8 @@ fun QuickSubtitleScreen(
                                                         initialOffsetY = { full -> full / 6 },
                                                         animationSpec = tween(200, easing = FastOutSlowInEasing)
                                                     ),
-                                                initialContentExit = fadeOut(animationSpec = tween(120))
+                                                initialContentExit = fadeOut(animationSpec = tween(120)),
+                                                sizeTransform = null
                                             )
                                         },
                                         label = "quick_subtitle_text_change"
@@ -3881,7 +3894,8 @@ fun QuickSubtitleScreen(
                                                     initialOffsetY = { full -> full / 6 },
                                                     animationSpec = tween(200, easing = FastOutSlowInEasing)
                                                 ),
-                                            initialContentExit = fadeOut(animationSpec = tween(120))
+                                            initialContentExit = fadeOut(animationSpec = tween(120)),
+                                            sizeTransform = null
                                         )
                                     },
                                     label = "quick_subtitle_text_change"
@@ -4229,14 +4243,10 @@ fun QuickSubtitleScreen(
                     }
                 )
                 Md2IconButton(
-                    icon = if (isLandscape) {
-                        if (quickInputCollapsed) "chevron_left" else "chevron_right"
-                    } else {
-                        if (quickInputCollapsed) "unfold_more" else "unfold_less"
-                    },
+                    icon = if (quickInputCollapsed) "subtitles_off" else "subtitles",
                     contentDescription = if (quickInputCollapsed) "展开快捷输入区域" else "收起快捷输入区域",
                     onClick = {
-                        quickInputCollapsed = !quickInputCollapsed
+                        viewModel.updateQuickSubtitleInputCollapsed(!quickInputCollapsed)
                     }
                 )
                 Md2IconButton(
@@ -5290,7 +5300,7 @@ fun DrawingBoardScreen(
     val boardOutlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
     val boardFillColor = if (isDark) Color(0xFF2C3237) else Color(0xFFFCFDFE)
     val currentPoints = remember { mutableStateListOf<DrawPoint>() }
-    var toolbarCollapsed by rememberSaveable { mutableStateOf(false) }
+    val toolbarCollapsed = viewModel.drawingToolbarCollapsed
     val palette = if (isDark) {
         listOf(
             Color(0xFF7DE8EA),
@@ -5479,7 +5489,7 @@ fun DrawingBoardScreen(
             visible = !toolbarCollapsed,
             fullscreen = fullscreen,
             onToggleFullscreen = onToggleFullscreen,
-            onToggleCollapsed = { toolbarCollapsed = !toolbarCollapsed },
+            onToggleCollapsed = { viewModel.updateDrawingToolbarCollapsed(!toolbarCollapsed) },
             landscapeToolbarHeight = landscapeToolbarHeight,
             portraitToolbarWidth = portraitToolbarWidth,
             onPickColor = { viewModel.updateDrawColor(it) },
@@ -5493,7 +5503,7 @@ fun DrawingBoardScreen(
             visible = toolbarCollapsed,
             fullscreen = fullscreen,
             onToggleFullscreen = onToggleFullscreen,
-            onToggleCollapsed = { toolbarCollapsed = !toolbarCollapsed }
+            onToggleCollapsed = { viewModel.updateDrawingToolbarCollapsed(!toolbarCollapsed) }
         )
     }
 }
