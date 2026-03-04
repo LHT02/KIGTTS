@@ -49,6 +49,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -120,6 +121,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
@@ -158,7 +160,9 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.DefaultItemAnimator
 import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListUpdateCallback
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.SimpleItemAnimator
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -169,6 +173,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 private fun isXiaomiFamilyDevice(): Boolean {
@@ -2456,6 +2461,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         } else {
             ModalDrawer(
                 drawerState = drawerState,
+                gesturesEnabled = basePage != pageDrawing,
                 drawerShape = RectangleShape,
                 drawerBackgroundColor = Color.Transparent,
                 drawerElevation = 0.dp,
@@ -2789,31 +2795,26 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                 }
             }
         } else {
-            Md2StaggeredFloatIn(
-                index = 0,
+            VoicePackRecyclerList(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
-            ) {
-                VoicePackRecyclerList(
-                    modifier = Modifier.fillMaxSize(),
-                    packs = state.voicePacks,
-                    currentVoicePath = state.voiceDir?.absolutePath,
-                    topBlankHeight = UiTokens.PageTopBlank,
-                    bottomBlankHeight = UiTokens.PageBottomBlank,
-                    onSelect = { viewModel.selectVoice(it.dir) },
-                    onTogglePin = { viewModel.toggleVoicePin(it) },
-                    onDetail = { pack ->
-                        detailPackPath = pack.dir.absolutePath
-                        detailName = pack.meta.name
-                        detailRemark = pack.meta.remark
-                        detailEditing = false
-                    },
-                    onShare = { viewModel.shareVoice(it) },
-                    onDelete = { deletePack = it },
-                    onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
-                )
-            }
+                    .fillMaxWidth(),
+                packs = state.voicePacks,
+                currentVoicePath = state.voiceDir?.absolutePath,
+                topBlankHeight = UiTokens.PageTopBlank,
+                bottomBlankHeight = UiTokens.PageBottomBlank,
+                onSelect = { viewModel.selectVoice(it.dir) },
+                onTogglePin = { viewModel.toggleVoicePin(it) },
+                onDetail = { pack ->
+                    detailPackPath = pack.dir.absolutePath
+                    detailName = pack.meta.name
+                    detailRemark = pack.meta.remark
+                    detailEditing = false
+                },
+                onShare = { viewModel.shareVoice(it) },
+                onDelete = { deletePack = it },
+                onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
+            )
         }
     }
 
@@ -2980,10 +2981,17 @@ private fun VoicePackRecyclerList(
         modifier = modifier,
         factory = { ctx ->
             val recycler = RecyclerView(ctx).apply {
-                layoutManager = LinearLayoutManager(ctx)
+                layoutManager = object : LinearLayoutManager(ctx) {
+                    override fun supportsPredictiveItemAnimations(): Boolean = false
+                }
                 overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
                 clipToPadding = false
                 clipChildren = false
+                // RecyclerView animator with ComposeView rows in AndroidView interop can
+                // trigger attach/detach inconsistency after repeated drag sorts.
+                // Keep drag feedback from ItemTouchHelper + card elevation animation.
+                itemAnimator = null
+                setPadding(paddingLeft, topBlankPx, paddingRight, bottomBlankPx)
             }
 
             val adapter = VoicePackRecyclerAdapter(
@@ -2994,8 +3002,6 @@ private fun VoicePackRecyclerList(
                 onShare = { onShareState.value(it) },
                 onDelete = { onDeleteState.value(it) }
             )
-            adapter.topSpacerPx = topBlankPx
-            adapter.bottomSpacerPx = bottomBlankPx
             recycler.adapter = adapter
 
             val touchCallback = object : ItemTouchHelper.Callback() {
@@ -3056,11 +3062,13 @@ private fun VoicePackRecyclerList(
                     animateDragElevation(viewHolder.itemView, elevated = false)
                     (viewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
                     if (activeViewHolder === viewHolder) activeViewHolder = null
+                    adapter.isDragging = false
                     if (moved) {
-                        onReorderState.value(adapter.snapshot())
+                        val snapshot = adapter.snapshot()
+                        adapter.awaitExternalCommit(snapshot)
+                        recyclerView.post { onReorderState.value(snapshot) }
                         moved = false
                     }
-                    adapter.isDragging = false
                 }
             }
             val touchHelper = ItemTouchHelper(touchCallback)
@@ -3072,10 +3080,13 @@ private fun VoicePackRecyclerList(
         },
         update = { recycler ->
             val adapter = recycler.adapter as? VoicePackRecyclerAdapter ?: return@AndroidView
-            adapter.topSpacerPx = topBlankPx
-            adapter.bottomSpacerPx = bottomBlankPx
-            adapter.currentVoicePath = currentVoicePath
-            adapter.submitFromState(packs)
+            val applyState = {
+                recycler.setPadding(recycler.paddingLeft, topBlankPx, recycler.paddingRight, bottomBlankPx)
+                adapter.updateCurrentVoicePath(currentVoicePath)
+                adapter.submitFromState(packs)
+            }
+            // Always defer adapter updates to avoid dispatching notify* in an active layout pass.
+            recycler.post(applyState)
         }
     )
 }
@@ -3089,73 +3100,32 @@ private class VoicePackRecyclerAdapter(
     private val onDelete: (VoicePackInfo) -> Unit
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
-    companion object {
-        private const val VIEW_TYPE_TOP_SPACER = 0
-        private const val VIEW_TYPE_PACK = 1
-        private const val VIEW_TYPE_BOTTOM_SPACER = 2
-        private const val STABLE_ID_TOP_SPACER = Long.MIN_VALUE + 1
-        private const val STABLE_ID_BOTTOM_SPACER = Long.MIN_VALUE + 2
-    }
-
     private val items = mutableListOf<VoicePackInfo>()
     private val stagedAppearedIds = hashSetOf<Long>()
     private var runStaggerOnNextBind = true
     private var staggerReleaseScheduled = false
+    private var nextStableId = 1L
+    private val stableIdsByPath = hashMapOf<String, Long>()
+    private var awaitingCommitPaths: List<String>? = null
+    private var awaitingCommitDeadlineMs: Long = 0L
     var isDragging: Boolean = false
     var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
 
     var currentVoicePath: String? = null
-        set(value) {
-            if (field != value) {
-                field = value
-                notifyDataSetChanged()
-            }
-        }
-    var topSpacerPx: Int = 0
-        set(value) {
-            if (field != value) {
-                field = value.coerceAtLeast(0)
-                if (itemCount > 0) notifyItemChanged(0)
-            }
-        }
-    var bottomSpacerPx: Int = 0
-        set(value) {
-            if (field != value) {
-                field = value.coerceAtLeast(0)
-                if (itemCount > 0) notifyItemChanged(itemCount - 1)
-            }
-        }
+        private set
 
     init {
-        setHasStableIds(true)
+        setHasStableIds(false)
     }
 
-    override fun getItemId(position: Int): Long = when (getItemViewType(position)) {
-        VIEW_TYPE_TOP_SPACER -> STABLE_ID_TOP_SPACER
-        VIEW_TYPE_BOTTOM_SPACER -> STABLE_ID_BOTTOM_SPACER
-        else -> {
-            val dataIndex = position - 1
-            items[dataIndex].dir.absolutePath.hashCode().toLong()
-        }
+    override fun getItemId(position: Int): Long {
+        if (position !in items.indices) return RecyclerView.NO_ID
+        return stableIdForPath(items[position].dir.absolutePath)
     }
 
-    override fun getItemViewType(position: Int): Int {
-        if (position == 0) return VIEW_TYPE_TOP_SPACER
-        if (position == itemCount - 1) return VIEW_TYPE_BOTTOM_SPACER
-        return VIEW_TYPE_PACK
-    }
+    override fun getItemViewType(position: Int): Int = 1
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-        if (viewType == VIEW_TYPE_TOP_SPACER || viewType == VIEW_TYPE_BOTTOM_SPACER) {
-            val spacer = View(parent.context).apply {
-                layoutParams = RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    0
-                )
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-            }
-            return SpacerViewHolder(spacer)
-        }
         val composeView = ComposeView(parent.context).apply {
             layoutParams = RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -3168,14 +3138,6 @@ private class VoicePackRecyclerAdapter(
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
-        if (holder is SpacerViewHolder) {
-            val height = if (position == 0) topSpacerPx else bottomSpacerPx
-            holder.bind(height)
-            holder.itemView.translationZ = 0f
-            holder.itemView.alpha = 1f
-            holder.itemView.translationY = 0f
-            return
-        }
         holder as VoicePackViewHolder
         if (!isDragging) {
             holder.itemView.translationZ = 0f
@@ -3184,7 +3146,7 @@ private class VoicePackRecyclerAdapter(
         val shouldStagger = runStaggerOnNextBind && !stagedAppearedIds.contains(itemId)
         if (shouldStagger) {
             stagedAppearedIds.add(itemId)
-            val dataIndex = (position - 1).coerceAtLeast(0)
+            val dataIndex = position.coerceAtLeast(0)
             animateVoicePackStaggerEnter(holder.itemView, dataIndex)
             if (!staggerReleaseScheduled) {
                 staggerReleaseScheduled = true
@@ -3199,7 +3161,7 @@ private class VoicePackRecyclerAdapter(
             holder.itemView.translationY = 0f
         }
         holder.setDragged(false)
-        val dataIndex = position - 1
+        val dataIndex = position
         if (dataIndex !in items.indices) return
         val pack = items[dataIndex]
         holder.bind(
@@ -3218,7 +3180,7 @@ private class VoicePackRecyclerAdapter(
         )
     }
 
-    override fun getItemCount(): Int = if (items.isEmpty()) 0 else items.size + 2
+    override fun getItemCount(): Int = items.size
 
     override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
         if (holder is VoicePackViewHolder) {
@@ -3231,7 +3193,28 @@ private class VoicePackRecyclerAdapter(
     }
 
     fun submitFromState(newItems: List<VoicePackInfo>) {
-        if (isDragging) return
+        if (isDragging) {
+            // During drag, ignore external list pushes.
+            // Final order is committed by onReorder callback on clearView.
+            return
+        }
+        awaitingCommitPaths?.let { pending ->
+            val incoming = newItems.map { it.dir.absolutePath }
+            when {
+                incoming == pending -> {
+                    awaitingCommitPaths = null
+                    awaitingCommitDeadlineMs = 0L
+                }
+                SystemClock.uptimeMillis() < awaitingCommitDeadlineMs -> {
+                    // Drop stale state while waiting for committed order from ViewModel.
+                    return
+                }
+                else -> {
+                    awaitingCommitPaths = null
+                    awaitingCommitDeadlineMs = 0L
+                }
+            }
+        }
         if (items == newItems) return
         val shouldRunStagger = items.isEmpty() && newItems.isNotEmpty()
         if (shouldRunStagger) {
@@ -3239,24 +3222,81 @@ private class VoicePackRecyclerAdapter(
             staggerReleaseScheduled = false
             stagedAppearedIds.clear()
         }
+        val oldItems = items.toList()
+        val oldCount = oldItems.size
+        val newCount = newItems.size
+        val newPaths = newItems.asSequence().map { it.dir.absolutePath }.toHashSet()
+        stableIdsByPath.keys.retainAll(newPaths)
+
         items.clear()
         items.addAll(newItems)
-        notifyDataSetChanged()
+
+        if (oldCount == 0 || newCount == 0) {
+            notifyDataSetChanged()
+            return
+        }
+
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldItems.size
+            override fun getNewListSize(): Int = newItems.size
+
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldItems[oldItemPosition].dir.absolutePath == newItems[newItemPosition].dir.absolutePath
+            }
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldItems[oldItemPosition] == newItems[newItemPosition]
+            }
+        })
+
+        diff.dispatchUpdatesTo(object : ListUpdateCallback {
+            override fun onInserted(position: Int, count: Int) {
+                notifyItemRangeInserted(position, count)
+            }
+
+            override fun onRemoved(position: Int, count: Int) {
+                notifyItemRangeRemoved(position, count)
+            }
+
+            override fun onMoved(fromPosition: Int, toPosition: Int) {
+                notifyItemMoved(fromPosition, toPosition)
+            }
+
+            override fun onChanged(position: Int, count: Int, payload: Any?) {
+                notifyItemRangeChanged(position, count, payload)
+            }
+        })
+    }
+
+    fun updateCurrentVoicePath(path: String?) {
+        if (currentVoicePath == path) return
+        val oldPath = currentVoicePath
+        currentVoicePath = path
+        if (isDragging) return
+        val oldIdx = oldPath?.let { p -> items.indexOfFirst { it.dir.absolutePath == p } } ?: -1
+        val newIdx = path?.let { p -> items.indexOfFirst { it.dir.absolutePath == p } } ?: -1
+        if (oldIdx >= 0) notifyItemChanged(oldIdx)
+        if (newIdx >= 0 && newIdx != oldIdx) notifyItemChanged(newIdx)
     }
 
     fun snapshot(): List<VoicePackInfo> = items.toList()
 
+    fun awaitExternalCommit(snapshot: List<VoicePackInfo>) {
+        awaitingCommitPaths = snapshot.map { it.dir.absolutePath }
+        awaitingCommitDeadlineMs = SystemClock.uptimeMillis() + 1800L
+    }
+
     fun isDraggableAdapterPosition(position: Int): Boolean {
         if (position == RecyclerView.NO_POSITION) return false
-        return position in 1..items.size
+        return position in items.indices
     }
 
     fun moveWithinPinnedGroupAdapterPositions(fromAdapter: Int, toAdapter: Int): Boolean {
         if (!isDraggableAdapterPosition(fromAdapter) || !isDraggableAdapterPosition(toAdapter)) {
             return false
         }
-        val from = fromAdapter - 1
-        val to = toAdapter - 1
+        val from = fromAdapter
+        val to = toAdapter
         if (from == to || from !in items.indices || to !in items.indices) return false
         val fromPinned = items[from].meta.pinned
         val toPinned = items[to].meta.pinned
@@ -3266,20 +3306,8 @@ private class VoicePackRecyclerAdapter(
         return true
     }
 
-    class SpacerViewHolder(
-        itemView: View
-    ) : RecyclerView.ViewHolder(itemView) {
-        fun bind(heightPx: Int) {
-            val lp = (itemView.layoutParams as? RecyclerView.LayoutParams)
-                ?: RecyclerView.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    heightPx
-                )
-            if (lp.height != heightPx) {
-                lp.height = heightPx
-                itemView.layoutParams = lp
-            }
-        }
+    private fun stableIdForPath(path: String): Long {
+        return stableIdsByPath.getOrPut(path) { nextStableId++ }
     }
 
     class VoicePackViewHolder(
@@ -3453,6 +3481,16 @@ private fun MutableList<VoicePackInfo>.move(from: Int, to: Int) {
     add(to, item)
 }
 
+private fun stablePathId64(path: String): Long {
+    // 64-bit FNV-1a hash to reduce stable-id collisions on long paths.
+    var h = -3750763034362895579L
+    path.forEach { ch ->
+        h = h xor ch.code.toLong()
+        h *= 1099511628211L
+    }
+    return h
+}
+
 private fun animateDragElevation(view: View, elevated: Boolean) {
     val targetZ = if (elevated) 12f * view.resources.displayMetrics.density else 0f
     val duration = if (elevated) 120L else 160L
@@ -3497,7 +3535,11 @@ private fun QuickSubtitleNavHost(
             if (initialState.destination.route == QuickSubtitleRoutes.Main &&
                 targetState.destination.route == QuickSubtitleRoutes.Editor
             ) {
-                fadeIn(animationSpec = tween(180))
+                fadeIn(animationSpec = tween(180)) +
+                        androidx.compose.animation.slideInHorizontally(
+                            initialOffsetX = { full -> full / 10 },
+                            animationSpec = tween(180, easing = FastOutSlowInEasing)
+                        )
             } else {
                 fadeIn(animationSpec = tween(120))
             }
@@ -3506,7 +3548,11 @@ private fun QuickSubtitleNavHost(
             if (initialState.destination.route == QuickSubtitleRoutes.Main &&
                 targetState.destination.route == QuickSubtitleRoutes.Editor
             ) {
-                fadeOut(animationSpec = tween(130))
+                fadeOut(animationSpec = tween(130)) +
+                        androidx.compose.animation.slideOutHorizontally(
+                            targetOffsetX = { full -> -full / 14 },
+                            animationSpec = tween(130, easing = FastOutSlowInEasing)
+                        )
             } else {
                 fadeOut(animationSpec = tween(90))
             }
@@ -3515,7 +3561,11 @@ private fun QuickSubtitleNavHost(
             if (initialState.destination.route == QuickSubtitleRoutes.Editor &&
                 targetState.destination.route == QuickSubtitleRoutes.Main
             ) {
-                fadeIn(animationSpec = tween(170))
+                fadeIn(animationSpec = tween(170)) +
+                        androidx.compose.animation.slideInHorizontally(
+                            initialOffsetX = { full -> -full / 12 },
+                            animationSpec = tween(170, easing = FastOutSlowInEasing)
+                        )
             } else {
                 fadeIn(animationSpec = tween(120))
             }
@@ -3524,7 +3574,11 @@ private fun QuickSubtitleNavHost(
             if (initialState.destination.route == QuickSubtitleRoutes.Editor &&
                 targetState.destination.route == QuickSubtitleRoutes.Main
             ) {
-                fadeOut(animationSpec = tween(130))
+                fadeOut(animationSpec = tween(130)) +
+                        androidx.compose.animation.slideOutHorizontally(
+                            targetOffsetX = { full -> full / 16 },
+                            animationSpec = tween(130, easing = FastOutSlowInEasing)
+                        )
             } else {
                 fadeOut(animationSpec = tween(90))
             }
@@ -5284,6 +5338,7 @@ private fun RunningStripTopBarToggle(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun DrawingBoardScreen(
     viewModel: MainViewModel,
@@ -5300,10 +5355,32 @@ fun DrawingBoardScreen(
         Surface.ROTATION_270 -> 270f
         else -> 0f
     }
-    val boardOutlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
     val boardFillColor = if (isDark) Color(0xFF2C3237) else Color(0xFFFCFDFE)
     val currentPoints = remember { mutableStateListOf<DrawPoint>() }
+    var viewportScale by rememberSaveable { mutableFloatStateOf(1f) }
+    var viewportPanX by rememberSaveable { mutableFloatStateOf(0f) }
+    var viewportPanY by rememberSaveable { mutableFloatStateOf(0f) }
     val toolbarCollapsed = viewModel.drawingToolbarCollapsed
+    val boardReserveEndTarget = if (isLandscape) {
+        if (toolbarCollapsed) 76.dp else 128.dp
+    } else {
+        0.dp
+    }
+    val boardReserveBottomTarget = if (isLandscape) {
+        0.dp
+    } else {
+        if (toolbarCollapsed) 76.dp else 168.dp
+    }
+    val boardReserveEnd by animateDpAsState(
+        targetValue = boardReserveEndTarget,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "drawing_board_reserve_end"
+    )
+    val boardReserveBottom by animateDpAsState(
+        targetValue = boardReserveBottomTarget,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "drawing_board_reserve_bottom"
+    )
     val palette = if (isDark) {
         listOf(
             Color(0xFF7DE8EA),
@@ -5332,6 +5409,7 @@ fun DrawingBoardScreen(
     ) {
         val contentHorizontalPadding = if (fullscreen) 0.dp else 16.dp
         val contentVerticalPadding = if (fullscreen) 0.dp else 16.dp
+        val paperPadding = if (fullscreen) 8.dp else 16.dp
 
         val leftActionButtonSize = 36.dp
         val leftColorDotSize = 22.dp
@@ -5368,105 +5446,237 @@ fun DrawingBoardScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = contentHorizontalPadding, vertical = contentVerticalPadding)
+                .padding(end = boardReserveEnd, bottom = boardReserveBottom)
         ) {
-            val canvasW = constraints.maxWidth.toFloat()
-            val canvasH = constraints.maxHeight.toFloat()
+            val density = LocalDensity.current
             val boardAspect = 1080f / 1920f
             val quarterTurn = rotationDegrees == 90f || rotationDegrees == 270f
+            val displayAspect = if (quarterTurn) 1f / boardAspect else boardAspect
+            val availableWidth = (maxWidth - paperPadding * 2).coerceAtLeast(0.dp)
+            val availableHeight = (maxHeight - paperPadding * 2).coerceAtLeast(0.dp)
+            val candidateWidthByHeight = availableHeight * displayAspect
+            val useHeightAsBase = candidateWidthByHeight <= availableWidth
+            val cardWidthDp = if (useHeightAsBase) candidateWidthByHeight else availableWidth
+            val cardHeightDp = if (useHeightAsBase) availableHeight else (availableWidth / displayAspect)
+
+            var boardSize by remember { mutableStateOf(IntSize.Zero) }
+            val fallbackW = with(density) { cardWidthDp.toPx() }
+            val fallbackH = with(density) { cardHeightDp.toPx() }
+            val canvasW = if (boardSize.width > 0) boardSize.width.toFloat() else fallbackW
+            val canvasH = if (boardSize.height > 0) boardSize.height.toFloat() else fallbackH
             val fitW: Float
             val fitH: Float
             if (quarterTurn) {
-                fitH = minOf(canvasW, canvasH / boardAspect)
-                fitW = fitH * boardAspect
+                // Logical board stays portrait; display becomes landscape after rotation.
+                fitW = canvasH
+                fitH = canvasW
             } else {
-                fitW = minOf(canvasW, canvasH * boardAspect)
-                fitH = fitW / boardAspect
+                fitW = canvasW
+                fitH = canvasH
             }
             val left = (canvasW - fitW) / 2f
             val top = (canvasH - fitH) / 2f
-            val pxScale = fitW / 1080f
+            val pxScale = minOf(fitW / 1080f, fitH / 1920f)
             val center = Offset(canvasW / 2f, canvasH / 2f)
             val activeWidth = if (viewModel.drawEraser) viewModel.drawEraserSize * 5f else viewModel.drawBrushSize
+            val containerW = with(density) { maxWidth.toPx() }
+            val containerH = with(density) { maxHeight.toPx() }
+            val cardOrigin = Offset(
+                x = ((containerW - canvasW) * 0.5f).coerceAtLeast(0f),
+                y = ((containerH - canvasH) * 0.5f).coerceAtLeast(0f)
+            )
 
-            Canvas(
+            Card(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(
-                        rotationDegrees,
-                        fitW,
-                        fitH,
-                        left,
-                        top,
-                        viewModel.drawBrushSize,
-                        viewModel.drawEraserSize,
-                        viewModel.drawColor,
-                        viewModel.drawEraser
-                    ) {
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                val mapped = offset.rotateAround(center, rotationDegrees)
-                                if (!mapped.isInsideBoard(left, top, fitW, fitH)) return@detectDragGestures
-                                currentPoints.clear()
-                                currentPoints.add(mapped.toDrawPoint(left, top, fitW, fitH))
-                            },
-                            onDrag = { change, _ ->
-                                if (currentPoints.isNotEmpty()) {
-                                    val mapped = change.position.rotateAround(center, rotationDegrees)
-                                    currentPoints.add(mapped.toDrawPoint(left, top, fitW, fitH))
-                                    change.consume()
-                                }
-                            },
-                            onDragEnd = {
-                                if (currentPoints.size > 1) {
-                                    viewModel.appendDrawingStroke(currentPoints.toList())
-                                }
-                                currentPoints.clear()
-                            },
-                            onDragCancel = { currentPoints.clear() }
-                        )
-                    }
+                    .align(Alignment.Center)
+                    .size(cardWidthDp, cardHeightDp)
+                    .onSizeChanged { boardSize = it }
+                    .graphicsLayer {
+                        scaleX = viewportScale
+                        scaleY = viewportScale
+                        translationX = viewportPanX
+                        translationY = viewportPanY
+                    },
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.CardElevation
             ) {
-                withTransform({
-                    rotate(degrees = -rotationDegrees, pivot = center)
-                }) {
-                    drawRoundRect(
-                        color = boardFillColor,
-                        topLeft = Offset(left, top),
-                        size = Size(fitW, fitH),
-                        cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx())
-                    )
-                    drawRoundRect(
-                        color = boardOutlineColor,
-                        topLeft = Offset(left, top),
-                        size = Size(fitW, fitH),
-                        cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx()),
-                        style = Stroke(width = 1.dp.toPx())
-                    )
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                ) {
+                    withTransform({
+                        rotate(degrees = -rotationDegrees, pivot = center)
+                    }) {
+                        drawRoundRect(
+                            color = boardFillColor,
+                            topLeft = Offset(left, top),
+                            size = Size(fitW, fitH),
+                            cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx())
+                        )
 
-                    viewModel.drawStrokes.forEach { stroke ->
-                        drawStrokeOnBoard(
-                            points = stroke.points,
-                            color = if (stroke.eraser) boardFillColor else stroke.color,
-                            width = stroke.width * pxScale,
-                            left = left,
-                            top = top,
-                            widthPx = fitW,
-                            heightPx = fitH
-                        )
-                    }
-                    if (currentPoints.size > 1) {
-                        drawStrokeOnBoard(
-                            points = currentPoints,
-                            color = if (viewModel.drawEraser) boardFillColor else viewModel.drawColor,
-                            width = activeWidth * pxScale,
-                            left = left,
-                            top = top,
-                            widthPx = fitW,
-                            heightPx = fitH
-                        )
+                        viewModel.drawStrokes.forEach { stroke ->
+                            drawStrokeOnBoard(
+                                points = stroke.points,
+                                color = if (stroke.eraser) boardFillColor else stroke.color,
+                                width = stroke.width * pxScale,
+                                left = left,
+                                top = top,
+                                widthPx = fitW,
+                                heightPx = fitH
+                            )
+                        }
+                        if (currentPoints.size > 1) {
+                            drawStrokeOnBoard(
+                                points = currentPoints,
+                                color = if (viewModel.drawEraser) boardFillColor else viewModel.drawColor,
+                                width = activeWidth * pxScale,
+                                left = left,
+                                top = top,
+                                widthPx = fitW,
+                                heightPx = fitH
+                            )
+                        }
                     }
                 }
             }
+
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .pointerInput(rotationDegrees, fitW, fitH, left, top, canvasW, canvasH, cardOrigin) {
+                        fun clampPan(raw: Offset, scale: Float): Offset {
+                            val sx = (((canvasW * scale) - canvasW) * 0.5f).coerceAtLeast(0f)
+                            val sy = (((canvasH * scale) - canvasH) * 0.5f).coerceAtLeast(0f)
+                            return Offset(
+                                x = raw.x.coerceIn(-sx, sx),
+                                y = raw.y.coerceIn(-sy, sy)
+                            )
+                        }
+                        fun containerToCardLocal(pos: Offset, pan: Offset, scale: Float): Offset {
+                            val safeScale = scale.coerceAtLeast(0.0001f)
+                            val unpanned = pos - cardOrigin - pan
+                            return center + (unpanned - center) / safeScale
+                        }
+                        fun mapPoint(pos: Offset): Offset {
+                            val local = containerToCardLocal(
+                                pos = pos,
+                                pan = Offset(viewportPanX, viewportPanY),
+                                scale = viewportScale
+                            )
+                            return local.rotateAround(center, rotationDegrees)
+                        }
+
+                        awaitPointerEventScope {
+                            while (true) {
+                                var drawingActive = false
+                                var transformActive = false
+                                var drawPointerId: androidx.compose.ui.input.pointer.PointerId? = null
+                                var trackedA: androidx.compose.ui.input.pointer.PointerId? = null
+                                var trackedB: androidx.compose.ui.input.pointer.PointerId? = null
+                                var lastFocus = Offset.Zero
+                                var lastSpan = 0f
+
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                drawPointerId = down.id
+                                val downMapped = mapPoint(down.position)
+                                currentPoints.clear()
+                                if (downMapped.isInsideBoard(left, top, fitW, fitH)) {
+                                    currentPoints.add(downMapped.toDrawPoint(left, top, fitW, fitH))
+                                    drawingActive = true
+                                }
+                                down.consume()
+
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressed = event.changes.filter { it.pressed }
+
+                                    if (pressed.isEmpty()) {
+                                        if (!transformActive && drawingActive && currentPoints.size > 1) {
+                                            viewModel.appendDrawingStroke(currentPoints.toList())
+                                        }
+                                        currentPoints.clear()
+                                        break
+                                    }
+
+                                    if (pressed.size >= 2) {
+                                        val a = trackedA?.let { id -> pressed.firstOrNull { it.id == id } } ?: pressed[0]
+                                        val b = trackedB?.let { id -> pressed.firstOrNull { it.id == id } }
+                                            ?: pressed.firstOrNull { it.id != a.id }
+                                            ?: pressed[1]
+                                        trackedA = a.id
+                                        trackedB = b.id
+                                        drawPointerId = null
+
+                                        val focus = Offset(
+                                            x = (a.position.x + b.position.x) * 0.5f,
+                                            y = (a.position.y + b.position.y) * 0.5f
+                                        )
+                                        val span = (a.position - b.position).getDistance().coerceAtLeast(1f)
+
+                                        if (!transformActive) {
+                                            transformActive = true
+                                            drawingActive = false
+                                            currentPoints.clear()
+                                            lastFocus = focus
+                                            lastSpan = span
+                                        } else {
+                                            val oldScale = viewportScale.coerceAtLeast(1f)
+                                            val oldPan = Offset(viewportPanX, viewportPanY)
+                                            val scaleBy = (span / lastSpan.coerceAtLeast(1f)).coerceIn(0.9f, 1.1f)
+                                            val focusDelta = (focus - lastFocus).getDistance()
+                                            val scaleDelta = kotlin.math.abs(scaleBy - 1f)
+                                            if (focusDelta >= 0.18f || scaleDelta >= 0.0012f) {
+                                                val targetScale = (oldScale * scaleBy).coerceIn(1f, 3.5f)
+                                                val newScale = if (targetScale < 1.002f) 1f else targetScale
+                                                val contentFocus = containerToCardLocal(
+                                                    pos = lastFocus,
+                                                    pan = oldPan,
+                                                    scale = oldScale
+                                                )
+                                                val rawPan = focus - cardOrigin - center - (contentFocus - center) * newScale
+                                                val clamped = if (newScale <= 1f) Offset.Zero else clampPan(rawPan, newScale)
+                                                viewportScale = newScale
+                                                viewportPanX = clamped.x
+                                                viewportPanY = clamped.y
+                                            }
+                                            lastFocus = focus
+                                            lastSpan = span
+                                        }
+                                        event.changes.forEach { if (it.pressed) it.consume() }
+                                        continue
+                                    }
+
+                                    val one = drawPointerId?.let { id -> pressed.firstOrNull { it.id == id } } ?: pressed.first()
+                                    if (transformActive) {
+                                        transformActive = false
+                                        drawPointerId = one.id
+                                        trackedA = null
+                                        trackedB = null
+                                        lastSpan = 0f
+                                        drawingActive = false
+                                        currentPoints.clear()
+                                    }
+
+                                    if (!drawingActive) {
+                                        val mapped = mapPoint(one.position)
+                                        if (mapped.isInsideBoard(left, top, fitW, fitH)) {
+                                            currentPoints.clear()
+                                            currentPoints.add(mapped.toDrawPoint(left, top, fitW, fitH))
+                                            drawingActive = true
+                                        }
+                                    } else {
+                                        val mapped = mapPoint(one.position)
+                                        if (mapped.isInsideBoard(left, top, fitW, fitH)) {
+                                            currentPoints.add(mapped.toDrawPoint(left, top, fitW, fitH))
+                                        }
+                                    }
+                                    one.consume()
+                                }
+                            }
+                        }
+                    }
+            )
         }
 
         val toolbarAnchorModifier = if (isLandscape) {
