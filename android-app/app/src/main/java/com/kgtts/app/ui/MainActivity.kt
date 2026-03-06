@@ -1753,6 +1753,11 @@ private object QuickSubtitleRoutes {
     const val Editor = "quick_subtitle/editor"
 }
 
+private object SettingsRoutes {
+    const val Main = "settings/main"
+    const val Log = "settings/log"
+}
+
 class MainActivity : ComponentActivity() {
     private var lastDecorFitsSystemWindows: Boolean = false
     private var pendingBackgroundReturnFix: Boolean = false
@@ -2019,7 +2024,6 @@ fun AppScaffold(viewModel: MainViewModel) {
     val pageVoicePack = 2
     val pageDrawing = 3
     val pageSettings = 4
-    val pageLog = 5
 
     var page by rememberSaveable { mutableStateOf(0) }
     var drawingFullscreen by rememberSaveable { mutableStateOf(false) }
@@ -2027,8 +2031,11 @@ fun AppScaffold(viewModel: MainViewModel) {
     var runningStripCollapsed by rememberSaveable { mutableStateOf(false) }
     var logTopBarActions by remember { mutableStateOf<LogTopBarActions?>(null) }
     val quickSubtitleNavController = rememberNavController()
+    val settingsNavController = rememberNavController()
     val quickSubtitleBackStackEntry by quickSubtitleNavController.currentBackStackEntryAsState()
     val quickSubtitleRoute = quickSubtitleBackStackEntry?.destination?.route ?: QuickSubtitleRoutes.Main
+    val settingsBackStackEntry by settingsNavController.currentBackStackEntryAsState()
+    val settingsRoute = settingsBackStackEntry?.destination?.route ?: SettingsRoutes.Main
     val state = viewModel.uiState
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -2091,6 +2098,8 @@ fun AppScaffold(viewModel: MainViewModel) {
     val basePage = page
     val quickSubtitleEditorOpen =
         basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Editor
+    val settingsLogOpen =
+        basePage == pageSettings && settingsRoute == SettingsRoutes.Log
     var drawerExpanded by rememberSaveable { mutableStateOf(false) }
     val showRunningStrip = state.running && !(drawingFullscreen && basePage == pageDrawing)
     val topMicLevel = viewModel.realtimeInputLevel
@@ -2100,19 +2109,23 @@ fun AppScaffold(viewModel: MainViewModel) {
         DrawerItem("便捷字幕", "subtitles"),
         DrawerItem("语音包", "record_voice_over"),
         DrawerItem("画板", "draw"),
-        DrawerItem("设置", "tune"),
-        DrawerItem("日志", "article")
+        DrawerItem("设置", "tune")
     )
     val titles = drawerItems.map { it.title }
     val drawerSelectedPage = basePage
     LaunchedEffect(drawerItems.size) {
-        if (page !in 0..pageLog) {
+        if (page !in 0..pageSettings) {
             page = pageRealtime
         }
     }
     LaunchedEffect(basePage, quickSubtitleRoute) {
         if (basePage != pageQuickSubtitle && quickSubtitleRoute != QuickSubtitleRoutes.Main) {
             quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+        }
+    }
+    LaunchedEffect(basePage, settingsRoute) {
+        if (basePage != pageSettings && settingsRoute != SettingsRoutes.Main) {
+            settingsNavController.popBackStack(SettingsRoutes.Main, inclusive = false)
         }
     }
     LaunchedEffect(page) {
@@ -2132,8 +2145,8 @@ fun AppScaffold(viewModel: MainViewModel) {
     LaunchedEffect(state.running) {
         if (!state.running) runningStripCollapsed = false
     }
-    LaunchedEffect(basePage) {
-        if (basePage != pageLog) {
+    LaunchedEffect(basePage, settingsLogOpen) {
+        if (!settingsLogOpen) {
             logTopBarActions = null
         }
     }
@@ -2215,6 +2228,8 @@ fun AppScaffold(viewModel: MainViewModel) {
     val topBar: @Composable ((() -> Unit)) -> Unit = { onNavClick ->
         val currentTitle = if (quickSubtitleEditorOpen) {
             "编辑便捷字幕"
+        } else if (settingsLogOpen) {
+            "日志"
         } else {
             titles.getOrElse(basePage) { "KIGTTS" }
         }
@@ -2273,7 +2288,11 @@ fun AppScaffold(viewModel: MainViewModel) {
                 },
                 navigationIcon = {
                     AnimatedContent(
-                        targetState = quickSubtitleEditorOpen,
+                        targetState = when {
+                            quickSubtitleEditorOpen -> 1
+                            settingsLogOpen -> 2
+                            else -> 0
+                        },
                         transitionSpec = {
                             ContentTransform(
                                 targetContentEnter = fadeIn(animationSpec = tween(120)),
@@ -2281,9 +2300,15 @@ fun AppScaffold(viewModel: MainViewModel) {
                             )
                         },
                         label = "topbar_nav_switch"
-                    ) { editorOpen ->
-                        if (editorOpen) {
-                            IconButton(onClick = { quickSubtitleNavController.popBackStack() }) {
+                    ) { navMode ->
+                        if (navMode == 1 || navMode == 2) {
+                            IconButton(onClick = {
+                                if (navMode == 1) {
+                                    quickSubtitleNavController.popBackStack()
+                                } else if (navMode == 2) {
+                                    settingsNavController.popBackStack()
+                                }
+                            }) {
                                 MsIcon("arrow_back", contentDescription = "返回")
                             }
                         } else {
@@ -2331,23 +2356,69 @@ fun AppScaffold(viewModel: MainViewModel) {
                                         MsIcon("folder_open", contentDescription = "导入语音包")
                                     }
                                 }
-                                pageLog -> {
+                                pageSettings -> {
+                                    val entryAlpha by animateFloatAsState(
+                                        targetValue = if (settingsLogOpen) 0f else 1f,
+                                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                                        label = "settings_log_entry_alpha"
+                                    )
+                                    val actionsAlpha by animateFloatAsState(
+                                        targetValue = if (settingsLogOpen) 1f else 0f,
+                                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                                        label = "settings_log_actions_alpha"
+                                    )
                                     val actions = logTopBarActions
-                                    if (actions != null) {
-                                        IconButton(onClick = actions.onRefresh) {
-                                            MsIcon("refresh", contentDescription = "刷新日志")
+
+                                    Box(
+                                        modifier = Modifier.width(144.dp),
+                                        contentAlignment = Alignment.CenterEnd
+                                    ) {
+                                        key("settings_log_entry_layer") {
+                                            Row(
+                                                modifier = Modifier
+                                                    .align(Alignment.CenterEnd)
+                                                    .graphicsLayer { alpha = entryAlpha }
+                                                    .zIndex(if (!settingsLogOpen) 2f else 0f),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.End
+                                            ) {
+                                                IconButton(
+                                                    onClick = { settingsNavController.navigate(SettingsRoutes.Log) },
+                                                    enabled = !settingsLogOpen
+                                                ) {
+                                                    MsIcon("article", contentDescription = "打开日志")
+                                                }
+                                            }
                                         }
-                                        IconButton(
-                                            onClick = actions.onCopy,
-                                            enabled = actions.canCopy
-                                        ) {
-                                            MsIcon("content_copy", contentDescription = "复制日志")
-                                        }
-                                        IconButton(
-                                            onClick = actions.onShare,
-                                            enabled = actions.canShare
-                                        ) {
-                                            MsIcon("share", contentDescription = "分享日志")
+
+                                        key("settings_log_actions_layer") {
+                                            Row(
+                                                modifier = Modifier
+                                                    .align(Alignment.CenterEnd)
+                                                    .graphicsLayer { alpha = actionsAlpha }
+                                                    .zIndex(if (settingsLogOpen) 2f else 0f),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.End
+                                            ) {
+                                                IconButton(
+                                                    onClick = { actions?.onRefresh?.invoke() },
+                                                    enabled = settingsLogOpen && actions != null
+                                                ) {
+                                                    MsIcon("refresh", contentDescription = "刷新日志")
+                                                }
+                                                IconButton(
+                                                    onClick = { actions?.onCopy?.invoke() },
+                                                    enabled = settingsLogOpen && actions?.canCopy == true
+                                                ) {
+                                                    MsIcon("content_copy", contentDescription = "复制日志")
+                                                }
+                                                IconButton(
+                                                    onClick = { actions?.onShare?.invoke() },
+                                                    enabled = settingsLogOpen && actions?.canShare == true
+                                                ) {
+                                                    MsIcon("share", contentDescription = "分享日志")
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2419,8 +2490,10 @@ fun AppScaffold(viewModel: MainViewModel) {
                         fullscreen = drawingFullscreen,
                         onToggleFullscreen = { drawingFullscreen = !drawingFullscreen }
                     )
-                    pageSettings -> SettingsScreen(viewModel, state)
-                    pageLog -> LogScreen(
+                    pageSettings -> SettingsNavHost(
+                        navController = settingsNavController,
+                        viewModel = viewModel,
+                        state = state,
                         onTopBarActionsChange = { logTopBarActions = it }
                     )
                 }
@@ -3761,6 +3834,79 @@ private fun QuickSubtitleNavHost(
                 viewModel = viewModel,
                 modifier = Modifier.fillMaxSize()
             )
+        }
+    }
+}
+
+@Composable
+private fun SettingsNavHost(
+    navController: NavHostController,
+    viewModel: MainViewModel,
+    state: UiState,
+    onTopBarActionsChange: (LogTopBarActions?) -> Unit
+) {
+    NavHost(
+        navController = navController,
+        startDestination = SettingsRoutes.Main,
+        modifier = Modifier.fillMaxSize(),
+        enterTransition = {
+            if (initialState.destination.route == SettingsRoutes.Main &&
+                targetState.destination.route == SettingsRoutes.Log
+            ) {
+                fadeIn(animationSpec = tween(170)) +
+                        androidx.compose.animation.slideInHorizontally(
+                            initialOffsetX = { full -> full / 12 },
+                            animationSpec = tween(170, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        exitTransition = {
+            if (initialState.destination.route == SettingsRoutes.Main &&
+                targetState.destination.route == SettingsRoutes.Log
+            ) {
+                fadeOut(animationSpec = tween(120)) +
+                        androidx.compose.animation.slideOutHorizontally(
+                            targetOffsetX = { full -> -full / 14 },
+                            animationSpec = tween(120, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        },
+        popEnterTransition = {
+            if (initialState.destination.route == SettingsRoutes.Log &&
+                targetState.destination.route == SettingsRoutes.Main
+            ) {
+                fadeIn(animationSpec = tween(150)) +
+                        androidx.compose.animation.slideInHorizontally(
+                            initialOffsetX = { full -> -full / 12 },
+                            animationSpec = tween(150, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        popExitTransition = {
+            if (initialState.destination.route == SettingsRoutes.Log &&
+                targetState.destination.route == SettingsRoutes.Main
+            ) {
+                fadeOut(animationSpec = tween(120)) +
+                        androidx.compose.animation.slideOutHorizontally(
+                            targetOffsetX = { full -> full / 16 },
+                            animationSpec = tween(120, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        }
+    ) {
+        composable(SettingsRoutes.Main) {
+            SettingsScreen(viewModel, state)
+        }
+        composable(SettingsRoutes.Log) {
+            LogScreen(onTopBarActionsChange = onTopBarActionsChange)
         }
     }
 }
