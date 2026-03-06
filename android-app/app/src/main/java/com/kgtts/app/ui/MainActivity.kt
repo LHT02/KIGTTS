@@ -3829,6 +3829,11 @@ fun QuickSubtitleScreen(
         animationSpec = tween(220, easing = FastOutSlowInEasing),
         label = "quick_subtitle_right_panel_width"
     )
+    val quickPanelAnimatedGap by animateDpAsState(
+        targetValue = if (isLandscape && quickPanelExpanded) landscapeQuickPanelGap else 0.dp,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "quick_subtitle_right_panel_gap"
+    )
     val quickPanelAnimatedAlpha by animateFloatAsState(
         targetValue = if (isLandscape && quickPanelExpanded) 1f else 0f,
         animationSpec = tween(160, easing = FastOutSlowInEasing),
@@ -3860,7 +3865,7 @@ fun QuickSubtitleScreen(
                         .fillMaxWidth()
                         .weight(1f)
                         .heightIn(min = 260.dp),
-                    horizontalArrangement = Arrangement.spacedBy(landscapeQuickPanelGap)
+                    horizontalArrangement = Arrangement.spacedBy(quickPanelAnimatedGap)
                 ) {
                     Md2StaggeredFloatIn(
                         index = 0,
@@ -3973,15 +3978,21 @@ fun QuickSubtitleScreen(
                                             transitionSpec = {
                                                 val forward = targetState >= initialState
                                                 ContentTransform(
-                                                    targetContentEnter = fadeIn(animationSpec = tween(150)) +
+                                                    targetContentEnter = fadeIn(animationSpec = tween(200)) +
                                                         slideInVertically(
-                                                            initialOffsetY = { if (forward) 10 else -10 },
-                                                            animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                                            initialOffsetY = { full ->
+                                                                val d = kotlin.math.min(full / 3, 28)
+                                                                if (forward) d else -d
+                                                            },
+                                                            animationSpec = tween(180, easing = FastOutSlowInEasing)
                                                         ),
-                                                    initialContentExit = fadeOut(animationSpec = tween(110)) +
+                                                    initialContentExit = fadeOut(animationSpec = tween(170)) +
                                                         slideOutVertically(
-                                                            targetOffsetY = { if (forward) -8 else 8 },
-                                                            animationSpec = tween(170, easing = FastOutSlowInEasing)
+                                                            targetOffsetY = { full ->
+                                                                val d = kotlin.math.min(full / 4, 22)
+                                                                if (forward) -d else d
+                                                            },
+                                                            animationSpec = tween(160, easing = FastOutSlowInEasing)
                                                         ),
                                                     sizeTransform = androidx.compose.animation.SizeTransform(clip = false)
                                                 )
@@ -4261,15 +4272,15 @@ fun QuickSubtitleScreen(
                                 transitionSpec = {
                                     val forward = targetState >= initialState
                                     ContentTransform(
-                                        targetContentEnter = fadeIn(animationSpec = tween(150)) +
+                                        targetContentEnter = fadeIn(animationSpec = tween(200)) +
                                             slideInHorizontally(
-                                                initialOffsetX = { full -> if (forward) full / 4 else -full / 4 },
-                                                animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                                initialOffsetX = { full -> if (forward) full / 3 else -full / 3 },
+                                                animationSpec = tween(250, easing = FastOutSlowInEasing)
                                             ),
-                                        initialContentExit = fadeOut(animationSpec = tween(110)) +
+                                        initialContentExit = fadeOut(animationSpec = tween(170)) +
                                             slideOutHorizontally(
-                                                targetOffsetX = { full -> if (forward) -full / 5 else full / 5 },
-                                                animationSpec = tween(170, easing = FastOutSlowInEasing)
+                                                targetOffsetX = { full -> if (forward) -full / 4 else full / 4 },
+                                                animationSpec = tween(210, easing = FastOutSlowInEasing)
                                             ),
                                         sizeTransform = null
                                     )
