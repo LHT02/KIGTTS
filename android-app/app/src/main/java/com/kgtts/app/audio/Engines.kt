@@ -883,7 +883,7 @@ class RealtimeController(
     initialAllowSystemAecWithAec3: Boolean,
     initialSpeakerVerifyEnabled: Boolean,
     initialSpeakerVerifyThreshold: Float,
-    initialSpeakerProfile: FloatArray?,
+    initialSpeakerProfiles: List<FloatArray>,
     private val moduleFactory: SpeechModuleFactory = DefaultSpeechModuleFactory
 ) {
     private var recorder: AudioRecord? = null
@@ -909,7 +909,8 @@ class RealtimeController(
     @Volatile private var allowSystemAecWithAec3 = initialAllowSystemAecWithAec3
     @Volatile private var speakerVerifyEnabled = initialSpeakerVerifyEnabled
     @Volatile private var speakerVerifyThreshold = initialSpeakerVerifyThreshold.coerceIn(0.4f, 0.95f)
-    @Volatile private var speakerProfile: FloatArray? = initialSpeakerProfile?.copyOf()
+    @Volatile private var speakerProfiles: List<FloatArray> =
+        initialSpeakerProfiles.mapNotNull { p -> if (p.isEmpty()) null else p.copyOf() }
     @Volatile private var speakerLastSimilarity: Float = -1f
     private val lastRenderMs = AtomicLong(0L)
     private val lastCaptureMs = AtomicLong(0L)
@@ -1080,20 +1081,32 @@ class RealtimeController(
         speakerVerifyThreshold = threshold.coerceIn(0.4f, 0.95f)
     }
 
-    fun setSpeakerProfile(profile: FloatArray?) {
-        speakerProfile = profile?.copyOf()
-        if (profile == null || profile.isEmpty()) {
+    fun setSpeakerProfiles(profiles: List<FloatArray>) {
+        speakerProfiles = profiles.mapNotNull { p -> if (p.isEmpty()) null else p.copyOf() }
+        if (speakerProfiles.isEmpty()) {
             speakerLastSimilarity = -1f
         }
     }
 
-    fun clearSpeakerProfile() {
-        speakerProfile = null
+    fun clearSpeakerProfiles() {
+        speakerProfiles = emptyList()
         speakerLastSimilarity = -1f
     }
 
+    fun hasSpeakerProfiles(): Boolean {
+        return speakerProfiles.isNotEmpty()
+    }
+
+    fun setSpeakerProfile(profile: FloatArray?) {
+        setSpeakerProfiles(if (profile == null || profile.isEmpty()) emptyList() else listOf(profile))
+    }
+
+    fun clearSpeakerProfile() {
+        clearSpeakerProfiles()
+    }
+
     fun hasSpeakerProfile(): Boolean {
-        return (speakerProfile?.isNotEmpty() == true)
+        return hasSpeakerProfiles()
     }
 
     fun latestSpeakerSimilarity(): Float {
@@ -1299,9 +1312,6 @@ class RealtimeController(
                     success = false,
                     message = "说话人注册失败：有效语音不足"
                 )
-            speakerProfile = embedding.copyOf()
-            speakerLastSimilarity = 1f
-            notifySpeakerVerify(1f, true)
             SpeakerEnrollResult(
                 success = true,
                 message = "说话人注册成功",
@@ -1622,14 +1632,20 @@ class RealtimeController(
                         val minSegmentEnergy = minSegmentRms
                         if (rms >= minSegmentEnergy) {
                             scope.launch(Dispatchers.IO) asrTask@{
-                                val profileSnapshot = speakerProfile
-                                if (speakerVerifyEnabled && profileSnapshot != null && profileSnapshot.isNotEmpty()) {
+                                val profileSnapshot = speakerProfiles
+                                if (speakerVerifyEnabled && profileSnapshot.isNotEmpty()) {
                                     val segEmbedding = SpeakerVerifier.computeEmbedding(audio, sampleRate)
                                         ?: return@asrTask
-                                    val similarity = SpeakerVerifier.cosineSimilarity(profileSnapshot, segEmbedding)
-                                    speakerLastSimilarity = similarity
-                                    val passed = similarity >= speakerVerifyThreshold
-                                    notifySpeakerVerify(similarity, passed)
+                                    var bestSimilarity = -1f
+                                    for (profile in profileSnapshot) {
+                                        val similarity = SpeakerVerifier.cosineSimilarity(profile, segEmbedding)
+                                        if (similarity > bestSimilarity) {
+                                            bestSimilarity = similarity
+                                        }
+                                    }
+                                    speakerLastSimilarity = bestSimilarity
+                                    val passed = bestSimilarity >= speakerVerifyThreshold
+                                    notifySpeakerVerify(bestSimilarity, passed)
                                     if (!passed) {
                                         return@asrTask
                                     }

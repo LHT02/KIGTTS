@@ -9,6 +9,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.kgtts.app.audio.AudioRoutePreference
 import kotlinx.coroutines.flow.first
+import org.json.JSONArray
+import org.json.JSONObject
 
 private val Context.dataStore by preferencesDataStore(name = "user_prefs")
 
@@ -39,6 +41,12 @@ object UserPrefs {
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
+
+    data class SpeakerVerifyProfile(
+        val id: String,
+        val name: String,
+        val vector: FloatArray
+    )
 
     data class AppSettings(
         val muteWhilePlaying: Boolean = false,
@@ -215,6 +223,118 @@ object UserPrefs {
     }
 
     suspend fun setSpeakerVerifyProfile(context: Context, vector: FloatArray?) {
+        setSpeakerVerifyProfiles(
+            context,
+            if (vector == null || vector.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(
+                    SpeakerVerifyProfile(
+                        id = "legacy-1",
+                        name = "说话人 1",
+                        vector = vector
+                    )
+                )
+            }
+        )
+    }
+
+    suspend fun setSpeakerVerifyProfiles(context: Context, profiles: List<SpeakerVerifyProfile>) {
+        context.dataStore.edit { prefs ->
+            val payload = serializeSpeakerVerifyProfiles(profiles)
+            prefs[KEY_SPEAKER_VERIFY_PROFILE] = payload
+        }
+    }
+
+    fun serializeSpeakerVerifyProfiles(profiles: List<SpeakerVerifyProfile>): String {
+        if (profiles.isEmpty()) return ""
+        val arr = JSONArray()
+        profiles.forEach { profile ->
+            if (profile.vector.isEmpty()) return@forEach
+            val vectorArr = JSONArray()
+            profile.vector.forEach { v -> vectorArr.put(v.toDouble()) }
+            arr.put(
+                JSONObject().apply {
+                    put("id", profile.id)
+                    put("name", profile.name)
+                    put("vector", vectorArr)
+                }
+            )
+        }
+        return if (arr.length() <= 0) "" else arr.toString()
+    }
+
+    fun parseSpeakerVerifyProfiles(rawPayload: String?): List<SpeakerVerifyProfile> {
+        val raw = rawPayload?.trim().orEmpty()
+        if (raw.isEmpty()) return emptyList()
+
+        // New format: JSON array of profiles.
+        if (raw.startsWith("[")) {
+            return runCatching {
+                val arr = JSONArray(raw)
+                val out = mutableListOf<SpeakerVerifyProfile>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val vecArr = obj.optJSONArray("vector") ?: continue
+                    val vec = FloatArray(vecArr.length())
+                    var ok = true
+                    for (j in 0 until vecArr.length()) {
+                        val d = vecArr.optDouble(j, Double.NaN)
+                        if (d.isNaN()) {
+                            ok = false
+                            break
+                        }
+                        vec[j] = d.toFloat()
+                    }
+                    if (!ok || vec.isEmpty()) continue
+                    val id = obj.optString("id").ifBlank { "profile-${i + 1}" }
+                    val name = obj.optString("name").ifBlank { "说话人 ${i + 1}" }
+                    out.add(SpeakerVerifyProfile(id = id, name = name, vector = vec))
+                }
+                out
+            }.getOrElse { emptyList() }
+        }
+
+        // Legacy format: single CSV vector.
+        val legacy = parseSpeakerVerifyProfile(raw)
+        return if (legacy == null || legacy.isEmpty()) {
+            emptyList()
+        } else {
+            listOf(
+                SpeakerVerifyProfile(
+                    id = "legacy-1",
+                    name = "说话人 1",
+                    vector = legacy
+                )
+            )
+        }
+    }
+
+    fun parseSpeakerVerifyProfile(csv: String?): FloatArray? {
+        val raw = csv?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        if (raw.startsWith("[")) {
+            val parsed = parseSpeakerVerifyProfiles(raw)
+            return parsed.firstOrNull()?.vector
+        }
+        val values = raw.split(",")
+            .mapNotNull { token -> token.trim().toFloatOrNull() }
+            .toFloatArray()
+        return if (values.isEmpty()) null else values
+    }
+
+    @Deprecated("Use parseSpeakerVerifyProfiles instead")
+    fun parseSpeakerVerifyProfileLegacy(csv: String?): FloatArray? {
+        val raw = csv?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val values = raw.split(",")
+            .mapNotNull { token -> token.trim().toFloatOrNull() }
+            .toFloatArray()
+        return if (values.isEmpty()) null else values
+    }
+
+    @Deprecated("Use setSpeakerVerifyProfiles instead")
+    suspend fun setSpeakerVerifyProfileLegacy(context: Context, vector: FloatArray?) {
         context.dataStore.edit { prefs ->
             val csv = if (vector == null || vector.isEmpty()) {
                 ""
@@ -223,15 +343,6 @@ object UserPrefs {
             }
             prefs[KEY_SPEAKER_VERIFY_PROFILE] = csv
         }
-    }
-
-    fun parseSpeakerVerifyProfile(csv: String?): FloatArray? {
-        val raw = csv?.trim().orEmpty()
-        if (raw.isEmpty()) return null
-        val values = raw.split(",")
-            .mapNotNull { token -> token.trim().toFloatOrNull() }
-            .toFloatArray()
-        return if (values.isEmpty()) null else values
     }
 
     suspend fun getQuickSubtitleConfig(context: Context): String? {

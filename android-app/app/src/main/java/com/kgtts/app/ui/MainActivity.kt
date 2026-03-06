@@ -267,10 +267,16 @@ data class UiState(
     val speakerVerifyEnabled: Boolean = false,
     val speakerVerifyThreshold: Float = 0.72f,
     val speakerProfileReady: Boolean = false,
+    val speakerProfiles: List<SpeakerProfileUiItem> = emptyList(),
     val speakerLastSimilarity: Float = -1f,
     val inputLevel: Float = 0f,
     val inputDeviceLabel: String = "未知",
     val outputDeviceLabel: String = "未知"
+)
+
+data class SpeakerProfileUiItem(
+    val id: String,
+    val name: String
 )
 
 data class RecognizedItem(
@@ -355,7 +361,7 @@ class MainViewModel(
     private var restartJob: Job? = null
     private val lastProgressUpdateAtMs = mutableMapOf<Long, Long>()
     private var lastLevelUpdateAtMs = 0L
-    private var speakerProfileVector: FloatArray? = null
+    private var speakerProfiles = mutableListOf<UserPrefs.SpeakerVerifyProfile>()
 
     private companion object {
         private const val LEVEL_UPDATE_INTERVAL_MS = 33L
@@ -363,6 +369,7 @@ class MainViewModel(
         private const val PROGRESS_UPDATE_INTERVAL_MS = 48L
         private const val PROGRESS_UPDATE_DELTA = 0.02f
         private const val MAX_RECOGNIZED_ITEMS = 100
+        private const val MAX_SPEAKER_PROFILES = 3
     }
     val drawStrokes = mutableStateListOf<DrawStrokeData>()
     var drawColor by mutableStateOf(UiTokens.Primary)
@@ -728,7 +735,7 @@ class MainViewModel(
             initialAllowSystemAecWithAec3 = true,
             initialSpeakerVerifyEnabled = uiState.speakerVerifyEnabled,
             initialSpeakerVerifyThreshold = uiState.speakerVerifyThreshold,
-            initialSpeakerProfile = speakerProfileVector
+            initialSpeakerProfiles = speakerProfiles.map { it.vector.copyOf() }
         )
         controller = created
         return created
@@ -783,7 +790,11 @@ class MainViewModel(
     fun loadSettings() {
         viewModelScope.launch {
             val settings = UserPrefs.getSettings(appContext)
-            speakerProfileVector = UserPrefs.parseSpeakerVerifyProfile(settings.speakerVerifyProfileCsv)
+            speakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv)
+                .take(MAX_SPEAKER_PROFILES)
+                .toMutableList()
+            val hasProfiles = speakerProfiles.isNotEmpty()
+            val speakerVerifyEnabled = settings.speakerVerifyEnabled && hasProfiles
             uiState = uiState.copy(
                 muteWhilePlaying = settings.muteWhilePlaying,
                 muteWhilePlayingDelaySec = settings.muteWhilePlayingDelaySec,
@@ -802,12 +813,16 @@ class MainViewModel(
                 solidTopBar = settings.solidTopBar,
                 drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
                 asrSendToQuickSubtitle = settings.asrSendToQuickSubtitle,
-                speakerVerifyEnabled = settings.speakerVerifyEnabled,
+                speakerVerifyEnabled = speakerVerifyEnabled,
                 speakerVerifyThreshold = settings.speakerVerifyThreshold,
-                speakerProfileReady = speakerProfileVector != null,
+                speakerProfileReady = hasProfiles,
+                speakerProfiles = speakerProfiles.map { SpeakerProfileUiItem(id = it.id, name = it.name) },
                 speakerLastSimilarity = -1f
             )
             applySettingsToController(settings)
+            if (settings.speakerVerifyEnabled && !speakerVerifyEnabled) {
+                UserPrefs.setSpeakerVerifyEnabled(appContext, false)
+            }
         }
     }
 
@@ -1005,13 +1020,25 @@ class MainViewModel(
         }
     }
 
+    fun canAddSpeakerProfile(): Boolean {
+        return speakerProfiles.size < MAX_SPEAKER_PROFILES
+    }
+
+    private fun speakerProfileUiItems(): List<SpeakerProfileUiItem> {
+        return speakerProfiles.map { SpeakerProfileUiItem(id = it.id, name = it.name) }
+    }
+
+    private fun speakerProfileVectors(): List<FloatArray> {
+        return speakerProfiles.map { it.vector.copyOf() }
+    }
+
     fun setSpeakerVerifyEnabled(enabled: Boolean) {
         uiState = uiState.copy(speakerVerifyEnabled = enabled)
         controller?.setSpeakerVerifyEnabled(enabled)
         viewModelScope.launch {
             UserPrefs.setSpeakerVerifyEnabled(appContext, enabled)
         }
-        if (enabled && speakerProfileVector == null) {
+        if (enabled && speakerProfiles.isEmpty()) {
             uiState = uiState.copy(status = "说话人验证已开启，请先注册说话人")
         }
     }
@@ -1026,32 +1053,64 @@ class MainViewModel(
     }
 
     fun clearSpeakerProfile() {
-        speakerProfileVector = null
+        speakerProfiles.clear()
         uiState = uiState.copy(
             speakerVerifyEnabled = false,
             speakerProfileReady = false,
+            speakerProfiles = emptyList(),
             speakerLastSimilarity = -1f,
             status = "已清除说话人注册信息"
         )
         controller?.setSpeakerVerifyEnabled(false)
-        controller?.clearSpeakerProfile()
+        controller?.clearSpeakerProfiles()
         viewModelScope.launch {
             UserPrefs.setSpeakerVerifyEnabled(appContext, false)
-            UserPrefs.setSpeakerVerifyProfile(appContext, null)
+            UserPrefs.setSpeakerVerifyProfiles(appContext, emptyList())
         }
     }
 
-    fun applySpeakerProfile(profile: FloatArray) {
-        speakerProfileVector = profile.copyOf()
-        controller?.setSpeakerProfile(profile)
+    fun removeSpeakerProfileAt(index: Int) {
+        if (index !in speakerProfiles.indices) return
+        speakerProfiles = speakerProfiles.toMutableList().apply { removeAt(index) }
+        val hasProfiles = speakerProfiles.isNotEmpty()
+        val keepVerify = uiState.speakerVerifyEnabled && hasProfiles
+        uiState = uiState.copy(
+            speakerVerifyEnabled = keepVerify,
+            speakerProfileReady = hasProfiles,
+            speakerProfiles = speakerProfileUiItems(),
+            speakerLastSimilarity = if (hasProfiles) uiState.speakerLastSimilarity else -1f,
+            status = if (hasProfiles) "已移除说话人" else "已清除说话人注册信息"
+        )
+        controller?.setSpeakerVerifyEnabled(keepVerify)
+        controller?.setSpeakerProfiles(speakerProfileVectors())
+        viewModelScope.launch {
+            UserPrefs.setSpeakerVerifyEnabled(appContext, keepVerify)
+            UserPrefs.setSpeakerVerifyProfiles(appContext, speakerProfiles)
+        }
+    }
+
+    fun applySpeakerProfile(profile: FloatArray): Boolean {
+        if (speakerProfiles.size >= MAX_SPEAKER_PROFILES) {
+            return false
+        }
+        val nextIndex = speakerProfiles.size + 1
+        val item = UserPrefs.SpeakerVerifyProfile(
+            id = "spk-${SystemClock.elapsedRealtime()}-$nextIndex",
+            name = "说话人 $nextIndex",
+            vector = profile.copyOf()
+        )
+        speakerProfiles = speakerProfiles.toMutableList().apply { add(item) }
+        controller?.setSpeakerProfiles(speakerProfileVectors())
         uiState = uiState.copy(
             speakerProfileReady = true,
+            speakerProfiles = speakerProfileUiItems(),
             speakerLastSimilarity = 1f,
-            status = "说话人注册成功"
+            status = "说话人注册成功（${speakerProfiles.size}/$MAX_SPEAKER_PROFILES）"
         )
         viewModelScope.launch {
-            UserPrefs.setSpeakerVerifyProfile(appContext, profile)
+            UserPrefs.setSpeakerVerifyProfiles(appContext, speakerProfiles)
         }
+        return true
     }
 
     suspend fun enrollSpeakerProfileNow(
@@ -1077,8 +1136,10 @@ class MainViewModel(
         }
         if (result.success && result.profile != null) {
             if (persist) {
-                applySpeakerProfile(result.profile)
-                uiState = uiState.copy(status = result.message)
+                val applied = applySpeakerProfile(result.profile)
+                if (applied) {
+                    uiState = uiState.copy(status = result.message)
+                }
             }
         } else {
             uiState = uiState.copy(status = result.message)
@@ -1454,9 +1515,9 @@ class MainViewModel(
         controller?.setPreferredOutputType(settings.preferredOutputType)
         controller?.setNumberReplaceMode(settings.numberReplaceMode)
         controller?.setAllowSystemAecWithAec3(true)
-        controller?.setSpeakerVerifyEnabled(settings.speakerVerifyEnabled)
+        controller?.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
         controller?.setSpeakerVerifyThreshold(settings.speakerVerifyThreshold)
-        controller?.setSpeakerProfile(speakerProfileVector)
+        controller?.setSpeakerProfiles(speakerProfileVectors())
     }
 }
 
@@ -2156,7 +2217,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         val currentTitle = if (quickSubtitleEditorOpen) {
             "编辑便捷字幕"
         } else {
-            titles.getOrElse(basePage) { "KGTTS" }
+            titles.getOrElse(basePage) { "KIGTTS" }
         }
         Surface(
             modifier = Modifier
@@ -2706,7 +2767,7 @@ private fun AppDrawerContent(
         Spacer(Modifier.height(topInset))
         if (showHeader && expanded) {
             Text(
-                text = "KGTTS",
+                text = "KIGTTS",
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
@@ -2719,7 +2780,7 @@ private fun AppDrawerContent(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "KG",
+                    text = "KI",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -6428,11 +6489,17 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         speakerEnrollRetryDialog = true
                         speakerEnrollMessage = "合并注册信息失败，请重录第三句"
                     } else {
-                        viewModel.applySpeakerProfile(combined)
-                        speakerEnrollSuccess = true
-                        speakerEnrollStep = 4
-                        speakerEnrollProgress = 1f
-                        speakerEnrollMessage = "说话人注册成功"
+                        if (viewModel.applySpeakerProfile(combined)) {
+                            speakerEnrollSuccess = true
+                            speakerEnrollStep = 4
+                            speakerEnrollProgress = 1f
+                            speakerEnrollMessage = "说话人注册成功"
+                        } else {
+                            speakerEnrollSuccess = false
+                            speakerEnrollStep = 4
+                            speakerEnrollProgress = 0f
+                            speakerEnrollMessage = "注册失败，请稍后重试"
+                        }
                     }
                 }
             } else {
@@ -6601,9 +6668,35 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                 Text("说话人验证")
             }
             Text(
-                "说话人注册：${if (state.speakerProfileReady) "已注册" else "未注册"}",
+                "说话人注册：${state.speakerProfiles.size}/3",
                 style = MaterialTheme.typography.bodySmall
             )
+            state.speakerProfiles.forEachIndexed { idx, profile ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(4.dp),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = 0.dp
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${idx + 1}. ${profile.name}",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Md2IconButton(
+                            icon = "delete",
+                            contentDescription = "删除说话人",
+                            onClick = { viewModel.removeSpeakerProfileAt(idx) }
+                        )
+                    }
+                }
+            }
             Text(
                 "验证阈值：${String.format("%.2f", state.speakerVerifyThreshold)}",
                 style = MaterialTheme.typography.bodySmall
@@ -6637,7 +6730,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                     speakerEnrollRetryDialog = false
                     speakerEnrollOpenedByToggle = false
                     showSpeakerEnrollDialog = true
-                }) {
+                }, enabled = viewModel.canAddSpeakerProfile()) {
                     Text("注册说话人")
                 }
                 Md2TextButton(onClick = { viewModel.clearSpeakerProfile() }) {
