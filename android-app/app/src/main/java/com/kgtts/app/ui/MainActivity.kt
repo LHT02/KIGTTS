@@ -3785,6 +3785,7 @@ fun QuickSubtitleScreen(
     val selectedGroupIndex = viewModel.currentQuickSubtitleGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
     val selectedGroup = groups.getOrNull(selectedGroupIndex)
     val quickItems = selectedGroup?.items ?: emptyList()
+    val quickItemsScrollState = rememberScrollState()
     val subtitleText = viewModel.quickSubtitleCurrentText
     val subtitleSize = viewModel.quickSubtitleFontSizeSp
     val inputText = viewModel.quickSubtitleInputText
@@ -3965,59 +3966,89 @@ fun QuickSubtitleScreen(
                                         modifier = Modifier
                                             .weight(1f)
                                             .fillMaxHeight()
-                                            .verticalScroll(rememberScrollState())
-                                            .padding(horizontal = 6.dp, vertical = 6.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                            .padding(horizontal = 6.dp)
                                     ) {
-                                        quickItems.forEach { text ->
-                                            Card(
+                                        AnimatedContent(
+                                            targetState = selectedGroupIndex,
+                                            transitionSpec = {
+                                                val forward = targetState >= initialState
+                                                ContentTransform(
+                                                    targetContentEnter = fadeIn(animationSpec = tween(150)) +
+                                                        slideInVertically(
+                                                            initialOffsetY = { if (forward) 10 else -10 },
+                                                            animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                                        ),
+                                                    initialContentExit = fadeOut(animationSpec = tween(110)) +
+                                                        slideOutVertically(
+                                                            targetOffsetY = { if (forward) -8 else 8 },
+                                                            animationSpec = tween(170, easing = FastOutSlowInEasing)
+                                                        ),
+                                                    sizeTransform = androidx.compose.animation.SizeTransform(clip = false)
+                                                )
+                                            },
+                                            label = "quick_subtitle_items_switch_landscape"
+                                        ) { groupIndex ->
+                                            val animatedQuickItems = groups.getOrNull(groupIndex)?.items.orEmpty()
+                                            Column(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .height(72.dp)
-                                                    .clickable {
-                                                        viewModel.applyQuickSubtitleText(
-                                                            text = text,
-                                                            enqueueSpeak = hasVoice
-                                                        )
-                                                    },
-                                                shape = RoundedCornerShape(UiTokens.Radius),
-                                                backgroundColor = md2CardContainerColor(),
-                                                elevation = UiTokens.CardElevation
+                                                    .padding(horizontal = 3.dp)
+                                                    .verticalScroll(quickItemsScrollState),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .fillMaxSize()
-                                                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                                                    contentAlignment = Alignment.CenterStart
-                                                ) {
-                                                    Text(
-                                                        text = text,
-                                                        maxLines = 2,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        style = MaterialTheme.typography.bodyLarge
-                                                    )
+                                                Spacer(Modifier.height(3.dp))
+                                                animatedQuickItems.forEach { text ->
+                                                    Card(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(72.dp)
+                                                            .clickable {
+                                                                viewModel.applyQuickSubtitleText(
+                                                                    text = text,
+                                                                    enqueueSpeak = hasVoice
+                                                                )
+                                                            },
+                                                        shape = RoundedCornerShape(UiTokens.Radius),
+                                                        backgroundColor = md2CardContainerColor(),
+                                                        elevation = UiTokens.CardElevation
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .fillMaxSize()
+                                                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                                                            contentAlignment = Alignment.CenterStart
+                                                        ) {
+                                                            Text(
+                                                                text = text,
+                                                                maxLines = 2,
+                                                                overflow = TextOverflow.Ellipsis,
+                                                                style = MaterialTheme.typography.bodyLarge
+                                                            )
+                                                        }
+                                                    }
                                                 }
-                                            }
-                                        }
-                                        Card(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(56.dp)
-                                                .clickable {
-                                                    viewModel.addQuickSubtitleItem(
-                                                        groupIndex = selectedGroupIndex,
-                                                        value = subtitleText
-                                                    )
-                                                },
-                                            shape = RoundedCornerShape(UiTokens.Radius),
-                                            backgroundColor = md2CardContainerColor(),
-                                            elevation = UiTokens.CardElevation
-                                        ) {
-                                            Box(
-                                                modifier = Modifier.fillMaxSize(),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                MsIcon("add", contentDescription = "添加当前文本")
+                                                Card(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(56.dp)
+                                                        .clickable {
+                                                            viewModel.addQuickSubtitleItem(
+                                                                groupIndex = groupIndex,
+                                                                value = subtitleText
+                                                            )
+                                                        },
+                                                    shape = RoundedCornerShape(UiTokens.Radius),
+                                                    backgroundColor = md2CardContainerColor(),
+                                                    elevation = UiTokens.CardElevation
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier.fillMaxSize(),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        MsIcon("add", contentDescription = "添加当前文本")
+                                                    }
+                                                }
+                                                Spacer(Modifier.height(3.dp))
                                             }
                                         }
                                     }
@@ -4225,26 +4256,77 @@ fun QuickSubtitleScreen(
                                 }
                             }
                         } else {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(100.dp)
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Keep frame edges flush; reserve shadow space inside scroll content.
-                                Spacer(Modifier.width(8.dp))
-                                quickItems.forEach { text ->
+                            AnimatedContent(
+                                targetState = selectedGroupIndex,
+                                transitionSpec = {
+                                    val forward = targetState >= initialState
+                                    ContentTransform(
+                                        targetContentEnter = fadeIn(animationSpec = tween(150)) +
+                                            slideInHorizontally(
+                                                initialOffsetX = { full -> if (forward) full / 4 else -full / 4 },
+                                                animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                            ),
+                                        initialContentExit = fadeOut(animationSpec = tween(110)) +
+                                            slideOutHorizontally(
+                                                targetOffsetX = { full -> if (forward) -full / 5 else full / 5 },
+                                                animationSpec = tween(170, easing = FastOutSlowInEasing)
+                                            ),
+                                        sizeTransform = null
+                                    )
+                                },
+                                label = "quick_subtitle_items_switch_portrait"
+                            ) { groupIndex ->
+                                val animatedQuickItems = groups.getOrNull(groupIndex)?.items.orEmpty()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(100.dp)
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    // Keep frame edges flush; reserve shadow space inside scroll content.
+                                    Spacer(Modifier.width(8.dp))
+                                    animatedQuickItems.forEach { text ->
+                                        Card(
+                                            modifier = Modifier
+                                                .padding(vertical = 3.dp)
+                                                .width(148.dp)
+                                                .height(94.dp)
+                                                .clickable {
+                                                    viewModel.applyQuickSubtitleText(
+                                                        text = text,
+                                                        enqueueSpeak = hasVoice
+                                                    )
+                                                },
+                                            shape = RoundedCornerShape(UiTokens.Radius),
+                                            backgroundColor = md2CardContainerColor(),
+                                            elevation = UiTokens.CardElevation
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                contentAlignment = Alignment.CenterStart
+                                            ) {
+                                                Text(
+                                                    text = text,
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    style = MaterialTheme.typography.bodyLarge
+                                                )
+                                            }
+                                        }
+                                    }
                                     Card(
                                         modifier = Modifier
                                             .padding(vertical = 3.dp)
-                                            .width(148.dp)
+                                            .width(86.dp)
                                             .height(94.dp)
                                             .clickable {
-                                                viewModel.applyQuickSubtitleText(
-                                                    text = text,
-                                                    enqueueSpeak = hasVoice
+                                                viewModel.addQuickSubtitleItem(
+                                                    groupIndex = groupIndex,
+                                                    value = subtitleText
                                                 )
                                             },
                                         shape = RoundedCornerShape(UiTokens.Radius),
@@ -4254,43 +4336,14 @@ fun QuickSubtitleScreen(
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxSize()
-                                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                                            contentAlignment = Alignment.CenterStart
+                                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                                            contentAlignment = Alignment.Center
                                         ) {
-                                            Text(
-                                                text = text,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = MaterialTheme.typography.bodyLarge
-                                            )
+                                            MsIcon("add", contentDescription = "添加当前文本")
                                         }
                                     }
+                                    Spacer(Modifier.width(8.dp))
                                 }
-                                Card(
-                                    modifier = Modifier
-                                        .padding(vertical = 3.dp)
-                                        .width(86.dp)
-                                        .height(94.dp)
-                                        .clickable {
-                                            viewModel.addQuickSubtitleItem(
-                                                groupIndex = selectedGroupIndex,
-                                                value = subtitleText
-                                            )
-                                        },
-                                    shape = RoundedCornerShape(UiTokens.Radius),
-                                    backgroundColor = md2CardContainerColor(),
-                                    elevation = UiTokens.CardElevation
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(horizontal = 8.dp, vertical = 8.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        MsIcon("add", contentDescription = "添加当前文本")
-                                    }
-                                }
-                                Spacer(Modifier.width(8.dp))
                             }
                         }
                     }
