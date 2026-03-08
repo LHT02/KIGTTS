@@ -39,7 +39,9 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideInVertically
@@ -69,6 +71,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.material.*
 import androidx.compose.material.DropdownMenuItem as M2DropdownMenuItem
@@ -79,7 +82,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
@@ -268,7 +273,9 @@ data class UiState(
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val asrSendToQuickSubtitle: Boolean = true,
     val pushToTalkMode: Boolean = false,
+    val pushToTalkConfirmInputMode: Boolean = false,
     val pushToTalkPressed: Boolean = false,
+    val pushToTalkStreamingText: String = "",
     val speakerVerifyEnabled: Boolean = false,
     val speakerVerifyThreshold: Float = 0.72f,
     val speakerProfileReady: Boolean = false,
@@ -289,6 +296,18 @@ data class RecognizedItem(
     val text: String,
     val progress: Float = 0f
 )
+
+enum class PttConfirmReleaseAction {
+    SendToSubtitle,
+    SendToInput,
+    Cancel
+}
+
+enum class PttConfirmDragTarget {
+    DefaultSend,
+    ToInput,
+    Cancel
+}
 
 data class QuickSubtitleGroup(
     val id: Long,
@@ -367,6 +386,46 @@ class MainViewModel(
     private val lastProgressUpdateAtMs = mutableMapOf<Long, Long>()
     private var lastLevelUpdateAtMs = 0L
     private var speakerProfiles = mutableListOf<UserPrefs.SpeakerVerifyProfile>()
+    private var pttSessionLastText: String = ""
+
+    private fun mergePttTranscript(existing: String, incoming: String): String {
+        val a = existing.trim()
+        val b = incoming.trim()
+        if (a.isEmpty()) return b
+        if (b.isEmpty()) return a
+        if (a == b) return a
+        if (b.startsWith(a)) return b
+        if (a.startsWith(b)) return a
+        if (a.contains(b)) return a
+        if (b.contains(a)) return b
+        val overlapMax = kotlin.math.min(a.length, b.length)
+        for (k in overlapMax downTo 1) {
+            if (a.regionMatches(a.length - k, b, 0, k, ignoreCase = false)) {
+                return (a + b.substring(k)).trim()
+            }
+        }
+        val joiner = if (a.last().isWhitespace() || b.first().isWhitespace()) "" else " "
+        return (a + joiner + b).replace(Regex("\\s+"), " ").trim()
+    }
+
+    private fun appendPttFinalTranscript(text: String) {
+        val normalized = text.trim()
+        if (normalized.isEmpty()) return
+        val merged = mergePttTranscript(pttSessionLastText, normalized)
+        pttSessionLastText = merged
+        if (merged != uiState.pushToTalkStreamingText) {
+            uiState = uiState.copy(pushToTalkStreamingText = merged)
+        }
+    }
+
+    private fun updatePttPreviewTranscript(text: String) {
+        val normalized = text.trim()
+        if (normalized.isEmpty()) return
+        val preview = mergePttTranscript(pttSessionLastText, normalized)
+        if (preview != uiState.pushToTalkStreamingText) {
+            uiState = uiState.copy(pushToTalkStreamingText = preview)
+        }
+    }
 
     private companion object {
         private const val LEVEL_UPDATE_INTERVAL_MS = 33L
@@ -659,11 +718,28 @@ class MainViewModel(
                 realtimeRecognized = next
                 val validIds = next.asSequence().map { it.id }.toSet()
                 lastProgressUpdateAtMs.keys.retainAll(validIds)
-                if (uiState.asrSendToQuickSubtitle) {
-                    val normalized = text.trim()
+                val normalized = text.trim()
+                if (uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode) {
+                    if (uiState.pushToTalkPressed && normalized.isNotEmpty()) {
+                        // 合并“流式片段 + 最终片段”，避免覆盖导致丢字。
+                        appendPttFinalTranscript(normalized)
+                    }
+                } else if (uiState.asrSendToQuickSubtitle) {
                     if (normalized.isNotEmpty() && normalized != quickSubtitleCurrentText) {
                         quickSubtitleCurrentText = normalized
                     }
+                }
+            },
+            onStreamingResult = { text ->
+                val normalized = text.trim()
+                if (normalized.isEmpty()) return@RealtimeController
+                if (uiState.pushToTalkMode &&
+                    uiState.pushToTalkConfirmInputMode &&
+                    uiState.pushToTalkPressed
+                ) {
+                    // 流式阶段只刷新预览，不直接累加到最终会话文本，
+                    // 避免同一片段被反复拼接。
+                    updatePttPreviewTranscript(normalized)
                 }
             },
             onProgress = { id, progress ->
@@ -742,6 +818,14 @@ class MainViewModel(
             initialSpeakerVerifyThreshold = uiState.speakerVerifyThreshold,
             initialSpeakerProfiles = speakerProfiles.map { it.vector.copyOf() }
         )
+        created.setPushToTalkStreamingEnabled(
+            uiState.pushToTalkMode &&
+                    uiState.pushToTalkConfirmInputMode &&
+                    uiState.pushToTalkPressed
+        )
+        created.setSuppressAsrAutoSpeak(
+            uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode
+        )
         controller = created
         return created
     }
@@ -819,6 +903,7 @@ class MainViewModel(
                 drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
                 asrSendToQuickSubtitle = settings.asrSendToQuickSubtitle,
                 pushToTalkMode = settings.pushToTalkMode,
+                pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
                 speakerVerifyEnabled = speakerVerifyEnabled,
                 speakerVerifyThreshold = settings.speakerVerifyThreshold,
                 speakerProfileReady = hasProfiles,
@@ -1027,18 +1112,72 @@ class MainViewModel(
     }
 
     fun setPushToTalkMode(enabled: Boolean) {
+        pttSessionLastText = ""
         uiState = uiState.copy(
             pushToTalkMode = enabled,
-            pushToTalkPressed = false
+            pushToTalkPressed = false,
+            pushToTalkStreamingText = ""
         )
+        controller?.setPushToTalkStreamingEnabled(false)
+        controller?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkConfirmInputMode)
         viewModelScope.launch {
             UserPrefs.setPushToTalkMode(appContext, enabled)
         }
     }
 
+    fun setPushToTalkConfirmInputMode(enabled: Boolean) {
+        pttSessionLastText = ""
+        uiState = uiState.copy(
+            pushToTalkConfirmInputMode = enabled,
+            pushToTalkStreamingText = if (enabled) uiState.pushToTalkStreamingText else ""
+        )
+        controller?.setPushToTalkStreamingEnabled(
+            enabled && uiState.pushToTalkMode && uiState.pushToTalkPressed
+        )
+        controller?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkMode)
+        viewModelScope.launch {
+            UserPrefs.setPushToTalkConfirmInput(appContext, enabled)
+        }
+    }
+
     fun setPushToTalkPressed(pressed: Boolean) {
         if (uiState.pushToTalkPressed == pressed) return
-        uiState = uiState.copy(pushToTalkPressed = pressed)
+        uiState = uiState.copy(
+            pushToTalkPressed = pressed,
+            pushToTalkStreamingText = if (!pressed) "" else uiState.pushToTalkStreamingText
+        )
+        controller?.setPushToTalkStreamingEnabled(
+            uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode && pressed
+        )
+    }
+
+    fun beginPushToTalkSession() {
+        if (!uiState.pushToTalkConfirmInputMode) return
+        pttSessionLastText = ""
+        uiState = uiState.copy(pushToTalkStreamingText = "")
+    }
+
+    fun commitPushToTalkSession(action: PttConfirmReleaseAction) {
+        if (!uiState.pushToTalkConfirmInputMode) return
+        val text = uiState.pushToTalkStreamingText.trim().ifBlank { pttSessionLastText.trim() }
+        when (action) {
+            PttConfirmReleaseAction.SendToSubtitle -> {
+                if (text.isNotEmpty()) {
+                    applyQuickSubtitleText(
+                        text = text,
+                        enqueueSpeak = quickSubtitlePlayOnSend
+                    )
+                }
+            }
+            PttConfirmReleaseAction.SendToInput -> {
+                if (text.isNotEmpty()) {
+                    quickSubtitleInputText = text
+                }
+            }
+            PttConfirmReleaseAction.Cancel -> Unit
+        }
+        pttSessionLastText = ""
+        uiState = uiState.copy(pushToTalkStreamingText = "")
     }
 
     fun canAddSpeakerProfile(): Boolean {
@@ -1496,8 +1635,14 @@ class MainViewModel(
     fun stop() {
         restartJob?.cancel()
         restartJob = null
+        pttSessionLastText = ""
         val activeController = controller ?: run {
-            uiState = uiState.copy(running = false, status = "麦克风已停止", pushToTalkPressed = false)
+            uiState = uiState.copy(
+                running = false,
+                status = "麦克风已停止",
+                pushToTalkPressed = false,
+                pushToTalkStreamingText = ""
+            )
             return
         }
         viewModelScope.launch {
@@ -1507,7 +1652,12 @@ class MainViewModel(
             KeepAliveService.stop(appContext)
             realtimeInputLevel = 0f
             realtimePlaybackProgress = 0f
-            uiState = uiState.copy(running = false, status = "麦克风已停止", pushToTalkPressed = false)
+            uiState = uiState.copy(
+                running = false,
+                status = "麦克风已停止",
+                pushToTalkPressed = false,
+                pushToTalkStreamingText = ""
+            )
         }
     }
 
@@ -1539,6 +1689,14 @@ class MainViewModel(
         controller?.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
         controller?.setSpeakerVerifyThreshold(settings.speakerVerifyThreshold)
         controller?.setSpeakerProfiles(speakerProfileVectors())
+        controller?.setSuppressAsrAutoSpeak(
+            uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode
+        )
+        controller?.setPushToTalkStreamingEnabled(
+            uiState.pushToTalkMode &&
+                    uiState.pushToTalkConfirmInputMode &&
+                    uiState.pushToTalkPressed
+        )
     }
 }
 
@@ -2260,6 +2418,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     }
     val onPushToTalkPressStart = {
         viewModel.setPushToTalkPressed(true)
+        viewModel.beginPushToTalkSession()
         if (!state.running) {
             val granted = ContextCompat.checkSelfPermission(
                 context,
@@ -2272,7 +2431,8 @@ fun AppScaffold(viewModel: MainViewModel) {
             }
         }
     }
-    val onPushToTalkPressEnd = {
+    val onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit = { releaseAction ->
+        viewModel.commitPushToTalkSession(releaseAction)
         viewModel.setPushToTalkPressed(false)
         if (state.running) {
             viewModel.stop()
@@ -2351,8 +2511,12 @@ fun AppScaffold(viewModel: MainViewModel) {
                         },
                         transitionSpec = {
                             ContentTransform(
-                                targetContentEnter = fadeIn(animationSpec = tween(120)),
-                                initialContentExit = fadeOut(animationSpec = tween(90))
+                                targetContentEnter = fadeIn(
+                                    animationSpec = tween(120, easing = LinearEasing)
+                                ),
+                                initialContentExit = fadeOut(
+                                    animationSpec = tween(120, easing = LinearEasing)
+                                )
                             )
                         },
                         label = "topbar_nav_switch"
@@ -2547,7 +2711,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 MotionEvent.ACTION_UP -> {
                                     if (pushToTalkPressed) {
                                         pushToTalkPressed = false
-                                        onPushToTalkPressEnd()
+                                        onPushToTalkPressEnd(PttConfirmReleaseAction.SendToSubtitle)
                                     }
                                     pttPress?.let { press ->
                                         pttInteractionSource.tryEmit(PressInteraction.Release(press))
@@ -2559,7 +2723,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 MotionEvent.ACTION_OUTSIDE -> {
                                     if (pushToTalkPressed) {
                                         pushToTalkPressed = false
-                                        onPushToTalkPressEnd()
+                                        onPushToTalkPressEnd(PttConfirmReleaseAction.Cancel)
                                     }
                                     pttPress?.let { press ->
                                         pttInteractionSource.tryEmit(PressInteraction.Cancel(press))
@@ -2868,7 +3032,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         } else {
             ModalDrawer(
                 drawerState = drawerState,
-                gesturesEnabled = basePage != pageDrawing,
+                gesturesEnabled = basePage != pageDrawing && !state.pushToTalkPressed,
                 drawerShape = RectangleShape,
                 drawerBackgroundColor = Color.Transparent,
                 drawerElevation = 0.dp,
@@ -3923,7 +4087,7 @@ private fun QuickSubtitleNavHost(
     state: UiState,
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
-    onPushToTalkPressEnd: () -> Unit,
+    onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
     fullscreenMode: Boolean
 ) {
     NavHost(
@@ -4080,31 +4244,93 @@ private fun SettingsNavHost(
 @OptIn(ExperimentalComposeUiApi::class)
 private fun QuickSubtitleMicFab(
     state: UiState,
+    compactPttSideButtonsMode: Boolean = false,
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
-    onPushToTalkPressEnd: () -> Unit,
+    onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
+    onPttDragTargetChanged: (PttConfirmDragTarget) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var pushToTalkPressed by remember(state.pushToTalkMode) { mutableStateOf(false) }
     val pttInteractionSource = remember { MutableInteractionSource() }
     var pttPress by remember { mutableStateOf<PressInteraction.Press?>(null) }
+    val density = LocalDensity.current
+    // Zone split (matching the 3-zone behavior):
+    // 1) Bottom zone: release => send to subtitle
+    // 2) Top-left large zone: release => send to input box
+    // 3) Top-right narrow zone: release => cancel
+    val topZoneTriggerPx = remember(density) { with(density) { 56.dp.toPx() } }
+    val cancelZoneLeftBiasPx = remember(density) { with(density) { 12.dp.toPx() } }
+    val sideZoneTriggerPx = remember(density) { with(density) { 52.dp.toPx() } }
+    val sideZoneVerticalTolerancePx = remember(density) { with(density) { 56.dp.toPx() } }
+    var downX by remember { mutableFloatStateOf(0f) }
+    var downY by remember { mutableFloatStateOf(0f) }
+    var dragTarget by remember { mutableStateOf(PttConfirmDragTarget.DefaultSend) }
+    fun resolveDragTarget(x: Float, y: Float): PttConfirmDragTarget {
+        if (!state.pushToTalkConfirmInputMode) return PttConfirmDragTarget.DefaultSend
+        val dx = x - downX
+        val dy = y - downY
+        if (compactPttSideButtonsMode) {
+            val inSideBand = kotlin.math.abs(dy) <= sideZoneVerticalTolerancePx
+            return when {
+                inSideBand && dx <= -sideZoneTriggerPx -> PttConfirmDragTarget.ToInput
+                inSideBand && dx >= sideZoneTriggerPx -> PttConfirmDragTarget.Cancel
+                else -> PttConfirmDragTarget.DefaultSend
+            }
+        }
+        if (dy >= -topZoneTriggerPx) {
+            return PttConfirmDragTarget.DefaultSend
+        }
+        // In top area:
+        // - a narrow band near the right side (and around cancel button's left side) => cancel
+        // - all remaining left area => send to input box
+        return if (dx >= -cancelZoneLeftBiasPx) {
+            PttConfirmDragTarget.Cancel
+        } else {
+            PttConfirmDragTarget.ToInput
+        }
+    }
     val pttModifier = if (state.pushToTalkMode) {
         modifier
             .pointerInteropFilter { event ->
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
                         pushToTalkPressed = true
+                        downX = event.x
+                        downY = event.y
+                        dragTarget = PttConfirmDragTarget.DefaultSend
+                        onPttDragTargetChanged(PttConfirmDragTarget.DefaultSend)
                         onPushToTalkPressStart()
                         val press = PressInteraction.Press(Offset(event.x, event.y))
                         pttPress = press
                         pttInteractionSource.tryEmit(press)
                         true
                     }
+                    MotionEvent.ACTION_MOVE -> {
+                        val nextTarget = resolveDragTarget(event.x, event.y)
+                        if (nextTarget != dragTarget) {
+                            dragTarget = nextTarget
+                            onPttDragTargetChanged(nextTarget)
+                        }
+                        true
+                    }
                     MotionEvent.ACTION_UP -> {
+                        val nextTarget = resolveDragTarget(event.x, event.y)
+                        if (nextTarget != dragTarget) {
+                            dragTarget = nextTarget
+                            onPttDragTargetChanged(nextTarget)
+                        }
                         if (pushToTalkPressed) {
                             pushToTalkPressed = false
-                            onPushToTalkPressEnd()
+                            val releaseAction = when (dragTarget) {
+                                PttConfirmDragTarget.DefaultSend -> PttConfirmReleaseAction.SendToSubtitle
+                                PttConfirmDragTarget.ToInput -> PttConfirmReleaseAction.SendToInput
+                                PttConfirmDragTarget.Cancel -> PttConfirmReleaseAction.Cancel
+                            }
+                            onPushToTalkPressEnd(releaseAction)
                         }
+                        dragTarget = PttConfirmDragTarget.DefaultSend
+                        onPttDragTargetChanged(PttConfirmDragTarget.DefaultSend)
                         pttPress?.let { press ->
                             pttInteractionSource.tryEmit(PressInteraction.Release(press))
                         }
@@ -4115,8 +4341,10 @@ private fun QuickSubtitleMicFab(
                     MotionEvent.ACTION_OUTSIDE -> {
                         if (pushToTalkPressed) {
                             pushToTalkPressed = false
-                            onPushToTalkPressEnd()
+                            onPushToTalkPressEnd(PttConfirmReleaseAction.Cancel)
                         }
+                        dragTarget = PttConfirmDragTarget.DefaultSend
+                        onPttDragTargetChanged(PttConfirmDragTarget.DefaultSend)
                         pttPress?.let { press ->
                             pttInteractionSource.tryEmit(PressInteraction.Cancel(press))
                         }
@@ -4169,7 +4397,7 @@ fun QuickSubtitleScreen(
     state: UiState,
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
-    onPushToTalkPressEnd: () -> Unit,
+    onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
     onOpenEditor: () -> Unit,
     fullscreenMode: Boolean
 ) {
@@ -4187,6 +4415,67 @@ fun QuickSubtitleScreen(
     val inputText = viewModel.quickSubtitleInputText
     val playOnSend = viewModel.quickSubtitlePlayOnSend
     val quickInputCollapsed = viewModel.quickSubtitleInputCollapsed
+    var pttDragTarget by remember { mutableStateOf(PttConfirmDragTarget.DefaultSend) }
+    val showPttConfirmOverlay =
+        state.pushToTalkMode &&
+        state.pushToTalkConfirmInputMode &&
+        state.pushToTalkPressed
+    val useFloatingFabPortrait = !isLandscape
+    val useFloatingFabLandscapeOverlay =
+        isLandscape &&
+        state.pushToTalkMode &&
+        state.pushToTalkConfirmInputMode
+    val useOverlayFab = useFloatingFabPortrait || useFloatingFabLandscapeOverlay
+    val pttFabSize = if (isLandscape) 48.dp else 56.dp
+    val pttFabEndInset = if (isLandscape) 64.dp else 20.dp
+    val pttOverlayBottomOffset = if (isLandscape) 0.dp else 80.dp
+    val pttFabBottomOffset = if (isLandscape) 12.dp else pttOverlayBottomOffset
+    val pttStatusStripBottomOffset = pttFabBottomOffset
+    val pttStatusStripBottomBleed = if (isLandscape) 12.dp else 14.dp
+    val compactModeDetectionEnabled =
+        isLandscape && state.pushToTalkMode && state.pushToTalkConfirmInputMode
+    val imeBottomInset =
+        if (compactModeDetectionEnabled) WindowInsets.ime.asPaddingValues().calculateBottomPadding() else 0.dp
+    val navBottomInset =
+        if (compactModeDetectionEnabled) WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() else 0.dp
+    val bottomObstructionInset = if (imeBottomInset > navBottomInset) imeBottomInset else navBottomInset
+    val imeVisible = imeBottomInset > 0.dp
+    val pttPendingText = state.pushToTalkStreamingText.ifBlank { "正在识别..." }
+    val pttTopButtonsRequiredHeight = 96.dp
+    val pttTopEstimatedAvailableHeight =
+        configuration.screenHeightDp.dp - bottomObstructionInset -
+            (pttFabSize + pttFabBottomOffset + pttStatusStripBottomBleed + 72.dp)
+    val compactPttSideButtonsMode =
+        compactModeDetectionEnabled && (imeVisible || pttTopEstimatedAvailableHeight < pttTopButtonsRequiredHeight)
+    val pttGuideText = when (pttDragTarget) {
+        PttConfirmDragTarget.DefaultSend ->
+            if (compactPttSideButtonsMode) pttPendingText else "松开手指上屏"
+        PttConfirmDragTarget.ToInput -> "松开输入到文本框"
+        PttConfirmDragTarget.Cancel -> "松开取消发送"
+    }
+    val pttStripFabReserveWidth = if (useOverlayFab) pttFabSize else 0.dp
+    val pttStatusStripEndInset = if (useOverlayFab) pttFabEndInset else 10.dp
+    val pttStatusStripAnchorEndInset = pttStatusStripEndInset + (pttFabSize / 2)
+    val pttStatusStripOuterBleed = 12.dp
+    val pttStatusStripAnimatedEndInset by animateDpAsState(
+        targetValue = if (showPttConfirmOverlay) pttStatusStripEndInset else pttStatusStripAnchorEndInset,
+        animationSpec = if (showPttConfirmOverlay) {
+            tween(durationMillis = 220, easing = FastOutSlowInEasing)
+        } else {
+            tween(durationMillis = 180, easing = FastOutSlowInEasing)
+        },
+        label = "ptt_status_strip_end_inset"
+    )
+    val pttStatusStripStartInset = (10.dp - pttStatusStripOuterBleed).coerceAtLeast(0.dp)
+    val pttStatusStripTopBleed = (pttStatusStripOuterBleed - 4.dp).coerceAtLeast(0.dp)
+    val pttStatusStripAnimatedEndInsetWithBleed =
+        (pttStatusStripAnimatedEndInset - pttStatusStripOuterBleed).coerceAtLeast(0.dp)
+    val pttStatusStripBottomInset = (pttStatusStripBottomOffset - pttStatusStripBottomBleed).coerceAtLeast(0.dp)
+    LaunchedEffect(showPttConfirmOverlay) {
+        if (!showPttConfirmOverlay) {
+            pttDragTarget = PttConfirmDragTarget.DefaultSend
+        }
+    }
     var inputFieldValue by remember {
         mutableStateOf(
             TextFieldValue(
@@ -5004,13 +5293,19 @@ fun QuickSubtitleScreen(
                                 cursorColor = MaterialTheme.colorScheme.primary
                             )
                         )
-                        QuickSubtitleMicFab(
-                            state = state,
-                            onToggleMic = onToggleMic,
-                            onPushToTalkPressStart = onPushToTalkPressStart,
-                            onPushToTalkPressEnd = onPushToTalkPressEnd,
-                            modifier = Modifier.size(48.dp)
-                        )
+                        if (!useOverlayFab) {
+                            QuickSubtitleMicFab(
+                                state = state,
+                                compactPttSideButtonsMode = compactPttSideButtonsMode,
+                                onToggleMic = onToggleMic,
+                                onPushToTalkPressStart = onPushToTalkPressStart,
+                                onPushToTalkPressEnd = onPushToTalkPressEnd,
+                                onPttDragTargetChanged = { pttDragTarget = it },
+                                modifier = Modifier.size(48.dp)
+                            )
+                        } else {
+                            Spacer(modifier = Modifier.size(48.dp))
+                        }
                         IconButton(
                             onClick = sendInput,
                             enabled = inputFieldValue.text.trim().isNotEmpty()
@@ -5089,18 +5384,322 @@ fun QuickSubtitleScreen(
             }
         }
 
-        if (!isLandscape) {
+        QuickSubtitlePttConfirmOverlay(
+            visible = showPttConfirmOverlay,
+            dragTarget = pttDragTarget,
+            streamingText = state.pushToTalkStreamingText,
+            isLandscape = isLandscape,
+            compactPttSideButtonsMode = compactPttSideButtonsMode
+        )
+
+        AnimatedVisibility(
+            visible = showPttConfirmOverlay,
+            modifier = Modifier
+                .zIndex(6.5f)
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .imePadding()
+                .navigationBarsPadding()
+                .padding(
+                    start = pttStatusStripStartInset,
+                    end = pttStatusStripAnimatedEndInsetWithBleed,
+                    bottom = pttStatusStripBottomInset
+                ),
+            enter = fadeIn(animationSpec = tween(140)),
+            exit = fadeOut(animationSpec = tween(110))
+        ) {
+            Box(
+                modifier = Modifier.padding(
+                    start = pttStatusStripOuterBleed,
+                    top = pttStatusStripTopBleed,
+                    end = pttStatusStripOuterBleed,
+                    bottom = pttStatusStripBottomBleed
+                )
+            ) {
+                QuickSubtitlePttConfirmBottomStrip(
+                    guideText = pttGuideText,
+                    reserveFabWidth = pttStripFabReserveWidth,
+                    stripHeight = pttFabSize
+                )
+            }
+        }
+
+        QuickSubtitlePttCompactSideButtonsOverlay(
+            visible = showPttConfirmOverlay && compactPttSideButtonsMode,
+            dragTarget = pttDragTarget,
+            fabSize = pttFabSize,
+            fabEndInset = pttFabEndInset,
+            fabBottomOffset = pttFabBottomOffset
+        )
+
+        if (useOverlayFab) {
+            val fabModifier = if (isLandscape) {
+                Modifier
+                    .zIndex(7f)
+                    .align(Alignment.BottomEnd)
+                    .imePadding()
+                    .navigationBarsPadding()
+                    // Keep same visual slot as the inline landscape FAB (before the send button).
+                    .padding(end = pttFabEndInset, bottom = pttFabBottomOffset)
+                    .size(pttFabSize)
+            } else {
+                Modifier
+                    .zIndex(7f)
+                    .align(Alignment.BottomEnd)
+                    .imePadding()
+                    .navigationBarsPadding()
+                    .padding(end = pttFabEndInset, bottom = pttFabBottomOffset)
+                    .size(pttFabSize)
+            }
             QuickSubtitleMicFab(
                 state = state,
+                compactPttSideButtonsMode = compactPttSideButtonsMode,
                 onToggleMic = onToggleMic,
                 onPushToTalkPressStart = onPushToTalkPressStart,
                 onPushToTalkPressEnd = onPushToTalkPressEnd,
+                onPttDragTargetChanged = { pttDragTarget = it },
+                modifier = fabModifier
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickSubtitlePttConfirmOverlay(
+    visible: Boolean,
+    dragTarget: PttConfirmDragTarget,
+    streamingText: String,
+    isLandscape: Boolean,
+    compactPttSideButtonsMode: Boolean
+) {
+    val overlayHorizontalPadding = 16.dp
+    val topRowBottomReserved = if (isLandscape) 84.dp else 142.dp
+    val topRowVerticalPadding = if (isLandscape) 6.dp else 18.dp
+
+    val displayText = streamingText.ifBlank { "正在识别..." }
+    val overlayBrush: Brush = if (compactPttSideButtonsMode) {
+        SolidColor(Color.Black.copy(alpha = 0.34f))
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color.Transparent,
+                Color.Transparent,
+                Color.Black.copy(alpha = 0.38f)
+            )
+        )
+    }
+
+    AnimatedVisibility(
+        visible = visible,
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(6f),
+        enter = fadeIn(animationSpec = tween(120)),
+        exit = fadeOut(animationSpec = tween(110))
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .imePadding()
+                    .navigationBarsPadding()
+                    .background(overlayBrush)
+            )
+            if (!compactPttSideButtonsMode) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(horizontal = overlayHorizontalPadding, vertical = topRowVerticalPadding)
+                        .imePadding()
+                        .navigationBarsPadding()
+                        .padding(bottom = topRowBottomReserved),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        AnimatedContent(
+                            modifier = Modifier.weight(1f),
+                            targetState = displayText,
+                            transitionSpec = {
+                                ContentTransform(
+                                    targetContentEnter = fadeIn(
+                                        animationSpec = tween(120, easing = LinearEasing)
+                                    ),
+                                    initialContentExit = fadeOut(
+                                        animationSpec = tween(120, easing = LinearEasing)
+                                    )
+                                )
+                            },
+                            label = "ptt_confirm_stream_text_top"
+                        ) { text ->
+                            Text(
+                                text = text,
+                                modifier = Modifier.fillMaxWidth(),
+                                style = MaterialTheme.typography.h6,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                softWrap = true,
+                                overflow = TextOverflow.Clip
+                            )
+                        }
+                        Surface(
+                            modifier = Modifier.requiredSize(72.dp),
+                            shape = CircleShape,
+                            color = if (dragTarget == PttConfirmDragTarget.ToInput) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                Color(0xFF202124)
+                            },
+                            elevation = 6.dp
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                MsIcon(
+                                    name = "keyboard_return",
+                                    contentDescription = "输入到文本框",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                        Surface(
+                            modifier = Modifier.requiredSize(72.dp),
+                            shape = CircleShape,
+                            color = if (dragTarget == PttConfirmDragTarget.Cancel) {
+                                Color(0xFFB00020)
+                            } else {
+                                Color(0xFF202124)
+                            },
+                            elevation = 6.dp
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                MsIcon(
+                                    name = "close",
+                                    contentDescription = "取消发送",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickSubtitlePttCompactSideButtonsOverlay(
+    visible: Boolean,
+    dragTarget: PttConfirmDragTarget,
+    fabSize: Dp,
+    fabEndInset: Dp,
+    fabBottomOffset: Dp
+) {
+    val sideGap = 10.dp
+    AnimatedVisibility(
+        visible = visible,
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(6.9f),
+        enter = fadeIn(animationSpec = tween(120)),
+        exit = fadeOut(animationSpec = tween(110))
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            val cancelEndInset = (fabEndInset - fabSize - sideGap).coerceAtLeast(0.dp)
+            Surface(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .imePadding()
                     .navigationBarsPadding()
-                    .padding(end = 20.dp, bottom = 80.dp)
-            )
+                    .padding(end = fabEndInset + fabSize + sideGap, bottom = fabBottomOffset)
+                    .requiredSize(fabSize),
+                shape = CircleShape,
+                color = if (dragTarget == PttConfirmDragTarget.ToInput) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    Color(0xFF202124)
+                },
+                elevation = 6.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    MsIcon(
+                        name = "keyboard_return",
+                        contentDescription = "输入到文本框",
+                        tint = Color.White
+                    )
+                }
+            }
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .imePadding()
+                    .navigationBarsPadding()
+                    .padding(end = cancelEndInset, bottom = fabBottomOffset)
+                    .requiredSize(fabSize),
+                shape = CircleShape,
+                color = if (dragTarget == PttConfirmDragTarget.Cancel) {
+                    Color(0xFFB00020)
+                } else {
+                    Color(0xFF202124)
+                },
+                elevation = 6.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    MsIcon(
+                        name = "close",
+                        contentDescription = "取消发送",
+                        tint = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickSubtitlePttConfirmBottomStrip(
+    guideText: String,
+    reserveFabWidth: Dp,
+    stripHeight: Dp
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(stripHeight),
+        shape = RoundedCornerShape(42.dp),
+        color = md2CardContainerColor(),
+        elevation = UiTokens.FabElevation
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 14.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            MsIcon("graphic_eq", contentDescription = "识别中")
+            AnimatedContent(
+                targetState = guideText,
+                transitionSpec = {
+                    ContentTransform(
+                        targetContentEnter = fadeIn(animationSpec = tween(150)),
+                        initialContentExit = fadeOut(animationSpec = tween(120))
+                    )
+                },
+                label = "ptt_confirm_guide_text_strip"
+            ) { text ->
+                Text(
+                    text = text,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.h6,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Spacer(modifier = Modifier.width(reserveFabWidth))
         }
     }
 }
@@ -7098,6 +7697,21 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                 Text("按住说话模式")
             }
             Text("开启后：实时页 FAB 改为麦克风，按下开始收音，松开停止收音。", style = MaterialTheme.typography.bodySmall)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Md2Switch(
+                    checked = state.pushToTalkConfirmInputMode,
+                    enabled = state.pushToTalkMode,
+                    onCheckedChange = { viewModel.setPushToTalkConfirmInputMode(it) }
+                )
+                Text("按下输入文本确认")
+            }
+            Text(
+                "开启后：按住说话时识别文本先显示在悬浮条中，松手可上屏；上滑可改为输入到文本框或取消发送。",
+                style = MaterialTheme.typography.bodySmall
+            )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)

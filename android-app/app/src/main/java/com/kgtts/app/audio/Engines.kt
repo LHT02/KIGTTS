@@ -39,6 +39,7 @@ import kotlin.math.sqrt
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.ln
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 object AudioRoutePreference {
@@ -862,6 +863,7 @@ class RealtimeController(
     private val context: Context,
     private val scope: CoroutineScope,
     private val onResult: (Long, String) -> Unit,
+    private val onStreamingResult: (String) -> Unit,
     private val onProgress: (Long, Float) -> Unit,
     private val onLevel: (Float) -> Unit,
     private val onInputDevice: (String) -> Unit,
@@ -929,6 +931,10 @@ class RealtimeController(
     private var lastAcceptedTtsTextKey: String = ""
     private var lastAcceptedTtsAtMs: Long = 0L
     private val duplicateTtsWindowMs: Long = 1800L
+    @Volatile private var pttStreamingEnabled: Boolean = false
+    @Volatile private var suppressAsrAutoSpeak: Boolean = false
+    @Volatile private var lastStreamingDecodeAtMs: Long = 0L
+    private val streamingDecodeBusy = AtomicBoolean(false)
 
     private data class QueuedTts(
         val id: Long,
@@ -957,6 +963,10 @@ class RealtimeController(
 
     private fun notifyResult(id: Long, text: String) {
         scope.launch { onResult(id, text) }
+    }
+
+    private fun notifyStreamingResult(text: String) {
+        scope.launch { onStreamingResult(text) }
     }
 
     private fun notifyProgress(id: Long, progress: Float) {
@@ -1067,6 +1077,24 @@ class RealtimeController(
 
     fun setNumberReplaceMode(mode: Int) {
         numberReplaceMode = mode.coerceIn(0, 2)
+    }
+
+    fun setPushToTalkStreamingEnabled(enabled: Boolean) {
+        pttStreamingEnabled = enabled
+        if (!enabled) {
+            lastStreamingDecodeAtMs = 0L
+            streamingDecodeBusy.set(false)
+        }
+    }
+
+    fun setSuppressAsrAutoSpeak(enabled: Boolean) {
+        suppressAsrAutoSpeak = enabled
+    }
+
+    private fun nextResultId(): Long {
+        synchronized(queueLock) {
+            return nextUtteranceId++
+        }
     }
 
     fun setAllowSystemAecWithAec3(enabled: Boolean) {
@@ -1330,6 +1358,8 @@ class RealtimeController(
                 lastAcceptedTtsTextKey = ""
                 lastAcceptedTtsAtMs = 0L
             }
+            lastStreamingDecodeAtMs = 0L
+            streamingDecodeBusy.set(false)
             stopRecorderOnlyLocked()
             ensureAec3()
             startRecorderLoop()
@@ -1411,6 +1441,8 @@ class RealtimeController(
             } catch (_: Exception) {
             }
         }
+        streamingDecodeBusy.set(false)
+        lastStreamingDecodeAtMs = 0L
         try {
             rec?.release()
         } catch (_: Exception) {
@@ -1510,6 +1542,67 @@ class RealtimeController(
         }
     }
 
+    private fun maybeDecodeStreamingSenseVoice(window: List<Float>, nowMs: Long) {
+        if (!pttStreamingEnabled) return
+        if (asr == null) return
+        val minSamples = sampleRate / 2
+        if (window.size < minSamples) return
+        val decodeIntervalMs = 260L
+        if ((nowMs - lastStreamingDecodeAtMs) < decodeIntervalMs) return
+        if (!streamingDecodeBusy.compareAndSet(false, true)) return
+        lastStreamingDecodeAtMs = nowMs
+        val maxSamples = sampleRate * 3
+        val snapshot = if (window.size > maxSamples) {
+            window.takeLast(maxSamples).toFloatArray()
+        } else {
+            window.toFloatArray()
+        }
+        // Streaming noise gate (aligned with main pipeline):
+        // 1) whole-window RMS should pass a relaxed min-segment threshold
+        // 2) recent tail should contain enough active speech-like samples
+        val segmentRms = rmsEnergy(snapshot)
+        val minStreamingRms = kotlin.math.max(0.010, minSegmentRms * 0.85)
+        if (segmentRms < minStreamingRms) {
+            streamingDecodeBusy.set(false)
+            return
+        }
+        val tailSize = kotlin.math.min(snapshot.size, sampleRate / 4) // ~250ms
+        if (tailSize <= 0) {
+            streamingDecodeBusy.set(false)
+            return
+        }
+        val tailStart = snapshot.size - tailSize
+        var tailSum = 0.0
+        var voicedCount = 0
+        for (i in tailStart until snapshot.size) {
+            val v = snapshot[i].toDouble()
+            tailSum += v * v
+            if (kotlin.math.abs(snapshot[i]) >= 0.02f) {
+                voicedCount++
+            }
+        }
+        val tailRms = kotlin.math.sqrt(tailSum / tailSize)
+        val minTailRms = kotlin.math.max(0.014, minSegmentRms * 0.65)
+        val voicedRatio = voicedCount.toDouble() / tailSize.toDouble()
+        if (tailRms < minTailRms || voicedRatio < 0.08) {
+            streamingDecodeBusy.set(false)
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            try {
+                val raw = asr?.transcribe(snapshot, sampleRate).orEmpty()
+                val text = filterAsrText(raw, segmentRms)
+                if (text.isNotBlank()) {
+                    notifyStreamingResult(text)
+                }
+            } catch (e: Exception) {
+                AppLogger.e("ASR streaming failed", e)
+            } finally {
+                streamingDecodeBusy.set(false)
+            }
+        }
+    }
+
     private fun startRecorderLoop() {
         applyCommunicationMode(useCommunicationMode)
         applyOutputRoutePreference()
@@ -1603,6 +1696,7 @@ class RealtimeController(
                     for (i in 0 until read) {
                         window.add(floatBuf[i])
                     }
+                    maybeDecodeStreamingSenseVoice(window, now)
                     val energy = sqrt(window.takeLast(min(400, window.size)).map { it * it }.average())
                     val stepMs = read * 1000 / sampleRate
                     if (energy < silenceThreshold) {
@@ -1659,6 +1753,12 @@ class RealtimeController(
                                 }
                                 val text = filterAsrText(rawText, rms)
                                 if (text.isNotBlank()) {
+                                    if (suppressAsrAutoSpeak) {
+                                        val id = nextResultId()
+                                        notifyResult(id, text)
+                                        notifyProgress(id, 1f)
+                                        return@asrTask
+                                    }
                                     if (shouldSkipDuplicateTts(text)) {
                                         AppLogger.i("Skip duplicate tts text=$text")
                                         return@asrTask
