@@ -65,6 +65,13 @@ interface AsrModule {
 interface TtsModule {
     val sampleRate: Int
     fun synthesize(text: String): FloatArray
+    fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray = synthesize(text)
+    fun setSynthesisTuning(
+        noiseScale: Float,
+        lengthScale: Float,
+        noiseW: Float,
+        sentenceSilenceSec: Float
+    ) {}
 }
 
 interface SpeechModuleFactory {
@@ -399,10 +406,38 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
     private val env = OrtEnvironment.getEnvironment()
     private val session: OrtSession = env.createSession(voicePack.modelPath.absolutePath, OrtSession.SessionOptions())
     override val sampleRate: Int = voicePack.sampleRate
+    @Volatile private var noiseScale: Float = 0.667f
+    @Volatile private var lengthScale: Float = 1.0f
+    @Volatile private var noiseW: Float = 0.8f
+    @Volatile private var sentenceSilenceSec: Float = 0.0f
+
+    override fun setSynthesisTuning(
+        noiseScale: Float,
+        lengthScale: Float,
+        noiseW: Float,
+        sentenceSilenceSec: Float
+    ) {
+        this.noiseScale = noiseScale.coerceIn(0f, 2f)
+        this.lengthScale = lengthScale.coerceIn(0.1f, 5f)
+        this.noiseW = noiseW.coerceIn(0f, 2f)
+        this.sentenceSilenceSec = sentenceSilenceSec.coerceIn(0f, 2f)
+    }
 
     override fun synthesize(text: String): FloatArray {
+        return synthesizeInternal(text, null)
+    }
+
+    override fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray {
+        return synthesizeInternal(text, sentenceSilenceSec.coerceAtLeast(0f))
+    }
+
+    private fun synthesizeInternal(text: String, sentenceSilenceOverride: Float?): FloatArray {
         val ids = toIds(text)
         if (ids.isEmpty()) return FloatArray(0)
+        val currentNoiseScale = noiseScale
+        val currentLengthScale = lengthScale
+        val currentNoiseW = noiseW
+        val currentSentenceSilenceSec = sentenceSilenceOverride ?: sentenceSilenceSec
         val inputs = mutableMapOf<String, OnnxTensor>()
         val idLong = ids.map { it.toLong() }.toLongArray()
         val inputName = session.inputNames.firstOrNull { it.contains("input") } ?: session.inputNames.first()
@@ -412,7 +447,9 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
 
         val scaleName = session.inputNames.firstOrNull { it.contains("scale") }
         if (scaleName != null) {
-            val scales = FloatBuffer.wrap(floatArrayOf(0.667f, 1.0f, 0.8f))
+            val scales = FloatBuffer.wrap(
+                floatArrayOf(currentNoiseScale, currentLengthScale, currentNoiseW)
+            )
             inputs[scaleName] = OnnxTensor.createTensor(env, scales, longArrayOf(3))
         }
         val sidName = session.inputNames.firstOrNull { it.contains("sid") }
@@ -421,7 +458,8 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
         }
 
         session.run(inputs).use { results ->
-            return unwrapAudio(results[0].value)
+            val raw = unwrapAudio(results[0].value)
+            return appendSentenceSilence(raw, currentSentenceSilenceSec)
         }
     }
 
@@ -433,6 +471,16 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
             }
             else -> FloatArray(0)
         }
+    }
+
+    private fun appendSentenceSilence(samples: FloatArray, sec: Float): FloatArray {
+        val silenceSec = sec.coerceAtLeast(0f)
+        if (silenceSec <= 0f || samples.isEmpty()) return samples
+        val silenceSamples = (sampleRate * silenceSec).roundToInt()
+        if (silenceSamples <= 0) return samples
+        val out = FloatArray(samples.size + silenceSamples)
+        System.arraycopy(samples, 0, out, 0, samples.size)
+        return out
     }
 }
 
@@ -877,6 +925,10 @@ class RealtimeController(
     initialCommunicationMode: Boolean,
     initialMinVolumePercent: Int,
     initialPlaybackGainPercent: Int,
+    initialPiperNoiseScale: Float,
+    initialPiperLengthScale: Float,
+    initialPiperNoiseW: Float,
+    initialPiperSentenceSilenceSec: Float,
     initialSuppressDelaySec: Float,
     initialPreferredInputType: Int,
     initialPreferredOutputType: Int,
@@ -903,6 +955,10 @@ class RealtimeController(
     @Volatile private var useCommunicationMode = initialCommunicationMode
     @Volatile private var minSegmentRms = (initialMinVolumePercent.coerceIn(0, 100) / 100.0)
     @Volatile private var suppressDelayMs = (initialSuppressDelaySec.coerceIn(0f, 5f) * 1000f).toLong()
+    @Volatile private var piperNoiseScale = initialPiperNoiseScale.coerceIn(0f, 2f)
+    @Volatile private var piperLengthScale = initialPiperLengthScale.coerceIn(0.1f, 5f)
+    @Volatile private var piperNoiseW = initialPiperNoiseW.coerceIn(0f, 2f)
+    @Volatile private var piperSentenceSilenceSec = initialPiperSentenceSilenceSec.coerceIn(0f, 2f)
     @Volatile private var suppressUntilMs: Long = 0L
     @Volatile private var preferredInputType = initialPreferredInputType
     @Volatile private var preferredOutputType = initialPreferredOutputType
@@ -940,6 +996,86 @@ class RealtimeController(
         val id: Long,
         val text: String
     )
+
+    private data class TtsSynthesisChunk(
+        val text: String,
+        val pauseSec: Float
+    )
+
+    private fun normalizePunctuationForTts(text: String): String {
+        if (text.isEmpty()) return text
+        val out = StringBuilder(text.length)
+        for (ch in text) {
+            out.append(
+                when (ch) {
+                    '，', '、' -> ','
+                    '。' -> '.'
+                    '！' -> '!'
+                    '？' -> '?'
+                    '；' -> ';'
+                    '：' -> ':'
+                    else -> ch
+                }
+            )
+        }
+        return out.toString()
+    }
+
+    private fun splitForPunctuationSynthesis(text: String): List<TtsSynthesisChunk> {
+        val normalized = normalizePunctuationForTts(text).trim()
+        if (normalized.isEmpty()) return emptyList()
+        val longPause = piperSentenceSilenceSec.coerceIn(0f, 2f)
+        val shortPause = if (longPause <= 0f) 0f else (longPause * 0.4f).coerceIn(0.04f, longPause)
+        val chunks = mutableListOf<TtsSynthesisChunk>()
+        val current = StringBuilder()
+        fun pushChunk(pause: Float) {
+            val part = current.toString().trim()
+            if (part.isEmpty()) return
+            chunks.add(TtsSynthesisChunk(part, pause))
+            current.setLength(0)
+        }
+        for (ch in normalized) {
+            when (ch) {
+                ',' -> pushChunk(shortPause)
+                '.', '!', '?', ';', ':' -> pushChunk(longPause)
+                else -> current.append(ch)
+            }
+        }
+        val tail = current.toString().trim()
+        if (tail.isNotEmpty()) {
+            chunks.add(TtsSynthesisChunk(tail, 0f))
+        }
+        return if (chunks.isNotEmpty()) chunks else listOf(TtsSynthesisChunk(normalized, 0f))
+    }
+
+    private fun concatAudio(arrays: List<FloatArray>): FloatArray {
+        val total = arrays.sumOf { it.size }
+        if (total <= 0) return FloatArray(0)
+        val out = FloatArray(total)
+        var offset = 0
+        for (arr in arrays) {
+            if (arr.isEmpty()) continue
+            System.arraycopy(arr, 0, out, offset, arr.size)
+            offset += arr.size
+        }
+        return out
+    }
+
+    private fun synthesizeByPunctuation(ttsEngine: TtsModule, text: String): FloatArray {
+        val chunks = splitForPunctuationSynthesis(text)
+        if (chunks.isEmpty()) return FloatArray(0)
+        if (chunks.size == 1) {
+            val only = chunks[0]
+            return ttsEngine.synthesize(only.text, only.pauseSec)
+        }
+        val parts = mutableListOf<FloatArray>()
+        for (chunk in chunks) {
+            val piece = ttsEngine.synthesize(chunk.text, chunk.pauseSec)
+            if (piece.isEmpty()) continue
+            parts.add(piece)
+        }
+        return concatAudio(parts)
+    }
 
     private fun toTtsDedupKey(text: String): String {
         val t = text.trim()
@@ -1033,6 +1169,35 @@ class RealtimeController(
 
     fun setPlaybackGainPercent(percent: Int) {
         player.setPlaybackGainPercent(percent)
+    }
+
+    private fun applyTtsSynthesisTuning() {
+        tts?.setSynthesisTuning(
+            noiseScale = piperNoiseScale,
+            lengthScale = piperLengthScale,
+            noiseW = piperNoiseW,
+            sentenceSilenceSec = piperSentenceSilenceSec
+        )
+    }
+
+    fun setPiperNoiseScale(value: Float) {
+        piperNoiseScale = value.coerceIn(0f, 2f)
+        applyTtsSynthesisTuning()
+    }
+
+    fun setPiperLengthScale(value: Float) {
+        piperLengthScale = value.coerceIn(0.1f, 5f)
+        applyTtsSynthesisTuning()
+    }
+
+    fun setPiperNoiseW(value: Float) {
+        piperNoiseW = value.coerceIn(0f, 2f)
+        applyTtsSynthesisTuning()
+    }
+
+    fun setPiperSentenceSilenceSec(value: Float) {
+        piperSentenceSilenceSec = value.coerceIn(0f, 2f)
+        applyTtsSynthesisTuning()
     }
 
     fun setSuppressDelaySec(seconds: Float) {
@@ -1158,7 +1323,12 @@ class RealtimeController(
                 } ?: break
                 try {
                     notifyProgress(next.id, 0f)
-                    val pcm = tts?.synthesize(next.text) ?: FloatArray(0)
+                    val ttsEngine = tts
+                    val pcm = if (ttsEngine != null) {
+                        synthesizeByPunctuation(ttsEngine, next.text)
+                    } else {
+                        FloatArray(0)
+                    }
                     if (pcm.isNotEmpty()) {
                         player.play(pcm, tts?.sampleRate ?: 22050) { progress ->
                             notifyProgress(next.id, progress)
@@ -1226,6 +1396,7 @@ class RealtimeController(
                         ttsQueue.clear()
                     }
                     tts = moduleFactory.createTts(context, voiceDir)
+                    applyTtsSynthesisTuning()
                     currentVoiceDir = voiceDir
                     AppLogger.i("TTS loaded dir=${voiceDir.absolutePath}")
                     if (useAec3) {

@@ -1,5 +1,6 @@
 package com.kgtts.app.ui
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Activity
 import android.content.ContentValues
@@ -11,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -22,6 +24,9 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -49,11 +54,15 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.indication
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -68,6 +77,12 @@ import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -84,12 +99,14 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -100,6 +117,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -124,6 +142,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -134,9 +153,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -159,6 +181,14 @@ import com.kgtts.app.data.VoicePackInfo
 import com.kgtts.app.data.UserPrefs
 import com.kgtts.app.service.KeepAliveService
 import com.kgtts.app.util.AppLogger
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.DecodeHintType
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -172,18 +202,26 @@ import androidx.recyclerview.widget.DefaultItemAnimator
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
+import androidx.viewpager2.widget.ViewPager2
+import androidx.viewpager2.widget.MarginPageTransformer
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.atan2
 import kotlin.math.sin
+import kotlin.math.roundToInt
 
 private fun isXiaomiFamilyDevice(): Boolean {
     val m = Build.MANUFACTURER?.lowercase() ?: return false
@@ -208,6 +246,17 @@ private fun softInputModeSummary(mode: Int): String {
         else -> "unknown"
     }
     return "adjust=$adjust,state=$state,raw=0x${mode.toString(16)}"
+}
+
+private fun normalizeQrTextToWebUrl(raw: String): String? {
+    val text = raw.trim()
+    if (text.isEmpty()) return null
+    val parsed = runCatching { Uri.parse(text) }.getOrNull() ?: return null
+    val scheme = parsed.scheme?.lowercase(Locale.US).orEmpty()
+    if (scheme == "http" || scheme == "https") return text
+    if (scheme.isNotEmpty()) return null
+    if (text.contains(Regex("\\s"))) return null
+    return "https://$text"
 }
 
 private fun normalizeDrawingSaveRelativePath(raw: String): String {
@@ -248,6 +297,8 @@ private fun drawingRelativePathFromTreeUri(uri: android.net.Uri): String? {
     }
 }
 
+private const val QUICK_SUBTITLE_CLEARED_HINT = "我不太方便说话，请等我一下……"
+
 data class UiState(
     val asrDir: File? = null,
     val voiceDir: File? = null,
@@ -266,11 +317,16 @@ data class UiState(
     val aec3Diag: String = "AEC3 诊断：未启用",
     val minVolumePercent: Int = 0,
     val playbackGainPercent: Int = 100,
+    val piperNoiseScale: Float = 0.667f,
+    val piperLengthScale: Float = 1.0f,
+    val piperNoiseW: Float = 0.8f,
+    val piperSentenceSilence: Float = 0.2f,
     val keepAlive: Boolean = false,
     val numberReplaceMode: Int = 0,
     val landscapeDrawerMode: Int = UserPrefs.DRAWER_MODE_PERMANENT,
     val solidTopBar: Boolean = true,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
+    val quickCardAutoSaveOnExit: Boolean = false,
     val asrSendToQuickSubtitle: Boolean = true,
     val pushToTalkMode: Boolean = false,
     val pushToTalkConfirmInputMode: Boolean = false,
@@ -314,6 +370,41 @@ data class QuickSubtitleGroup(
     val title: String,
     val icon: String,
     val items: List<String>
+)
+
+enum class QuickCardType(val wireValue: String) {
+    Image("image"),
+    Qr("qr"),
+    Text("text");
+
+    companion object {
+        fun fromWire(raw: String?): QuickCardType {
+            return entries.firstOrNull { it.wireValue == raw } ?: Text
+        }
+    }
+}
+
+data class QuickCard(
+    val id: Long,
+    val type: QuickCardType,
+    val title: String,
+    val note: String = "",
+    val themeColor: String = "#038387",
+    val link: String = "",
+    val portraitImagePath: String = "",
+    val landscapeImagePath: String = ""
+)
+
+data class QuickCardDraft(
+    val editId: Long? = null,
+    val isNew: Boolean = false,
+    val type: QuickCardType = QuickCardType.Text,
+    val title: String = "",
+    val note: String = "",
+    val themeColor: String = "#038387",
+    val link: String = "",
+    val portraitImagePath: String = "",
+    val landscapeImagePath: String = ""
 )
 
 data class DrawPoint(
@@ -387,6 +478,10 @@ class MainViewModel(
     private var lastLevelUpdateAtMs = 0L
     private var speakerProfiles = mutableListOf<UserPrefs.SpeakerVerifyProfile>()
     private var pttSessionLastText: String = ""
+    private var lastPttHistoryTextKey: String = ""
+    private var lastPttHistoryAtMs: Long = 0L
+    private var manualRecognizedIdSeed: Long = -1L
+    private var pttSessionCommitConsumed: Boolean = false
 
     private fun mergePttTranscript(existing: String, incoming: String): String {
         val a = existing.trim()
@@ -404,8 +499,8 @@ class MainViewModel(
                 return (a + b.substring(k)).trim()
             }
         }
-        val joiner = if (a.last().isWhitespace() || b.first().isWhitespace()) "" else " "
-        return (a + joiner + b).replace(Regex("\\s+"), " ").trim()
+        // PTT 流式拼接不自动补空格，避免中文结果出现“断词空格”。
+        return (a + b).replace(Regex("\\s+"), "").trim()
     }
 
     private fun appendPttFinalTranscript(text: String) {
@@ -425,6 +520,40 @@ class MainViewModel(
         if (preview != uiState.pushToTalkStreamingText) {
             uiState = uiState.copy(pushToTalkStreamingText = preview)
         }
+    }
+
+    private fun normalizePttHistoryKey(text: String): String {
+        return text.trim().trimEnd('。', '！', '？', '!', '?', '，', ',', '；', ';', '、', '.')
+    }
+
+    private fun shouldSkipPttDuplicateHistory(text: String): Boolean {
+        if (!(uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode)) return false
+        val key = normalizePttHistoryKey(text)
+        if (key.isEmpty()) return true
+        val now = SystemClock.uptimeMillis()
+        val duplicated = key == lastPttHistoryTextKey && (now - lastPttHistoryAtMs) <= 1800L
+        if (!duplicated) {
+            lastPttHistoryTextKey = key
+            lastPttHistoryAtMs = now
+        }
+        return duplicated
+    }
+
+    private fun resetPttHistoryDedup() {
+        lastPttHistoryTextKey = ""
+        lastPttHistoryAtMs = 0L
+    }
+
+    private fun appendRecognizedHistory(text: String, id: Long? = null) {
+        val normalized = text.trim()
+        if (normalized.isEmpty()) return
+        val historyId = id ?: manualRecognizedIdSeed--
+        if (id != null && realtimeRecognized.any { it.id == id }) return
+        val item = RecognizedItem(id = historyId, text = normalized)
+        val next = (listOf(item) + realtimeRecognized).take(MAX_RECOGNIZED_ITEMS)
+        realtimeRecognized = next
+        val validIds = next.asSequence().map { it.id }.toSet()
+        lastProgressUpdateAtMs.keys.retainAll(validIds)
     }
 
     private companion object {
@@ -456,15 +585,32 @@ class MainViewModel(
         private set
     var quickSubtitleInputCollapsed by mutableStateOf(false)
         private set
+    var quickSubtitleBold by mutableStateOf(true)
+        private set
+    var quickSubtitleCentered by mutableStateOf(false)
+        private set
     var quickSubtitleFontSizeSp by mutableFloatStateOf(56f)
+        private set
+    var quickSubtitlePreviewVisible by mutableStateOf(false)
+        private set
+    var quickCards by mutableStateOf<List<QuickCard>>(emptyList())
+        private set
+    var quickCardSelectedIndex by mutableIntStateOf(0)
+        private set
+    var quickCardPreviewCardId by mutableStateOf<Long?>(null)
+        private set
+    var quickCardDraft by mutableStateOf<QuickCardDraft?>(null)
         private set
     var drawingToolbarCollapsed by mutableStateOf(false)
         private set
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
+    private var quickCardsNextId = 1L
+    private var quickCardsSaving = false
 
     init {
         loadQuickSubtitleConfig()
+        loadQuickCardConfig()
     }
 
     private fun loadQuickSubtitleConfig() {
@@ -510,6 +656,8 @@ class MainViewModel(
         val currentText = root.optString("currentText", quickSubtitleCurrentText).ifBlank { quickSubtitleCurrentText }
         val inputText = root.optString("inputText", "")
         val playOnSend = root.optBoolean("playOnSend", true)
+        val fontBold = root.optBoolean("fontBold", true)
+        val textCentered = root.optBoolean("textCentered", false)
         quickSubtitleGroups = finalGroups
         quickSubtitleSelectedGroupId =
             finalGroups.firstOrNull { it.id == selectedId }?.id ?: finalGroups.first().id
@@ -517,6 +665,8 @@ class MainViewModel(
         quickSubtitleCurrentText = currentText
         quickSubtitleInputText = inputText
         quickSubtitlePlayOnSend = playOnSend
+        quickSubtitleBold = fontBold
+        quickSubtitleCentered = textCentered
         quickSubtitleNextGroupId = maxOf(maxId + 1L, (finalGroups.maxOfOrNull { it.id } ?: 0L) + 1L)
     }
 
@@ -529,6 +679,8 @@ class MainViewModel(
             put("currentText", quickSubtitleCurrentText)
             put("inputText", quickSubtitleInputText)
             put("playOnSend", quickSubtitlePlayOnSend)
+            put("fontBold", quickSubtitleBold)
+            put("textCentered", quickSubtitleCentered)
             val groupsArr = JSONArray()
             quickSubtitleGroups.forEach { g ->
                 groupsArr.put(
@@ -596,6 +748,14 @@ class MainViewModel(
         saveQuickSubtitleConfig()
     }
 
+    fun openQuickSubtitlePreview() {
+        quickSubtitlePreviewVisible = true
+    }
+
+    fun closeQuickSubtitlePreview() {
+        quickSubtitlePreviewVisible = false
+    }
+
     fun updateQuickSubtitlePlayOnSend(enabled: Boolean) {
         quickSubtitlePlayOnSend = enabled
         saveQuickSubtitleConfig()
@@ -603,6 +763,21 @@ class MainViewModel(
 
     fun updateQuickSubtitleInputCollapsed(collapsed: Boolean) {
         quickSubtitleInputCollapsed = collapsed
+    }
+
+    fun updateQuickSubtitleBold(enabled: Boolean) {
+        quickSubtitleBold = enabled
+        saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitleCentered(enabled: Boolean) {
+        quickSubtitleCentered = enabled
+        saveQuickSubtitleConfig()
+    }
+
+    fun clearQuickSubtitleText() {
+        quickSubtitleCurrentText = QUICK_SUBTITLE_CLEARED_HINT
+        saveQuickSubtitleConfig()
     }
 
     fun updateQuickSubtitleGroupMeta(index: Int, title: String, icon: String) {
@@ -707,18 +882,355 @@ class MainViewModel(
         saveQuickSubtitleConfig()
     }
 
+    private fun quickCardDir(): File {
+        val dir = File(appContext.filesDir, "quick_cards")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun defaultQuickCardDraft(type: QuickCardType, editId: Long, isNew: Boolean, prefillLink: String = ""): QuickCardDraft {
+        return QuickCardDraft(
+            editId = editId,
+            isNew = isNew,
+            type = type,
+            title = "名片名字",
+            note = "愿你的生活充满诗与远方",
+            themeColor = "#038387",
+            link = prefillLink.trim(),
+            portraitImagePath = "",
+            landscapeImagePath = ""
+        )
+    }
+
+    private fun QuickCard.toDraft(isNew: Boolean = false): QuickCardDraft {
+        return QuickCardDraft(
+            editId = id,
+            isNew = isNew,
+            type = type,
+            title = title,
+            note = note,
+            themeColor = themeColor,
+            link = link,
+            portraitImagePath = portraitImagePath,
+            landscapeImagePath = landscapeImagePath
+        )
+    }
+
+    private fun loadQuickCardConfig() {
+        viewModelScope.launch {
+            val raw = UserPrefs.getQuickCardConfig(appContext)
+            if (raw.isNullOrBlank()) return@launch
+            runCatching {
+                parseQuickCardConfig(raw)
+            }
+        }
+    }
+
+    private fun parseQuickCardConfig(raw: String) {
+        val root = JSONObject(raw)
+        val cardsArr = root.optJSONArray("cards") ?: JSONArray()
+        val parsedCards = mutableListOf<QuickCard>()
+        var maxId = 0L
+        for (i in 0 until cardsArr.length()) {
+            val obj = cardsArr.optJSONObject(i) ?: continue
+            val id = obj.optLong("id", i.toLong() + 1L).coerceAtLeast(1L)
+            val type = QuickCardType.fromWire(obj.optString("type", QuickCardType.Text.wireValue))
+            val title = obj.optString("title", "名片名字")
+            val note = obj.optString("note", "")
+            val themeColor = obj.optString("themeColor", "#038387")
+            val link = obj.optString("link", "")
+            val portraitImagePath = obj.optString("portraitImagePath", "")
+            val landscapeImagePath = obj.optString("landscapeImagePath", "")
+            parsedCards += QuickCard(
+                id = id,
+                type = type,
+                title = title,
+                note = note,
+                themeColor = normalizeQuickCardColor(themeColor),
+                link = link,
+                portraitImagePath = portraitImagePath,
+                landscapeImagePath = landscapeImagePath
+            )
+            if (id > maxId) maxId = id
+        }
+        quickCards = parsedCards
+        quickCardsNextId = maxOf(maxId + 1L, 1L)
+        quickCardSelectedIndex = root.optInt("selectedIndex", 0).coerceIn(
+            0,
+            quickCards.lastIndex.coerceAtLeast(0)
+        )
+    }
+
+    private fun saveQuickCardConfig() {
+        if (quickCardsSaving) return
+        quickCardsSaving = true
+        val root = JSONObject().apply {
+            put("selectedIndex", quickCardSelectedIndex)
+            val cardsArr = JSONArray()
+            quickCards.forEach { c ->
+                cardsArr.put(
+                    JSONObject().apply {
+                        put("id", c.id)
+                        put("type", c.type.wireValue)
+                        put("title", c.title)
+                        put("note", c.note)
+                        put("themeColor", c.themeColor)
+                        put("link", c.link)
+                        put("portraitImagePath", c.portraitImagePath)
+                        put("landscapeImagePath", c.landscapeImagePath)
+                    }
+                )
+            }
+            put("cards", cardsArr)
+        }
+        val payload = root.toString()
+        viewModelScope.launch {
+            try {
+                UserPrefs.setQuickCardConfig(appContext, payload)
+            } finally {
+                quickCardsSaving = false
+            }
+        }
+    }
+
+    fun updateQuickCardSelectedIndex(index: Int) {
+        if (quickCards.isEmpty()) {
+            quickCardSelectedIndex = 0
+            return
+        }
+        quickCardSelectedIndex = index.coerceIn(0, quickCards.lastIndex)
+        saveQuickCardConfig()
+    }
+
+    fun reorderQuickCardsByIds(orderedIds: List<Long>) {
+        if (quickCards.size <= 1) return
+        val byId = quickCards.associateBy { it.id }
+        val seen = hashSetOf<Long>()
+        val next = mutableListOf<QuickCard>()
+        orderedIds.forEach { id ->
+            if (seen.add(id)) {
+                byId[id]?.let { next += it }
+            }
+        }
+        quickCards.forEach { card ->
+            if (seen.add(card.id)) {
+                next += card
+            }
+        }
+        if (next == quickCards) return
+        val selectedId = quickCards.getOrNull(quickCardSelectedIndex)?.id
+        quickCards = next
+        quickCardSelectedIndex = selectedId
+            ?.let { id -> quickCards.indexOfFirst { it.id == id } }
+            ?.takeIf { it >= 0 }
+            ?: 0
+        saveQuickCardConfig()
+    }
+
+    fun getQuickCard(id: Long): QuickCard? {
+        return quickCards.firstOrNull { it.id == id }
+    }
+
+    fun openQuickCardPreview(cardId: Long) {
+        quickCardPreviewCardId = cardId
+    }
+
+    fun closeQuickCardPreview() {
+        quickCardPreviewCardId = null
+    }
+
+    fun beginCreateQuickCard(type: QuickCardType, prefillLink: String = "") {
+        val id = quickCardsNextId++
+        quickCardDraft = defaultQuickCardDraft(type = type, editId = id, isNew = true, prefillLink = prefillLink)
+    }
+
+    fun beginEditQuickCard(cardId: Long) {
+        val target = getQuickCard(cardId) ?: return
+        quickCardDraft = target.toDraft(isNew = false)
+    }
+
+    fun clearQuickCardDraft() {
+        quickCardDraft = null
+    }
+
+    fun updateQuickCardDraft(update: (QuickCardDraft) -> QuickCardDraft) {
+        val old = quickCardDraft ?: return
+        quickCardDraft = update(old)
+    }
+
+    private fun normalizeQuickCardColor(raw: String): String {
+        val v = raw.trim()
+        return if (Regex("^#[0-9a-fA-F]{6}$").matches(v)) v.lowercase(Locale.US) else "#038387"
+    }
+
+    private fun normalizeQuickCardType(draft: QuickCardDraft): QuickCardType {
+        val hasPortrait = draft.portraitImagePath.isNotBlank()
+        val hasLandscape = draft.landscapeImagePath.isNotBlank()
+        var type = draft.type
+        if (type == QuickCardType.Image && !hasPortrait && !hasLandscape) {
+            type = QuickCardType.Qr
+        }
+        if (type == QuickCardType.Qr && draft.link.trim().isEmpty()) {
+            type = QuickCardType.Text
+        }
+        return type
+    }
+
+    private fun normalizedQuickCardFromDraft(draft: QuickCardDraft): QuickCard {
+        val id = draft.editId ?: -1L
+        val normalized = draft.copy(
+            title = draft.title.trim().ifEmpty { "名片名字" },
+            note = draft.note.trim(),
+            themeColor = normalizeQuickCardColor(draft.themeColor),
+            link = draft.link.trim()
+        )
+        val type = normalizeQuickCardType(normalized)
+        return QuickCard(
+            id = id,
+            type = type,
+            title = normalized.title,
+            note = normalized.note,
+            themeColor = normalized.themeColor,
+            link = normalized.link,
+            portraitImagePath = normalized.portraitImagePath,
+            landscapeImagePath = normalized.landscapeImagePath
+        )
+    }
+
+    fun hasQuickCardDraftChanges(): Boolean {
+        val draft = quickCardDraft ?: return false
+        val targetId = draft.editId ?: return true
+        val base = quickCards.firstOrNull { it.id == targetId } ?: return true
+        return normalizedQuickCardFromDraft(draft) != base
+    }
+
+    fun saveQuickCardDraft(): QuickCard? {
+        val draft = quickCardDraft ?: return null
+        val saved = normalizedQuickCardFromDraft(draft).let { normalized ->
+            if (normalized.id > 0L) normalized else normalized.copy(id = quickCardsNextId++)
+        }
+        val next = quickCards.toMutableList()
+        val idx = next.indexOfFirst { it.id == saved.id }
+        if (idx >= 0) {
+            next[idx] = saved
+            quickCardSelectedIndex = idx
+        } else {
+            next += saved
+            quickCardSelectedIndex = next.lastIndex
+        }
+        quickCards = next
+        quickCardDraft = saved.toDraft(isNew = false)
+        saveQuickCardConfig()
+        return saved
+    }
+
+    fun duplicateEditingQuickCard(): QuickCard? {
+        val draft = quickCardDraft ?: return null
+        val sourceId = draft.editId ?: return null
+        val source = quickCards.firstOrNull { it.id == sourceId } ?: return null
+        val id = quickCardsNextId++
+        val copied = source.copy(
+            id = id,
+            title = "${source.title} 副本"
+        )
+        quickCards = quickCards + copied
+        quickCardSelectedIndex = quickCards.lastIndex
+        quickCardDraft = copied.toDraft(isNew = false)
+        saveQuickCardConfig()
+        return copied
+    }
+
+    fun deleteEditingQuickCard(): Boolean {
+        val draft = quickCardDraft ?: return false
+        val id = draft.editId ?: return false
+        val idx = quickCards.indexOfFirst { it.id == id }
+        if (idx < 0) return false
+        val next = quickCards.toMutableList()
+        next.removeAt(idx)
+        quickCards = next
+        quickCardSelectedIndex = quickCardSelectedIndex.coerceIn(0, quickCards.lastIndex.coerceAtLeast(0))
+        quickCardDraft = null
+        saveQuickCardConfig()
+        return true
+    }
+
+    private fun copyUriToQuickCardImage(uri: android.net.Uri, fileName: String): String? {
+        return runCatching {
+            val outFile = File(quickCardDir(), fileName)
+            appContext.contentResolver.openInputStream(uri)?.use { input ->
+                outFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            outFile.absolutePath
+        }.getOrNull()
+    }
+
+    fun setQuickCardDraftImage(uri: android.net.Uri, landscape: Boolean): Boolean {
+        val draft = quickCardDraft ?: return false
+        val id = draft.editId ?: return false
+        val tag = if (landscape) "landscape" else "portrait"
+        val fileName = "card_${id}_${tag}_${System.currentTimeMillis()}.png"
+        val path = copyUriToQuickCardImage(uri, fileName) ?: return false
+        quickCardDraft = if (landscape) {
+            draft.copy(landscapeImagePath = path)
+        } else {
+            draft.copy(portraitImagePath = path)
+        }
+        return true
+    }
+
+    fun clearQuickCardDraftImage(landscape: Boolean) {
+        val draft = quickCardDraft ?: return
+        quickCardDraft = if (landscape) {
+            draft.copy(landscapeImagePath = "")
+        } else {
+            draft.copy(portraitImagePath = "")
+        }
+    }
+
+    private fun decodeQrContentFromBitmapInternal(bitmap: Bitmap): String? {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width <= 0 || height <= 0) return null
+        return runCatching {
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            val source = RGBLuminanceSource(width, height, pixels)
+            val binary = BinaryBitmap(HybridBinarizer(source))
+            val hints = mapOf(
+                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)
+            )
+            MultiFormatReader().decode(binary, hints)?.text
+        }.getOrNull()
+    }
+
+    suspend fun decodeQrContentFromBitmap(bitmap: Bitmap): String? = withContext(Dispatchers.IO) {
+        decodeQrContentFromBitmapInternal(bitmap)
+    }
+
+    suspend fun decodeQrContentFromImage(uri: android.net.Uri): String? = withContext(Dispatchers.IO) {
+        val bmp = runCatching {
+            appContext.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+        }.getOrNull() ?: return@withContext null
+        decodeQrContentFromBitmapInternal(bmp)
+    }
+
     private fun ensureController(): RealtimeController {
         controller?.let { return it }
         val created = RealtimeController(
             appContext,
             viewModelScope,
             onResult = { id, text ->
-                val item = RecognizedItem(id = id, text = text)
-                val next = (listOf(item) + realtimeRecognized).take(MAX_RECOGNIZED_ITEMS)
-                realtimeRecognized = next
-                val validIds = next.asSequence().map { it.id }.toSet()
-                lastProgressUpdateAtMs.keys.retainAll(validIds)
                 val normalized = text.trim()
+                val isPttConfirmPressed =
+                    uiState.pushToTalkMode &&
+                    uiState.pushToTalkConfirmInputMode &&
+                    uiState.pushToTalkPressed
+                // PTT确认模式下彻底解耦：
+                // - 流式/最终识别只更新PTT会话文本
+                // - 主历史与任务只在松手提交
+                if (!isPttConfirmPressed && normalized.isNotEmpty()) {
+                    appendRecognizedHistory(normalized, id)
+                }
                 if (uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode) {
                     if (uiState.pushToTalkPressed && normalized.isNotEmpty()) {
                         // 合并“流式片段 + 最终片段”，避免覆盖导致丢字。
@@ -808,6 +1320,10 @@ class MainViewModel(
             initialCommunicationMode = uiState.communicationMode,
             initialMinVolumePercent = uiState.minVolumePercent,
             initialPlaybackGainPercent = uiState.playbackGainPercent,
+            initialPiperNoiseScale = uiState.piperNoiseScale,
+            initialPiperLengthScale = uiState.piperLengthScale,
+            initialPiperNoiseW = 0.8f,
+            initialPiperSentenceSilenceSec = uiState.piperSentenceSilence,
             initialSuppressDelaySec = uiState.muteWhilePlayingDelaySec,
             initialPreferredInputType = uiState.preferredInputType,
             initialPreferredOutputType = uiState.preferredOutputType,
@@ -896,11 +1412,16 @@ class MainViewModel(
                 aec3Diag = if (settings.aec3Enabled) "AEC3 诊断：待启动" else "AEC3 诊断：未启用",
                 minVolumePercent = settings.minVolumePercent,
                 playbackGainPercent = settings.playbackGainPercent,
+                piperNoiseScale = settings.piperNoiseScale,
+                piperLengthScale = settings.piperLengthScale,
+                piperNoiseW = 0.8f,
+                piperSentenceSilence = settings.piperSentenceSilence,
                 keepAlive = settings.keepAlive,
                 numberReplaceMode = settings.numberReplaceMode,
                 landscapeDrawerMode = settings.landscapeDrawerMode,
                 solidTopBar = settings.solidTopBar,
                 drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
+                quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
                 asrSendToQuickSubtitle = settings.asrSendToQuickSubtitle,
                 pushToTalkMode = settings.pushToTalkMode,
                 pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
@@ -1080,6 +1601,42 @@ class MainViewModel(
         }
     }
 
+    fun setPiperNoiseScale(value: Float) {
+        val clamped = value.coerceIn(0f, 2f)
+        uiState = uiState.copy(piperNoiseScale = clamped)
+        controller?.setPiperNoiseScale(clamped)
+        viewModelScope.launch {
+            UserPrefs.setPiperNoiseScale(appContext, clamped)
+        }
+    }
+
+    fun setPiperLengthScale(value: Float) {
+        val clamped = value.coerceIn(0.1f, 5f)
+        uiState = uiState.copy(piperLengthScale = clamped)
+        controller?.setPiperLengthScale(clamped)
+        viewModelScope.launch {
+            UserPrefs.setPiperLengthScale(appContext, clamped)
+        }
+    }
+
+    fun setPiperNoiseW(value: Float) {
+        val clamped = value.coerceIn(0f, 2f)
+        uiState = uiState.copy(piperNoiseW = clamped)
+        controller?.setPiperNoiseW(clamped)
+        viewModelScope.launch {
+            UserPrefs.setPiperNoiseW(appContext, clamped)
+        }
+    }
+
+    fun setPiperSentenceSilence(value: Float) {
+        val clamped = value.coerceIn(0f, 2f)
+        uiState = uiState.copy(piperSentenceSilence = clamped)
+        controller?.setPiperSentenceSilenceSec(clamped)
+        viewModelScope.launch {
+            UserPrefs.setPiperSentenceSilence(appContext, clamped)
+        }
+    }
+
     fun setKeepAlive(enabled: Boolean) {
         val running = uiState.running
         uiState = uiState.copy(keepAlive = enabled)
@@ -1113,6 +1670,7 @@ class MainViewModel(
 
     fun setPushToTalkMode(enabled: Boolean) {
         pttSessionLastText = ""
+        resetPttHistoryDedup()
         uiState = uiState.copy(
             pushToTalkMode = enabled,
             pushToTalkPressed = false,
@@ -1127,6 +1685,7 @@ class MainViewModel(
 
     fun setPushToTalkConfirmInputMode(enabled: Boolean) {
         pttSessionLastText = ""
+        resetPttHistoryDedup()
         uiState = uiState.copy(
             pushToTalkConfirmInputMode = enabled,
             pushToTalkStreamingText = if (enabled) uiState.pushToTalkStreamingText else ""
@@ -1154,30 +1713,71 @@ class MainViewModel(
     fun beginPushToTalkSession() {
         if (!uiState.pushToTalkConfirmInputMode) return
         pttSessionLastText = ""
+        pttSessionCommitConsumed = false
+        resetPttHistoryDedup()
         uiState = uiState.copy(pushToTalkStreamingText = "")
     }
 
     fun commitPushToTalkSession(action: PttConfirmReleaseAction) {
         if (!uiState.pushToTalkConfirmInputMode) return
+        if (pttSessionCommitConsumed) return
+        pttSessionCommitConsumed = true
         val text = uiState.pushToTalkStreamingText.trim().ifBlank { pttSessionLastText.trim() }
         when (action) {
             PttConfirmReleaseAction.SendToSubtitle -> {
                 if (text.isNotEmpty()) {
-                    applyQuickSubtitleText(
-                        text = text,
-                        enqueueSpeak = quickSubtitlePlayOnSend
-                    )
+                    if (!quickSubtitlePlayOnSend) {
+                        appendRecognizedHistory(text)
+                        applyQuickSubtitleText(
+                            text = text,
+                            enqueueSpeak = false
+                        )
+                    } else {
+                        // 朗读开启时，也只在松手提交：
+                        // 先上屏，再手动入历史(绑定真实队列ID)，进度条由 onProgress 驱动。
+                        applyQuickSubtitleText(
+                            text = text,
+                            enqueueSpeak = false
+                        )
+                        enqueuePttSpeakAndAppendHistory(text)
+                    }
                 }
             }
             PttConfirmReleaseAction.SendToInput -> {
                 if (text.isNotEmpty()) {
+                    appendRecognizedHistory(text)
                     quickSubtitleInputText = text
                 }
             }
             PttConfirmReleaseAction.Cancel -> Unit
         }
         pttSessionLastText = ""
+        resetPttHistoryDedup()
         uiState = uiState.copy(pushToTalkStreamingText = "")
+    }
+
+    private fun enqueuePttSpeakAndAppendHistory(text: String) {
+        val message = text.trim()
+        if (message.isEmpty()) return
+        val voice = uiState.voiceDir
+        if (voice == null) {
+            appendRecognizedHistory(message)
+            uiState = uiState.copy(status = "请先选择语音包")
+            return
+        }
+        val activeController = ensureController()
+        viewModelScope.launch {
+            val queuedId = withContext(Dispatchers.IO) {
+                if (!activeController.loadTts(voice)) return@withContext null
+                activeController.enqueueSpeakText(message)
+            }
+            if (queuedId != null) {
+                appendRecognizedHistory(message, queuedId)
+                uiState = uiState.copy(status = "已加入朗读队列")
+            } else {
+                appendRecognizedHistory(message)
+            }
+        }
     }
 
     fun canAddSpeakerProfile(): Boolean {
@@ -1336,6 +1936,13 @@ class MainViewModel(
         )
         viewModelScope.launch {
             UserPrefs.setDrawingSaveRelativePath(appContext, normalized)
+        }
+    }
+
+    fun setQuickCardAutoSaveOnExit(enabled: Boolean) {
+        uiState = uiState.copy(quickCardAutoSaveOnExit = enabled)
+        viewModelScope.launch {
+            UserPrefs.setQuickCardAutoSaveOnExit(appContext, enabled)
         }
     }
 
@@ -1583,11 +2190,14 @@ class MainViewModel(
         }
         val activeController = ensureController()
         viewModelScope.launch {
-            val queued = withContext(Dispatchers.IO) {
-                if (!activeController.loadTts(voice)) return@withContext false
-                activeController.enqueueSpeakText(message) != null
+            val queuedId = withContext(Dispatchers.IO) {
+                if (!activeController.loadTts(voice)) return@withContext null
+                activeController.enqueueSpeakText(message)
             }
-            if (queued) {
+            if (queuedId != null) {
+                // 便捷字幕的快速文本/输入框触发朗读时，也要进入历史记录。
+                // 使用队列ID绑定，避免与 onResult 回调重复插入。
+                appendRecognizedHistory(message, queuedId)
                 uiState = uiState.copy(status = "已加入朗读队列")
             }
         }
@@ -1603,8 +2213,6 @@ class MainViewModel(
         restartJob?.cancel()
         restartJob = null
         val activeController = ensureController()
-        // 每次启动新会话前清空上次识别列表，避免新旧会话复用同一结果ID导致UI键冲突。
-        realtimeRecognized = emptyList()
         realtimeInputLevel = 0f
         realtimePlaybackProgress = 0f
         lastProgressUpdateAtMs.clear()
@@ -1636,6 +2244,7 @@ class MainViewModel(
         restartJob?.cancel()
         restartJob = null
         pttSessionLastText = ""
+        resetPttHistoryDedup()
         val activeController = controller ?: run {
             uiState = uiState.copy(
                 running = false,
@@ -1679,6 +2288,10 @@ class MainViewModel(
         controller?.setSuppressDelaySec(settings.muteWhilePlayingDelaySec)
         controller?.setMinVolumePercent(settings.minVolumePercent)
         controller?.setPlaybackGainPercent(settings.playbackGainPercent)
+        controller?.setPiperNoiseScale(settings.piperNoiseScale)
+        controller?.setPiperLengthScale(settings.piperLengthScale)
+        controller?.setPiperNoiseW(0.8f)
+        controller?.setPiperSentenceSilenceSec(settings.piperSentenceSilence)
         controller?.setUseAec3(settings.aec3Enabled)
         controller?.setUseVoiceCommunication(settings.echoSuppression)
         controller?.setCommunicationMode(settings.communicationMode)
@@ -1844,6 +2457,2400 @@ private val Md2Shapes = Shapes(
 )
 
 @Composable
+private fun QuickCardNavHost(
+    navController: NavHostController,
+    viewModel: MainViewModel,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
+) {
+    NavHost(
+        navController = navController,
+        startDestination = QuickCardRoutes.Main,
+        modifier = Modifier.fillMaxSize(),
+        enterTransition = {
+            if (initialState.destination.route == QuickCardRoutes.Main &&
+                targetState.destination.route == QuickCardRoutes.Editor
+            ) {
+                fadeIn(animationSpec = tween(170)) +
+                        slideInHorizontally(
+                            initialOffsetX = { full -> full / 10 },
+                            animationSpec = tween(170, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        exitTransition = {
+            if (initialState.destination.route == QuickCardRoutes.Main &&
+                targetState.destination.route == QuickCardRoutes.Editor
+            ) {
+                fadeOut(animationSpec = tween(120)) +
+                        slideOutHorizontally(
+                            targetOffsetX = { full -> -full / 12 },
+                            animationSpec = tween(120, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        },
+        popEnterTransition = {
+            if (initialState.destination.route == QuickCardRoutes.Editor &&
+                targetState.destination.route == QuickCardRoutes.Main
+            ) {
+                fadeIn(animationSpec = tween(150)) +
+                        slideInHorizontally(
+                            initialOffsetX = { full -> -full / 12 },
+                            animationSpec = tween(150, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        popExitTransition = {
+            if (initialState.destination.route == QuickCardRoutes.Editor &&
+                targetState.destination.route == QuickCardRoutes.Main
+            ) {
+                fadeOut(animationSpec = tween(120)) +
+                        slideOutHorizontally(
+                            targetOffsetX = { full -> full / 14 },
+                            animationSpec = tween(120, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        }
+    ) {
+        composable(QuickCardRoutes.Main) {
+            QuickCardMainScreen(
+                viewModel = viewModel,
+                onTopBarActionsChange = onTopBarActionsChange,
+                onOpenEditor = { cardId ->
+                    viewModel.beginEditQuickCard(cardId)
+                    navController.navigate(QuickCardRoutes.Editor) { launchSingleTop = true }
+                },
+                onOpenSort = {
+                    navController.navigate(QuickCardRoutes.Sort) { launchSingleTop = true }
+                },
+                onCreateCard = { type, link ->
+                    viewModel.beginCreateQuickCard(type, prefillLink = link)
+                    navController.navigate(QuickCardRoutes.Editor) { launchSingleTop = true }
+                },
+                onOpenScanner = {
+                    navController.navigate(QuickCardRoutes.Scanner) { launchSingleTop = true }
+                }
+            )
+        }
+        composable(QuickCardRoutes.Sort) {
+            QuickCardSortScreen(
+                viewModel = viewModel,
+                onTopBarActionsChange = onTopBarActionsChange,
+                onDone = {
+                    navController.popBackStack(QuickCardRoutes.Main, inclusive = false)
+                }
+            )
+        }
+        composable(QuickCardRoutes.Editor) {
+            QuickCardEditorScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() },
+                onTopBarActionsChange = onTopBarActionsChange
+            )
+        }
+        composable(QuickCardRoutes.Scanner) {
+            QuickCardScannerScreen(
+                onTopBarActionsChange = onTopBarActionsChange,
+                onOpenFailed = { navController.popBackStack() },
+                onResult = { decoded ->
+                    val url = normalizeQrTextToWebUrl(decoded)
+                    if (url.isNullOrEmpty()) {
+                        navController.navigate(QuickCardRoutes.scanText(decoded)) {
+                            popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    } else {
+                        navController.navigate(QuickCardRoutes.web(url)) {
+                            popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
+                }
+            )
+        }
+        composable(
+            route = QuickCardRoutes.ScanText,
+            arguments = listOf(navArgument("text") { type = NavType.StringType })
+        ) { entry ->
+            QuickCardScanTextScreen(
+                text = Uri.decode(entry.arguments?.getString("text").orEmpty()),
+                onTopBarActionsChange = onTopBarActionsChange
+            )
+        }
+        composable(
+            route = QuickCardRoutes.Web,
+            arguments = listOf(navArgument("url") { type = NavType.StringType })
+        ) { entry ->
+            QuickCardWebViewScreen(
+                url = Uri.decode(entry.arguments?.getString("url").orEmpty()),
+                onTopBarActionsChange = onTopBarActionsChange
+            )
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun QuickCardMainScreen(
+    viewModel: MainViewModel,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
+    onOpenEditor: (Long) -> Unit,
+    onOpenSort: () -> Unit,
+    onCreateCard: (QuickCardType, String) -> Unit,
+    onOpenScanner: () -> Unit
+) {
+    val context = LocalContext.current
+    val cards = viewModel.quickCards
+    val isLandscape = androidx.compose.ui.platform.LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    var showCreateDialog by remember { mutableStateOf(false) }
+    val previewCardId = viewModel.quickCardPreviewCardId
+    val previewCard = remember(cards, previewCardId) {
+        previewCardId?.let { id -> cards.firstOrNull { it.id == id } }
+    }
+    val closePreview: () -> Unit = { viewModel.closeQuickCardPreview() }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            onOpenScanner()
+        } else {
+            toast(context, "未授予相机权限")
+        }
+    }
+
+    val topActions = remember(cameraPermissionLauncher, context) {
+        QuickCardTopBarActions(
+            onNew = { showCreateDialog = true },
+            onScan = {
+                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    onOpenScanner()
+                } else {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+            }
+        )
+    }
+    SideEffect {
+        onTopBarActionsChange(topActions)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onTopBarActionsChange(null) }
+    }
+
+    val pageCount = (cards.size + 1).coerceAtLeast(1) // always keep a trailing "new card" page
+    val selectedPage = if (cards.isEmpty()) 0 else viewModel.quickCardSelectedIndex.coerceIn(0, cards.lastIndex)
+    var pagerPageIndex by rememberSaveable { mutableIntStateOf(selectedPage) }
+    LaunchedEffect(pageCount, selectedPage) {
+        val maxPage = (pageCount - 1).coerceAtLeast(0)
+        if (pagerPageIndex > maxPage) {
+            pagerPageIndex = maxPage
+        } else if (pagerPageIndex < cards.size && pagerPageIndex != selectedPage) {
+            // sync real card pages with ViewModel selection; keep trailing placeholder page as-is.
+            pagerPageIndex = selectedPage
+        }
+    }
+    val topMargin = UiTokens.PageTopBlank
+    val bottomMargin = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp)
+        ) {
+            Spacer(Modifier.height(topMargin))
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    key("quick_card_pager_landscape") {
+                        QuickCardPagerView(
+                            cards = cards,
+                            currentIndex = pagerPageIndex,
+                            landscape = true,
+                            modifier = Modifier.fillMaxSize(),
+                            onPageChanged = { page ->
+                                val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                pagerPageIndex = safePage
+                                if (cards.isNotEmpty() && safePage < cards.size) {
+                                    viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                                }
+                            },
+                            onCardClick = { card ->
+                                if (card == null) {
+                                    showCreateDialog = true
+                                } else {
+                                    viewModel.openQuickCardPreview(card.id)
+                                }
+                            },
+                            onCardLongPress = { card ->
+                                if (card != null) {
+                                    onOpenSort()
+                                }
+                            },
+                            onEdit = { card ->
+                                onOpenEditor(card.id)
+                            },
+                            onShare = { target ->
+                                shareQuickCard(context, target, true)
+                            }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    QuickCardIndicatorRail(
+                        count = pageCount,
+                        current = pagerPageIndex,
+                        vertical = false
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
+                    key("quick_card_pager_portrait") {
+                        QuickCardPagerView(
+                            cards = cards,
+                            currentIndex = pagerPageIndex,
+                            landscape = false,
+                            modifier = Modifier
+                                .fillMaxSize(),
+                            onPageChanged = { page ->
+                                val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                pagerPageIndex = safePage
+                                if (cards.isNotEmpty() && safePage < cards.size) {
+                                    viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                                }
+                            },
+                            onCardClick = { card ->
+                                if (card == null) {
+                                    showCreateDialog = true
+                                } else {
+                                    viewModel.openQuickCardPreview(card.id)
+                                }
+                            },
+                            onCardLongPress = { card ->
+                                if (card != null) {
+                                    onOpenSort()
+                                }
+                            },
+                            onEdit = { card ->
+                                onOpenEditor(card.id)
+                            },
+                            onShare = { target ->
+                                shareQuickCard(context, target, false)
+                            }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    QuickCardIndicatorRail(
+                        count = pageCount,
+                        current = pagerPageIndex,
+                        vertical = false
+                    )
+                }
+            }
+            Spacer(Modifier.height(bottomMargin))
+        }
+
+    }
+
+    if (previewCardId != null) {
+        Dialog(
+            onDismissRequest = closePreview,
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 18.dp, vertical = 24.dp)
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) { closePreview() },
+                contentAlignment = Alignment.Center
+            ) {
+                val dialogCardAspect = if (isLandscape) QUICK_CARD_ASPECT_LANDSCAPE else QUICK_CARD_ASPECT_PORTRAIT
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                val maxCardWidth = if (isLandscape) {
+                    maxWidth * QUICK_CARD_LANDSCAPE_CARD_WIDTH_FRACTION
+                } else {
+                    maxWidth
+                }
+                val maxCardHeight = maxHeight
+                val widthByHeight = maxCardHeight * dialogCardAspect
+                val finalWidth = minOf(maxCardWidth, widthByHeight)
+                val finalHeight = finalWidth / dialogCardAspect
+
+                    if (previewCard != null) {
+                        QuickCardPreviewCard(
+                            card = previewCard,
+                            landscape = isLandscape,
+                            modifier = if (isLandscape) {
+                                Modifier.size(width = finalWidth, height = finalHeight)
+                            } else {
+                                Modifier.width(finalWidth)
+                            },
+                            onClick = {},
+                            onLongClick = {},
+                            onEdit = { card ->
+                                closePreview()
+                                onOpenEditor(card.id)
+                            },
+                            onShare = { target ->
+                                shareQuickCard(context, target, isLandscape)
+                            }
+                        )
+                    } else {
+                        Card(
+                            modifier = if (isLandscape) {
+                                Modifier.size(width = finalWidth, height = finalHeight)
+                            } else {
+                                Modifier.width(finalWidth)
+                            },
+                            shape = RoundedCornerShape(UiTokens.Radius),
+                            backgroundColor = md2CardContainerColor(),
+                            elevation = UiTokens.CardElevation
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 36.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showCreateDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateDialog = false },
+            title = { Text("新建名片") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("选择名片类型")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Md2OutlinedButton(
+                            onClick = {
+                                showCreateDialog = false
+                                onCreateCard(QuickCardType.Image, "")
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("图片名片") }
+                        Md2OutlinedButton(
+                            onClick = {
+                                showCreateDialog = false
+                                onCreateCard(QuickCardType.Qr, "")
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("二维码名片") }
+                    }
+                    Md2OutlinedButton(
+                        onClick = {
+                            showCreateDialog = false
+                            onCreateCard(QuickCardType.Text, "")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("文字名片") }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                Md2TextButton(onClick = { showCreateDialog = false }) { Text("取消") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun QuickCardSortScreen(
+    viewModel: MainViewModel,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
+    onDone: () -> Unit
+) {
+    val cards = viewModel.quickCards
+    val topBlank = UiTokens.PageTopBlank
+    val bottomBlank = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 8.dp
+
+    SideEffect {
+        onTopBarActionsChange(
+            QuickCardTopBarActions(
+                onConfirm = onDone,
+                canConfirm = true
+            )
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onTopBarActionsChange(null) }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        Spacer(Modifier.height(topBlank))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            Text(
+                text = "拖动右侧排序按钮调整名片顺序",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        QuickCardSortRecyclerList(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            cards = cards,
+            topBlankHeight = 2.dp,
+            bottomBlankHeight = 2.dp,
+            onReorder = { ids ->
+                viewModel.reorderQuickCardsByIds(ids)
+            }
+        )
+        Spacer(Modifier.height(bottomBlank))
+    }
+}
+
+@Composable
+private fun QuickCardSortRecyclerList(
+    modifier: Modifier = Modifier,
+    cards: List<QuickCard>,
+    topBlankHeight: Dp,
+    bottomBlankHeight: Dp,
+    onReorder: (List<Long>) -> Unit
+) {
+    val parentComposition = rememberCompositionContext()
+    val density = LocalDensity.current
+    val topBlankPx = with(density) { topBlankHeight.roundToPx() }
+    val bottomBlankPx = with(density) { bottomBlankHeight.roundToPx() }
+    val onReorderState = rememberUpdatedState(onReorder)
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            val recycler = RecyclerView(ctx).apply {
+                layoutManager = LinearLayoutManager(ctx)
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                clipToPadding = false
+                clipChildren = false
+                itemAnimator = DefaultItemAnimator().apply {
+                    supportsChangeAnimations = false
+                    addDuration = 120L
+                    removeDuration = 120L
+                    moveDuration = 160L
+                    changeDuration = 0L
+                }
+                setPadding(paddingLeft, topBlankPx, paddingRight, bottomBlankPx)
+            }
+
+            val adapter = QuickCardSortRecyclerAdapter(parentComposition = parentComposition)
+            recycler.adapter = adapter
+
+            val touchCallback = object : ItemTouchHelper.Callback() {
+                private var moved = false
+
+                override fun isLongPressDragEnabled(): Boolean = false
+                override fun isItemViewSwipeEnabled(): Boolean = false
+
+                override fun getMovementFlags(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder
+                ): Int {
+                    val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
+                    return makeMovementFlags(dragFlags, 0)
+                }
+
+                override fun onMove(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    target: RecyclerView.ViewHolder
+                ): Boolean {
+                    val from = viewHolder.bindingAdapterPosition
+                    val to = target.bindingAdapterPosition
+                    val ok = adapter.move(from, to)
+                    moved = moved || ok
+                    return ok
+                }
+
+                override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
+
+                override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
+                    super.onSelectedChanged(viewHolder, actionState)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
+                        adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
+                    } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        adapter.clearDraggingItem()
+                    }
+                    adapter.isDragging = actionState == ItemTouchHelper.ACTION_STATE_DRAG
+                }
+
+                override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    super.clearView(recyclerView, viewHolder)
+                    adapter.isDragging = false
+                    adapter.clearDraggingItem()
+                    if (moved) {
+                        onReorderState.value(adapter.snapshotIds())
+                        moved = false
+                    }
+                }
+            }
+            val touchHelper = ItemTouchHelper(touchCallback)
+            touchHelper.attachToRecyclerView(recycler)
+            adapter.onStartDrag = { vh -> touchHelper.startDrag(vh) }
+            recycler
+        },
+        update = { recycler ->
+            val adapter = recycler.adapter as? QuickCardSortRecyclerAdapter ?: return@AndroidView
+            recycler.setPadding(recycler.paddingLeft, topBlankPx, recycler.paddingRight, bottomBlankPx)
+            recycler.post {
+                adapter.submitFromState(cards)
+            }
+        }
+    )
+}
+
+private class QuickCardSortRecyclerAdapter(
+    private val parentComposition: CompositionContext
+) : RecyclerView.Adapter<QuickCardSortRecyclerAdapter.ItemViewHolder>() {
+    private val items = mutableListOf<QuickCard>()
+    var isDragging: Boolean = false
+    var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
+    private var draggingItemId: Long? = null
+
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long = items[position].id
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ItemViewHolder {
+        val composeView = ComposeView(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindowOrReleasedFromPool)
+            setParentCompositionContext(parentComposition)
+        }
+        return ItemViewHolder(composeView)
+    }
+
+    override fun getItemCount(): Int = items.size
+
+    override fun onBindViewHolder(holder: ItemViewHolder, position: Int) {
+        val card = items[position]
+        holder.bind(
+            card = card,
+            isDragged = draggingItemId == card.id,
+            onStartDrag = {
+                if (holder.bindingAdapterPosition != RecyclerView.NO_POSITION) {
+                    onStartDrag?.invoke(holder)
+                }
+            }
+        )
+    }
+
+    fun submitFromState(newItems: List<QuickCard>) {
+        if (isDragging) return
+        if (items == newItems) return
+        val oldItems = items.toList()
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldItems.size
+            override fun getNewListSize(): Int = newItems.size
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldItems[oldItemPosition].id == newItems[newItemPosition].id
+            }
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldItems[oldItemPosition] == newItems[newItemPosition]
+            }
+        })
+        items.clear()
+        items.addAll(newItems)
+        diff.dispatchUpdatesTo(this)
+    }
+
+    fun move(from: Int, to: Int): Boolean {
+        if (from == to || from !in items.indices || to !in items.indices) return false
+        val moved = items.removeAt(from)
+        items.add(to, moved)
+        notifyItemMoved(from, to)
+        return true
+    }
+
+    fun snapshotIds(): List<Long> = items.map { it.id }
+
+    fun setDraggingPosition(position: Int) {
+        val targetId = items.getOrNull(position)?.id
+        if (draggingItemId == targetId) return
+        val oldId = draggingItemId
+        draggingItemId = targetId
+        oldId?.let { id ->
+            val idx = items.indexOfFirst { it.id == id }
+            if (idx >= 0) notifyItemChanged(idx)
+        }
+        targetId?.let { id ->
+            val idx = items.indexOfFirst { it.id == id }
+            if (idx >= 0) notifyItemChanged(idx)
+        }
+    }
+
+    fun clearDraggingItem() {
+        val oldId = draggingItemId ?: return
+        draggingItemId = null
+        val idx = items.indexOfFirst { it.id == oldId }
+        if (idx >= 0) notifyItemChanged(idx)
+    }
+
+    class ItemViewHolder(private val composeView: ComposeView) : RecyclerView.ViewHolder(composeView) {
+        fun bind(
+            card: QuickCard,
+            isDragged: Boolean,
+            onStartDrag: () -> Unit
+        ) {
+            composeView.setContent {
+                QuickCardSortRow(
+                    card = card,
+                    isDragged = isDragged,
+                    onStartDrag = onStartDrag
+                )
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalComposeUiApi::class)
+private fun QuickCardSortRow(
+    card: QuickCard,
+    isDragged: Boolean,
+    onStartDrag: () -> Unit
+) {
+    val rowElevation by animateDpAsState(
+        targetValue = if (isDragged) 10.dp else UiTokens.CardElevation,
+        animationSpec = tween(
+            durationMillis = if (isDragged) 120 else 160,
+            easing = FastOutSlowInEasing
+        ),
+        label = "quick_card_sort_item_elevation"
+    )
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = rowElevation
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = card.title.ifBlank { "名片名字" },
+                    style = MaterialTheme.typography.subtitle1,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = when (card.type) {
+                        QuickCardType.Image -> "图片名片"
+                        QuickCardType.Qr -> "二维码名片"
+                        QuickCardType.Text -> "文字名片"
+                    },
+                    style = MaterialTheme.typography.caption,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Md2IconButton(
+                icon = "drag_indicator",
+                contentDescription = "拖动排序",
+                onClick = {},
+                modifier = Modifier.pointerInteropFilter { ev ->
+                    when (ev.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            onStartDrag()
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE,
+                        MotionEvent.ACTION_UP,
+                        MotionEvent.ACTION_CANCEL -> true
+                        else -> false
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickCardScannerScreen(
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
+    onOpenFailed: () -> Unit,
+    onResult: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val previewView = remember(context) {
+        PreviewView(context).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
+    val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
+    val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
+    val scanned = remember { AtomicBoolean(false) }
+    var cameraReady by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        onTopBarActionsChange(null)
+    }
+
+    DisposableEffect(previewView, lifecycleOwner) {
+        val providerFuture = ProcessCameraProvider.getInstance(context)
+        val listener = Runnable {
+            val provider = runCatching { providerFuture.get() }.getOrNull()
+            if (provider == null) {
+                toast(context, "相机初始化失败")
+                onOpenFailed()
+                return@Runnable
+            }
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(previewView.surfaceProvider)
+            }
+            val analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+            val reader = MultiFormatReader().apply {
+                setHints(
+                    mapOf(
+                        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                        DecodeHintType.TRY_HARDER to true
+                    )
+                )
+            }
+
+            analysis.setAnalyzer(analyzerExecutor) { imageProxy ->
+                try {
+                    if (!scanned.get()) {
+                        val text = decodeQrFromImageProxy(imageProxy, reader)?.trim().orEmpty()
+                        if (text.isNotEmpty() && scanned.compareAndSet(false, true)) {
+                            mainExecutor.execute { onResult(text) }
+                        }
+                    }
+                } finally {
+                    imageProxy.close()
+                }
+            }
+
+            runCatching {
+                provider.unbindAll()
+                provider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    analysis
+                )
+                cameraReady = true
+            }.onFailure {
+                AppLogger.e("quickCard scanner bind failed", it)
+                toast(context, "无法打开相机")
+                onOpenFailed()
+            }
+        }
+        providerFuture.addListener(listener, mainExecutor)
+        onDispose {
+            runCatching {
+                if (providerFuture.isDone) {
+                    providerFuture.get().unbindAll()
+                }
+            }
+            analyzerExecutor.shutdown()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.9f))
+    ) {
+        AndroidView(
+            factory = { previewView },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            Text(
+                text = if (cameraReady) "将二维码置于取景框内自动识别" else "正在打开相机...",
+                color = Color.White,
+                style = MaterialTheme.typography.subtitle1,
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .size(260.dp)
+                .align(Alignment.Center)
+                .border(BorderStroke(2.dp, Color.White), RoundedCornerShape(14.dp))
+        )
+    }
+}
+
+@Composable
+private fun QuickCardScanTextScreen(
+    text: String,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val content = remember(text) { text.ifBlank { "(空内容)" } }
+
+    LaunchedEffect(Unit) {
+        onTopBarActionsChange(null)
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            SelectionContainer {
+                Text(
+                    text = content,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.h6,
+                    textAlign = TextAlign.Center
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Md2Button(onClick = {
+                    clipboard.setText(AnnotatedString(content))
+                    toast(context, "已复制")
+                }) {
+                    Text("复制")
+                }
+                Md2OutlinedButton(onClick = {
+                    sharePlainText(context, content, "分享二维码结果")
+                }) {
+                    Text("分享")
+                }
+            }
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun QuickCardWebViewScreen(
+    url: String,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
+) {
+    var loading by remember(url) { mutableStateOf(true) }
+    val webViewRef = remember { mutableStateOf<WebView?>(null) }
+
+    LaunchedEffect(Unit) {
+        onTopBarActionsChange(null)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            webViewRef.value?.let { webView ->
+                runCatching {
+                    webView.stopLoading()
+                    webView.destroy()
+                }
+            }
+            webViewRef.value = null
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { context ->
+                WebView(context).apply {
+                    webViewRef.value = this
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                    settings.loadWithOverviewMode = true
+                    settings.useWideViewPort = true
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean = false
+
+                        override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                            loading = true
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            loading = false
+                        }
+                    }
+                    loadUrl(url)
+                }
+            },
+            update = { webView ->
+                if (!url.equals(webView.url.orEmpty(), ignoreCase = true)) {
+                    loading = true
+                    webView.loadUrl(url)
+                }
+            }
+        )
+        AnimatedVisibility(
+            visible = loading,
+            enter = fadeIn(animationSpec = tween(90)),
+            exit = fadeOut(animationSpec = tween(120)),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+private fun decodeQrFromImageProxy(
+    imageProxy: ImageProxy,
+    reader: MultiFormatReader
+): String? {
+    val width = imageProxy.width
+    val height = imageProxy.height
+    if (width <= 0 || height <= 0) return null
+
+    val yPlane = imageProxy.planes.firstOrNull() ?: return null
+    val rowStride = yPlane.rowStride
+    val pixelStride = yPlane.pixelStride
+    val yBuffer = yPlane.buffer
+    yBuffer.rewind()
+
+    val luminance = ByteArray(width * height)
+    if (pixelStride == 1 && rowStride == width) {
+        if (yBuffer.remaining() < luminance.size) return null
+        yBuffer.get(luminance)
+    } else {
+        val rowBytes = ByteArray(rowStride)
+        var dstOffset = 0
+        for (row in 0 until height) {
+            val toRead = minOf(rowStride, yBuffer.remaining())
+            if (toRead <= 0) break
+            yBuffer.get(rowBytes, 0, toRead)
+            var col = 0
+            var src = 0
+            while (col < width && src < toRead) {
+                luminance[dstOffset + col] = rowBytes[src]
+                col++
+                src += pixelStride
+            }
+            dstOffset += width
+        }
+    }
+
+    val source = PlanarYUVLuminanceSource(
+        luminance,
+        width,
+        height,
+        0,
+        0,
+        width,
+        height,
+        false
+    )
+    val bitmap = BinaryBitmap(HybridBinarizer(source))
+    return runCatching { reader.decodeWithState(bitmap)?.text }
+        .getOrNull()
+        .also { reader.reset() }
+}
+
+@Composable
+private fun QuickCardPagerView(
+    cards: List<QuickCard>,
+    currentIndex: Int,
+    landscape: Boolean,
+    modifier: Modifier = Modifier,
+    onPageChanged: (Int) -> Unit,
+    onCardClick: (QuickCard?) -> Unit,
+    onCardLongPress: (QuickCard?) -> Unit,
+    onEdit: (QuickCard) -> Unit,
+    onShare: (QuickCard) -> Unit
+) {
+    val onPageChangedState by rememberUpdatedState(onPageChanged)
+    val onCardClickState by rememberUpdatedState(onCardClick)
+    val onCardLongPressState by rememberUpdatedState(onCardLongPress)
+    val onEditState by rememberUpdatedState(onEdit)
+    val onShareState by rememberUpdatedState(onShare)
+
+    AndroidView(
+        modifier = modifier,
+        factory = { context ->
+            val density = context.resources.displayMetrics.density
+            val edgeGuardPx = (density * if (landscape) 56f else 6f).toInt()
+            val pageMarginPx = (density * if (landscape) 2f else 0f).toInt()
+            ViewPager2(context).apply {
+                orientation = ViewPager2.ORIENTATION_HORIZONTAL
+                offscreenPageLimit = if (landscape) 3 else 2
+                clipToPadding = false
+                clipChildren = false
+                setPadding(edgeGuardPx, 0, edgeGuardPx, 0)
+                setPageTransformer(MarginPageTransformer(pageMarginPx))
+                (getChildAt(0) as? RecyclerView)?.apply {
+                    overScrollMode = RecyclerView.OVER_SCROLL_NEVER
+                    clipToPadding = false
+                    clipChildren = false
+                    itemAnimator = null
+                    setHasFixedSize(true)
+                }
+                var userGestureInProgress = false
+                val callback = object : ViewPager2.OnPageChangeCallback() {
+                    override fun onPageScrollStateChanged(state: Int) {
+                        when (state) {
+                            ViewPager2.SCROLL_STATE_DRAGGING -> userGestureInProgress = true
+                            ViewPager2.SCROLL_STATE_IDLE -> userGestureInProgress = false
+                        }
+                    }
+
+                    override fun onPageSelected(position: Int) {
+                        // Ignore programmatic page changes caused by data updates/reorder.
+                        // Only treat user-driven drags as page-selection input.
+                        if (userGestureInProgress) {
+                            onPageChangedState(position)
+                        }
+                    }
+                }
+                registerOnPageChangeCallback(callback)
+                tag = callback
+                adapter = QuickCardPagerAdapter()
+            }
+        },
+        update = { pager ->
+            val adapter = (pager.adapter as? QuickCardPagerAdapter) ?: return@AndroidView
+            val density = pager.context.resources.displayMetrics.density
+            val edgeGuardPx = (density * if (landscape) 56f else 6f).toInt()
+            val pageMarginPx = (density * if (landscape) 2f else 0f).toInt()
+            pager.offscreenPageLimit = if (landscape) 3 else 2
+            pager.setPadding(edgeGuardPx, 0, edgeGuardPx, 0)
+            pager.setPageTransformer(MarginPageTransformer(pageMarginPx))
+            adapter.landscape = landscape
+            adapter.onCardClick = onCardClickState
+            adapter.onCardLongPress = onCardLongPressState
+            adapter.onEdit = onEditState
+            adapter.onShare = onShareState
+            adapter.submitCards(cards)
+            val target = currentIndex.coerceIn(0, (adapter.itemCount - 1).coerceAtLeast(0))
+            if (pager.currentItem != target) {
+                pager.setCurrentItem(target, false)
+            }
+        }
+    )
+}
+
+private class QuickCardPagerAdapter : RecyclerView.Adapter<QuickCardPagerAdapter.QuickCardPageViewHolder>() {
+    private var items: List<QuickCard?> = listOf(null)
+    var landscape: Boolean = false
+    var onCardClick: (QuickCard?) -> Unit = {}
+    var onCardLongPress: (QuickCard?) -> Unit = {}
+    var onEdit: (QuickCard) -> Unit = {}
+    var onShare: (QuickCard) -> Unit = {}
+
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long {
+        return items[position]?.id ?: Long.MIN_VALUE
+    }
+
+    fun submitCards(cards: List<QuickCard>) {
+        // Always keep trailing placeholder page for creating a new card.
+        val next: List<QuickCard?> = cards + listOf(null)
+        if (items == next) return
+        items = next
+        notifyDataSetChanged()
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): QuickCardPageViewHolder {
+        val composeView = ComposeView(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+        }
+        return QuickCardPageViewHolder(composeView)
+    }
+
+    override fun onBindViewHolder(holder: QuickCardPageViewHolder, position: Int) {
+        val card = items[position]
+        val isLandscape = landscape
+        val click = onCardClick
+        val longPress = onCardLongPress
+        val edit = onEdit
+        val share = onShare
+        holder.composeView.setContent {
+            val cardAspect = if (isLandscape) QUICK_CARD_ASPECT_LANDSCAPE else QUICK_CARD_ASPECT_PORTRAIT
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                val maxCardWidth = if (isLandscape) {
+                    maxWidth * QUICK_CARD_LANDSCAPE_CARD_WIDTH_FRACTION
+                } else {
+                    maxWidth
+                }
+                val maxCardHeight = maxHeight
+                val widthByHeight = maxCardHeight * cardAspect
+                val finalWidth = minOf(maxCardWidth, widthByHeight)
+                val finalHeight = finalWidth / cardAspect
+
+                QuickCardPreviewCard(
+                    card = card,
+                    landscape = isLandscape,
+                    modifier = if (isLandscape) {
+                        Modifier.size(width = finalWidth, height = finalHeight)
+                    } else {
+                        Modifier.width(finalWidth)
+                    },
+                    onClick = { click(card) },
+                    onLongClick = { longPress(card) },
+                    onEdit = { target -> edit(target) },
+                    onShare = { target -> share(target) }
+                )
+            }
+        }
+    }
+
+    override fun getItemCount(): Int = items.size
+
+    class QuickCardPageViewHolder(
+        val composeView: ComposeView
+    ) : RecyclerView.ViewHolder(composeView)
+}
+
+@Composable
+private fun QuickCardIndicatorRail(
+    count: Int,
+    current: Int,
+    vertical: Boolean = true
+) {
+    val safeCount = count.coerceAtLeast(1)
+    val dotSize = 6.dp
+    val gap = 6.dp
+    val contentSpan = dotSize * safeCount + gap * (safeCount - 1)
+    val trackModifier = if (vertical) {
+        Modifier.width(14.dp).height(contentSpan + 12.dp)
+    } else {
+        Modifier.height(14.dp).width(contentSpan + 12.dp)
+    }
+    val arrangement = Arrangement.spacedBy(6.dp)
+
+    Card(
+        shape = RoundedCornerShape(50),
+        backgroundColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+        elevation = 0.dp
+    ) {
+        if (vertical) {
+            Column(
+                modifier = trackModifier.padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalArrangement = arrangement,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                repeat(count) { index ->
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(if (index == current) UiTokens.Primary else Color.White.copy(alpha = 0.85f))
+                    )
+                }
+            }
+        } else {
+            Row(
+                modifier = trackModifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                horizontalArrangement = arrangement,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                repeat(count) { index ->
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(if (index == current) UiTokens.Primary else Color.White.copy(alpha = 0.85f))
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun QuickCardPreviewCard(
+    card: QuickCard?,
+    landscape: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onEdit: (QuickCard) -> Unit,
+    onShare: (QuickCard) -> Unit
+) {
+    Card(
+        modifier = modifier.combinedClickable(
+            onClick = onClick,
+            onLongClick = onLongClick
+        ),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        if (card == null) {
+            val placeholderModifier = if (landscape) {
+                Modifier.fillMaxSize()
+            } else {
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(QUICK_CARD_CONTENT_ASPECT_PORTRAIT)
+            }
+            Box(
+                modifier = placeholderModifier
+                    .padding(16.dp)
+                    .clip(RoundedCornerShape(UiTokens.Radius))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    MsIcon("add_circle", contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(8.dp))
+                    Text("点击以新建名片", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            return@Card
+        }
+
+        if (landscape) {
+            QuickCardLandscapeContent(card = card, onEdit = onEdit, onShare = onShare)
+        } else {
+            QuickCardPortraitContent(card = card, onEdit = onEdit, onShare = onShare)
+        }
+    }
+}
+
+@Composable
+private fun QuickCardBrandLogo(
+    modifier: Modifier = Modifier
+) {
+    val logoRes = if (isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
+    Image(
+        painter = androidx.compose.ui.res.painterResource(id = logoRes),
+        contentDescription = "KIGTTS",
+        modifier = modifier.height(18.dp),
+        contentScale = ContentScale.Fit
+    )
+}
+
+@Composable
+private fun QuickCardPortraitContent(
+    card: QuickCard,
+    onEdit: (QuickCard) -> Unit,
+    onShare: (QuickCard) -> Unit
+) {
+    val theme = quickCardThemeColor(card.themeColor)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .wrapContentHeight()
+            .padding(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(QUICK_CARD_CONTENT_ASPECT_PORTRAIT)
+                .clip(RoundedCornerShape(UiTokens.Radius))
+        ) {
+            QuickCardHeroArea(
+                card = card,
+                landscape = false,
+                modifier = Modifier.fillMaxSize(),
+                onShare = onShare
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp, bottom = 2.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(
+                        card.title.ifBlank { "名片名字" },
+                        style = MaterialTheme.typography.h6,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        card.note.ifBlank { "愿你的生活充满诗与远方" },
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Md2IconButton(
+                    icon = "edit",
+                    contentDescription = "编辑名片",
+                    onClick = { onEdit(card) }
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                QuickCardBrandLogo()
+            }
+            Spacer(Modifier.height(1.dp))
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .background(theme)
+        )
+    }
+}
+
+@Composable
+private fun QuickCardLandscapeContent(
+    card: QuickCard,
+    onEdit: (QuickCard) -> Unit,
+    onShare: (QuickCard) -> Unit
+) {
+    val theme = quickCardThemeColor(card.themeColor)
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .aspectRatio(QUICK_CARD_CONTENT_ASPECT_LANDSCAPE, matchHeightConstraintsFirst = true)
+                .clip(RoundedCornerShape(UiTokens.Radius))
+        ) {
+            QuickCardHeroArea(
+                card = card,
+                landscape = true,
+                modifier = Modifier.fillMaxSize(),
+                onShare = onShare
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .padding(vertical = 2.dp)
+        ) {
+            Text(
+                card.title.ifBlank { "名片名字" },
+                style = MaterialTheme.typography.h6,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                card.note.ifBlank { "愿你的生活充满诗与远方" },
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Start
+            ) {
+                Md2IconButton(
+                    icon = "edit",
+                    contentDescription = "编辑名片",
+                    onClick = { onEdit(card) }
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                QuickCardBrandLogo()
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .fillMaxHeight()
+                .background(theme)
+        )
+    }
+}
+
+@Composable
+private fun QuickCardHeroArea(
+    card: QuickCard,
+    landscape: Boolean,
+    modifier: Modifier,
+    onShare: (QuickCard) -> Unit
+) {
+    val context = LocalContext.current
+    val theme = quickCardThemeColor(card.themeColor)
+    val onTheme = quickCardThemeOnColor(theme)
+    val linkText = card.link.trim()
+    val imagePath = card.heroImagePath(landscape)
+    val imageBitmap = rememberQuickCardBitmap(imagePath)
+    val qrBitmap = remember(linkText) { generateQuickCardQrBitmap(linkText) }
+    val showLinkShare = linkText.isNotEmpty() && (card.type == QuickCardType.Qr || card.type == QuickCardType.Text)
+    val showImageLinkActions = card.type == QuickCardType.Image && linkText.isNotEmpty()
+
+    Box(modifier = modifier.background(theme)) {
+        when (card.type) {
+            QuickCardType.Image -> {
+                if (imageBitmap != null) {
+                    Image(
+                        bitmap = imageBitmap.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("未设置图片", color = onTheme.copy(alpha = 0.85f))
+                    }
+                }
+                if (showImageLinkActions) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .height(if (landscape) 84.dp else 96.dp)
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        Color.Black.copy(alpha = 0.42f)
+                                    )
+                                )
+                            )
+                    )
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = linkText,
+                            modifier = Modifier.weight(1f),
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            QuickCardOverlayIconButton(
+                                icon = "open_in_new",
+                                contentDescription = "打开链接",
+                                tint = Color.White
+                            ) { openQuickCardLink(context, linkText) }
+                            QuickCardOverlayIconButton(
+                                icon = "share",
+                                contentDescription = "分享链接",
+                                tint = Color.White
+                            ) { sharePlainText(context, linkText, "分享链接") }
+                        }
+                    }
+                }
+            }
+
+            QuickCardType.Qr -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    if (qrBitmap != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(if (landscape) 116.dp else 146.dp)
+                                .clip(RoundedCornerShape(UiTokens.Radius))
+                                .background(Color.White),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                bitmap = qrBitmap.asImageBitmap(),
+                                contentDescription = "二维码",
+                                modifier = Modifier.fillMaxSize(0.86f)
+                            )
+                        }
+                    } else {
+                        Text("未设置链接", color = onTheme.copy(alpha = 0.9f))
+                    }
+                    if (linkText.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = linkText,
+                            color = onTheme,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        CompositionLocalProvider(LocalContentColor provides onTheme) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Md2IconButton(
+                                    icon = "open_in_new",
+                                    contentDescription = "打开链接",
+                                    onClick = { openQuickCardLink(context, linkText) }
+                                )
+                                Md2IconButton(
+                                    icon = "share",
+                                    contentDescription = "分享链接",
+                                    onClick = { onShare(card) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            QuickCardType.Text -> {
+                val watermark = card.title.ifBlank { "名片名字" }
+                var portraitWatermarkWidthPx by remember(watermark) { mutableIntStateOf(0) }
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    if (landscape) {
+                        Text(
+                            text = watermark,
+                            color = onTheme.copy(alpha = 0.22f),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 64.sp,
+                            softWrap = false,
+                            maxLines = 1,
+                            overflow = TextOverflow.Visible,
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .graphicsLayer(clip = false)
+                                .width(maxWidth * 1.8f)
+                                .padding(start = 8.dp, bottom = 4.dp)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .fillMaxHeight()
+                                .width(68.dp)
+                                .background(
+                                    Brush.horizontalGradient(
+                                        colors = listOf(Color.Transparent, theme)
+                                    )
+                                )
+                        )
+                    } else {
+                        val topPad = 10.dp
+                        val topPadPx = with(LocalDensity.current) { topPad.toPx() }
+                        Text(
+                            text = watermark,
+                            color = onTheme.copy(alpha = 0.22f),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 96.sp,
+                            softWrap = false,
+                            maxLines = 1,
+                            overflow = TextOverflow.Visible,
+                            onTextLayout = { portraitWatermarkWidthPx = it.size.width },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(end = 10.dp)
+                                .graphicsLayer(
+                                    rotationZ = 90f,
+                                    transformOrigin = TransformOrigin(1f, 0f),
+                                    translationY = portraitWatermarkWidthPx.toFloat() + topPadPx,
+                                    clip = false
+                                )
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .fillMaxWidth()
+                                .height(72.dp)
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(Color.Transparent, theme)
+                                    )
+                                )
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = 12.dp, end = 12.dp, bottom = 12.dp, top = 16.dp)
+                ) {
+                    Text(
+                        text = card.title.ifBlank { "名片名字" },
+                        color = onTheme,
+                        style = MaterialTheme.typography.h5,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (card.note.isNotBlank()) {
+                        Text(
+                            text = card.note,
+                            color = onTheme.copy(alpha = 0.9f),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (showLinkShare) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = linkText,
+                                modifier = Modifier.weight(1f),
+                                color = onTheme,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            CompositionLocalProvider(LocalContentColor provides onTheme) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Md2IconButton(
+                                        icon = "open_in_new",
+                                        contentDescription = "打开链接",
+                                        onClick = { openQuickCardLink(context, linkText) }
+                                    )
+                                    Md2IconButton(
+                                        icon = "share",
+                                        contentDescription = "分享链接",
+                                        onClick = { onShare(card) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickCardOverlayIconButton(
+    icon: String,
+    contentDescription: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier
+            .size(34.dp)
+            .clip(CircleShape)
+    ) {
+        MsIcon(
+            name = icon,
+            contentDescription = contentDescription,
+            tint = tint
+        )
+    }
+}
+
+@Composable
+private fun QuickCardTypeChip(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit
+) {
+    if (selected) {
+        Md2Button(onClick = onClick) { Text(label) }
+    } else {
+        Md2OutlinedButton(onClick = onClick) { Text(label) }
+    }
+}
+
+@Composable
+private fun QuickCardEditorScreen(
+    viewModel: MainViewModel,
+    onBack: () -> Unit,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
+) {
+    val context = LocalContext.current
+    val uiState = viewModel.uiState
+    val draft = viewModel.quickCardDraft
+    var cropLandscape by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showExitConfirm by remember { mutableStateOf(false) }
+    var showThemeColorDialog by remember { mutableStateOf(false) }
+    var themeHexInput by rememberSaveable { mutableStateOf("#038387") }
+    var themeHue by rememberSaveable { mutableFloatStateOf(180f) }
+    var themeSat by rememberSaveable { mutableFloatStateOf(1f) }
+    var themeLight by rememberSaveable { mutableFloatStateOf(0.27f) }
+    var exitConfirmAutoSaveChecked by remember { mutableStateOf(false) }
+    var suppressNullDraftAutoBack by remember { mutableStateOf(false) }
+    val presetColors = remember {
+        listOf("#038387", "#ff6d00", "#f4511e", "#8e24aa", "#3949ab", "#2e7d32", "#6d4c41", "#111111")
+    }
+    fun normalizeHexOrNull(raw: String): String? {
+        val v = raw.trim().let { if (it.startsWith("#")) it else "#$it" }
+        return if (Regex("^#[0-9a-fA-F]{6}$").matches(v)) v.lowercase(Locale.US) else null
+    }
+
+    if (draft == null) {
+        LaunchedEffect(suppressNullDraftAutoBack) {
+            if (!suppressNullDraftAutoBack) onBack()
+        }
+        return
+    }
+
+    val cropLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
+        if (result.isSuccessful) {
+            val uri = result.uriContent
+            if (uri != null) {
+                if (!viewModel.setQuickCardDraftImage(uri, landscape = cropLandscape)) {
+                    toast(context, "设置图片失败")
+                }
+            } else {
+                toast(context, "裁剪失败：无输出")
+            }
+        } else {
+            toast(context, "裁剪失败")
+        }
+    }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val options = CropImageOptions(
+            fixAspectRatio = true,
+            aspectRatioX = if (cropLandscape) 5 else 3,
+            aspectRatioY = if (cropLandscape) 3 else 5,
+            activityTitle = "裁剪名片图片",
+            cropMenuCropButtonTitle = "确认",
+            activityMenuIconColor = 0xFFFFFFFF.toInt(),
+            activityMenuTextColor = 0xFFFFFFFF.toInt(),
+            activityBackgroundColor = 0xFF121212.toInt(),
+            toolbarColor = 0xFF038387.toInt(),
+            toolbarTitleColor = 0xFFFFFFFF.toInt(),
+            toolbarBackButtonColor = 0xFFFFFFFF.toInt(),
+            toolbarTintColor = 0xFFFFFFFF.toInt(),
+            outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
+            outputCompressQuality = 100
+        )
+        cropLauncher.launch(CropImageContractOptions(uri, options))
+    }
+
+    fun requestExitEditor() {
+        val autoSave = uiState.quickCardAutoSaveOnExit
+        val hasChanges = viewModel.hasQuickCardDraftChanges()
+        if (!hasChanges) {
+            onBack()
+            return
+        }
+        if (autoSave) {
+            val saved = viewModel.saveQuickCardDraft()
+            if (saved != null) {
+                toast(context, "已自动保存名片")
+                onBack()
+            } else {
+                toast(context, "自动保存失败")
+            }
+            return
+        }
+        exitConfirmAutoSaveChecked = false
+        showExitConfirm = true
+    }
+
+    BackHandler {
+        requestExitEditor()
+    }
+
+    val isExisting = !draft.isNew && draft.editId != null
+    LaunchedEffect(draft.themeColor) {
+        if (!showThemeColorDialog) {
+            themeHexInput = draft.themeColor
+            val hsl = composeColorToHsl(quickCardThemeColor(draft.themeColor))
+            themeHue = hsl[0]
+            themeSat = hsl[1]
+            themeLight = hsl[2]
+        }
+    }
+    val editorActions = if (!isExisting) {
+        QuickCardTopBarActions(
+            onNew = {},
+            onScan = {},
+            onBackRequest = { requestExitEditor() }
+        )
+    } else {
+        QuickCardTopBarActions(
+            onNew = {},
+            onScan = {},
+            onCopy = {
+                val copied = viewModel.duplicateEditingQuickCard()
+                if (copied != null) toast(context, "已复制名片")
+            },
+            onDelete = { showDeleteConfirm = true },
+            onBackRequest = { requestExitEditor() },
+            canCopy = true,
+            canDelete = true
+        )
+    }
+
+    SideEffect {
+        onTopBarActionsChange(editorActions)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onTopBarActionsChange(null) }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Spacer(Modifier.height(UiTokens.PageTopBlank))
+
+        Md2SettingsCard("基础信息") {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                QuickCardTypeChip(
+                    selected = draft.type == QuickCardType.Image,
+                    label = "图片名片",
+                    onClick = { viewModel.updateQuickCardDraft { it.copy(type = QuickCardType.Image) } }
+                )
+                QuickCardTypeChip(
+                    selected = draft.type == QuickCardType.Qr,
+                    label = "二维码名片",
+                    onClick = { viewModel.updateQuickCardDraft { it.copy(type = QuickCardType.Qr) } }
+                )
+                QuickCardTypeChip(
+                    selected = draft.type == QuickCardType.Text,
+                    label = "文字名片",
+                    onClick = { viewModel.updateQuickCardDraft { it.copy(type = QuickCardType.Text) } }
+                )
+            }
+            Md2OutlinedField(
+                value = draft.title,
+                onValueChange = { viewModel.updateQuickCardDraft { old -> old.copy(title = it) } },
+                label = "标题",
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = draft.note,
+                onValueChange = { viewModel.updateQuickCardDraft { old -> old.copy(note = it) } },
+                label = { Text("备注（可空）") },
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 3,
+                shape = Md2ControlShape,
+                colors = TextFieldDefaults.outlinedTextFieldColors(
+                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                    focusedLabelColor = MaterialTheme.colorScheme.primary,
+                    unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    cursorColor = MaterialTheme.colorScheme.primary
+                )
+            )
+            Md2OutlinedField(
+                value = draft.link,
+                onValueChange = { viewModel.updateQuickCardDraft { old -> old.copy(link = it) } },
+                label = "链接（可空）",
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        Md2SettingsCard("主题色") {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                presetColors.forEach { hex ->
+                    val c = quickCardThemeColor(hex)
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(c)
+                            .clickable { viewModel.updateQuickCardDraft { old -> old.copy(themeColor = hex) } }
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.sweepGradient(
+                                colors = listOf(
+                                    Color(0xFFFF3D00),
+                                    Color(0xFFFFC400),
+                                    Color(0xFF00C853),
+                                    Color(0xFF00B0FF),
+                                    Color(0xFF7C4DFF),
+                                    Color(0xFFFF3D00)
+                                )
+                            )
+                        )
+                        .clickable {
+                            themeHexInput = draft.themeColor
+                            val hsl = composeColorToHsl(quickCardThemeColor(draft.themeColor))
+                            themeHue = hsl[0]
+                            themeSat = hsl[1]
+                            themeLight = hsl[2]
+                            showThemeColorDialog = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    MsIcon("palette", contentDescription = "自定义颜色", tint = Color.White)
+                }
+            }
+        }
+
+        if (draft.type == QuickCardType.Image) {
+            Md2SettingsCard("图片") {
+                QuickCardImagePathRow(
+                    title = "竖屏图片",
+                    path = draft.portraitImagePath,
+                    onClear = { viewModel.clearQuickCardDraftImage(landscape = false) },
+                    onPick = {
+                        cropLandscape = false
+                        imagePicker.launch("image/*")
+                    }
+                )
+                QuickCardImagePathRow(
+                    title = "横屏图片",
+                    path = draft.landscapeImagePath,
+                    onClear = { viewModel.clearQuickCardDraftImage(landscape = true) },
+                    onPick = {
+                        cropLandscape = true
+                        imagePicker.launch("image/*")
+                    }
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            Md2Button(
+                onClick = {
+                    val saved = viewModel.saveQuickCardDraft()
+                    if (saved != null) {
+                        toast(context, "已保存名片")
+                        onBack()
+                    } else {
+                        toast(context, "保存失败")
+                    }
+                }
+            ) {
+                Text("保存")
+            }
+        }
+        Spacer(Modifier.height(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()))
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("删除名片") },
+            text = { Text("确定删除当前名片吗？") },
+            confirmButton = {
+                Md2TextButton(onClick = {
+                    showDeleteConfirm = false
+                    suppressNullDraftAutoBack = true
+                    if (viewModel.deleteEditingQuickCard()) {
+                        toast(context, "已删除名片")
+                    }
+                    onBack()
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                Md2TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showExitConfirm) {
+        AlertDialog(
+            onDismissRequest = { showExitConfirm = false },
+            title = { Text("名片已编辑") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("是否保存名片后再退出编辑？")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = exitConfirmAutoSaveChecked,
+                            onCheckedChange = { exitConfirmAutoSaveChecked = it }
+                        )
+                        Text("下次退出编辑时自动保存")
+                    }
+                }
+            },
+            confirmButton = {
+                Md2TextButton(onClick = {
+                    showExitConfirm = false
+                    if (exitConfirmAutoSaveChecked) {
+                        viewModel.setQuickCardAutoSaveOnExit(true)
+                    }
+                    val saved = viewModel.saveQuickCardDraft()
+                    if (saved != null) {
+                        toast(context, "已保存名片")
+                        onBack()
+                    } else {
+                        toast(context, "保存失败")
+                    }
+                }) { Text("保存并退出") }
+            },
+            dismissButton = {
+                Row {
+                    Md2TextButton(onClick = {
+                        showExitConfirm = false
+                        if (exitConfirmAutoSaveChecked) {
+                            viewModel.setQuickCardAutoSaveOnExit(true)
+                        }
+                        onBack()
+                    }) { Text("不保存退出") }
+                    Md2TextButton(onClick = { showExitConfirm = false }) { Text("取消") }
+                }
+            }
+        )
+    }
+
+    if (showThemeColorDialog) {
+        AlertDialog(
+            onDismissRequest = { showThemeColorDialog = false },
+            title = { Text("HSL 滑条取色") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val preview = hslToComposeColor(themeHue, themeSat, themeLight)
+                    val hueGradient = Brush.horizontalGradient(
+                        listOf(
+                            hslToComposeColor(0f, 1f, 0.5f),
+                            hslToComposeColor(60f, 1f, 0.5f),
+                            hslToComposeColor(120f, 1f, 0.5f),
+                            hslToComposeColor(180f, 1f, 0.5f),
+                            hslToComposeColor(240f, 1f, 0.5f),
+                            hslToComposeColor(300f, 1f, 0.5f),
+                            hslToComposeColor(360f, 1f, 0.5f)
+                        )
+                    )
+                    val satGradient = remember(themeHue, themeLight) {
+                        Brush.horizontalGradient(
+                            listOf(
+                                hslToComposeColor(themeHue, 0f, themeLight),
+                                hslToComposeColor(themeHue, 1f, themeLight)
+                            )
+                        )
+                    }
+                    val lightGradient = remember(themeHue, themeSat) {
+                        Brush.horizontalGradient(
+                            listOf(
+                                hslToComposeColor(themeHue, themeSat, 0f),
+                                hslToComposeColor(themeHue, themeSat, 0.5f),
+                                hslToComposeColor(themeHue, themeSat, 1f)
+                            )
+                        )
+                    }
+                    HslGradientSlider(
+                        label = "色相",
+                        value = themeHue,
+                        valueRange = 0f..360f,
+                        gradient = hueGradient,
+                        onValueChange = {
+                            themeHue = it
+                            themeHexInput = colorToHexRgb(hslToComposeColor(themeHue, themeSat, themeLight))
+                        }
+                    )
+                    HslGradientSlider(
+                        label = "饱和度",
+                        value = themeSat,
+                        valueRange = 0f..1f,
+                        gradient = satGradient,
+                        onValueChange = {
+                            themeSat = it
+                            themeHexInput = colorToHexRgb(hslToComposeColor(themeHue, themeSat, themeLight))
+                        }
+                    )
+                    HslGradientSlider(
+                        label = "亮度",
+                        value = themeLight,
+                        valueRange = 0f..1f,
+                        gradient = lightGradient,
+                        onValueChange = {
+                            themeLight = it
+                            themeHexInput = colorToHexRgb(hslToComposeColor(themeHue, themeSat, themeLight))
+                        },
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(UiTokens.Radius))
+                            .background(preview)
+                    )
+                    OutlinedTextField(
+                        value = themeHexInput,
+                        onValueChange = {
+                            themeHexInput = it
+                            val normalized = normalizeHexOrNull(it)
+                            if (normalized != null) {
+                                val hsl = composeColorToHsl(quickCardThemeColor(normalized))
+                                themeHue = hsl[0]
+                                themeSat = hsl[1]
+                                themeLight = hsl[2]
+                            }
+                        },
+                        singleLine = true,
+                        label = { Text("HEX（#RRGGBB）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Characters,
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Done
+                        ),
+                        shape = Md2ControlShape,
+                        colors = TextFieldDefaults.outlinedTextFieldColors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            focusedLabelColor = MaterialTheme.colorScheme.primary,
+                            unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            cursorColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    Text(
+                        text = "拖动三条滑条设置色相、饱和度和亮度",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Md2TextButton(
+                    onClick = {
+                        val normalized = normalizeHexOrNull(themeHexInput)
+                        if (normalized == null) {
+                            toast(context, "HEX 格式错误")
+                        } else {
+                            viewModel.updateQuickCardDraft { old -> old.copy(themeColor = normalized) }
+                            showThemeColorDialog = false
+                        }
+                    }
+                ) { Text("应用") }
+            },
+            dismissButton = {
+                Md2TextButton(onClick = { showThemeColorDialog = false }) { Text("取消") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun QuickCardImagePathRow(
+    title: String,
+    path: String,
+    onClear: () -> Unit,
+    onPick: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 4.dp, vertical = 10.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    text = if (path.isBlank()) "未选择图片" else path,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (path.isBlank()) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Md2IconButton(
+                icon = "close",
+                contentDescription = "清空图片",
+                onClick = onClear,
+                enabled = path.isNotBlank()
+            )
+            Md2IconButton(
+                icon = "folder_open",
+                contentDescription = "选择图片",
+                onClick = onPick
+            )
+        }
+    }
+}
+
+private fun composeColorToHsl(color: Color): FloatArray {
+    val hsl = FloatArray(3)
+    ColorUtils.colorToHSL(color.toArgb(), hsl)
+    return hsl
+}
+
+private fun hslToComposeColor(h: Float, s: Float, l: Float): Color {
+    val hue = ((h % 360f) + 360f) % 360f
+    val sat = s.coerceIn(0f, 1f)
+    val light = l.coerceIn(0f, 1f)
+    return Color(ColorUtils.HSLToColor(floatArrayOf(hue, sat, light)))
+}
+
+private fun colorToHexRgb(color: Color): String {
+    val argb = color.toArgb()
+    val rgb = argb and 0x00FFFFFF
+    return String.format(Locale.US, "#%06x", rgb)
+}
+
+@Composable
+private fun HslGradientSlider(
+    label: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    gradient: Brush,
+    onValueChange: (Float) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(24.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .align(Alignment.Center)
+                    .background(gradient, RectangleShape)
+            )
+            Slider(
+                value = value,
+                onValueChange = onValueChange,
+                valueRange = valueRange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.Center),
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = Color.Transparent,
+                    inactiveTrackColor = Color.Transparent,
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent
+                )
+            )
+        }
+    }
+}
+
+@Composable
 private fun md2CardContainerColor(): Color {
     return if (isSystemInDarkTheme()) UiTokens.DarkCard else UiTokens.LightCard
 }
@@ -1916,6 +4923,7 @@ private fun Md2StaggeredFloatIn(
 }
 
 private data class DrawerItem(
+    val page: Int,
     val title: String,
     val icon: String
 )
@@ -1928,9 +4936,36 @@ data class LogTopBarActions(
     val canShare: Boolean
 )
 
+data class QuickCardTopBarActions(
+    val onNew: () -> Unit = {},
+    val onScan: () -> Unit = {},
+    val onCopy: (() -> Unit)? = null,
+    val onDelete: (() -> Unit)? = null,
+    val onConfirm: (() -> Unit)? = null,
+    val onBackRequest: (() -> Unit)? = null,
+    val canCopy: Boolean = false,
+    val canDelete: Boolean = false,
+    val canConfirm: Boolean = false
+)
+
 private object QuickSubtitleRoutes {
     const val Main = "quick_subtitle/main"
     const val Editor = "quick_subtitle/editor"
+    const val History = "quick_subtitle/history"
+}
+
+private object QuickCardRoutes {
+    const val Main = "quick_card/main"
+    const val Editor = "quick_card/editor"
+    const val Sort = "quick_card/sort"
+    const val Scanner = "quick_card/scanner"
+    private const val ScanTextArg = "text"
+    const val ScanText = "quick_card/scan_text/{$ScanTextArg}"
+    private const val WebArg = "url"
+    const val Web = "quick_card/web/{$WebArg}"
+
+    fun scanText(text: String): String = "quick_card/scan_text/${Uri.encode(text)}"
+    fun web(url: String): String = "quick_card/web/${Uri.encode(url)}"
 }
 
 private object SettingsRoutes {
@@ -2155,6 +5190,9 @@ private fun Md2Switch(
     val dark = isSystemInDarkTheme()
     val uncheckedTrack = if (dark) Color(0xFF697378) else Color(0xFFB3C1C6)
     val uncheckedThumb = if (dark) Color(0xFFE6EFF2) else Color.White
+    // Disabled state should look clearly gray, not transparent/faded-out.
+    val disabledTrack = if (dark) Color(0xFF4D555B) else Color(0xFFD0D6DB)
+    val disabledThumb = if (dark) Color(0xFF99A2A9) else Color(0xFF8E979E)
     Switch(
         checked = checked,
         onCheckedChange = onCheckedChange,
@@ -2165,10 +5203,10 @@ private fun Md2Switch(
             checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.48f),
             uncheckedThumbColor = uncheckedThumb,
             uncheckedTrackColor = uncheckedTrack,
-            disabledCheckedThumbColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.38f),
-            disabledCheckedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
-            disabledUncheckedThumbColor = uncheckedThumb.copy(alpha = 0.38f),
-            disabledUncheckedTrackColor = uncheckedTrack.copy(alpha = 0.3f)
+            disabledCheckedThumbColor = disabledThumb,
+            disabledCheckedTrackColor = disabledTrack,
+            disabledUncheckedThumbColor = disabledThumb,
+            disabledUncheckedTrackColor = disabledTrack
         )
     )
 }
@@ -2200,25 +5238,35 @@ private fun Md2OutlinedField(
 @Composable
 @OptIn(ExperimentalComposeUiApi::class)
 fun AppScaffold(viewModel: MainViewModel) {
-    val pageRealtime = 0
-    val pageQuickSubtitle = 1
-    val pageVoicePack = 2
-    val pageDrawing = 3
-    val pageSettings = 4
+    val pageQuickSubtitle = 0
+    val pageRealtime = 1
+    val pageQuickCard = 2
+    val pageVoicePack = 3
+    val pageDrawing = 4
+    val pageSettings = 5
 
-    var page by rememberSaveable { mutableStateOf(0) }
+    var page by rememberSaveable { mutableStateOf(pageQuickSubtitle) }
     var drawingFullscreen by rememberSaveable { mutableStateOf(false) }
     var quickSubtitleFullscreen by rememberSaveable { mutableStateOf(false) }
-    var runningStripCollapsed by rememberSaveable { mutableStateOf(false) }
+    var runningStripCollapsed by rememberSaveable { mutableStateOf(true) }
     var logTopBarActions by remember { mutableStateOf<LogTopBarActions?>(null) }
+    var quickCardTopBarActions by remember { mutableStateOf<QuickCardTopBarActions?>(null) }
+    var quickCardWebMenuExpanded by rememberSaveable { mutableStateOf(false) }
     val quickSubtitleNavController = rememberNavController()
+    val quickCardNavController = rememberNavController()
     val settingsNavController = rememberNavController()
     val quickSubtitleBackStackEntry by quickSubtitleNavController.currentBackStackEntryAsState()
     val quickSubtitleRoute = quickSubtitleBackStackEntry?.destination?.route ?: QuickSubtitleRoutes.Main
+    val quickCardBackStackEntry by quickCardNavController.currentBackStackEntryAsState()
+    val quickCardRoute = quickCardBackStackEntry?.destination?.route ?: QuickCardRoutes.Main
+    val quickCardWebUrl = remember(quickCardBackStackEntry) {
+        Uri.decode(quickCardBackStackEntry?.arguments?.getString("url").orEmpty())
+    }
     val settingsBackStackEntry by settingsNavController.currentBackStackEntryAsState()
     val settingsRoute = settingsBackStackEntry?.destination?.route ?: SettingsRoutes.Main
     val state = viewModel.uiState
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val localView = LocalView.current
     val activity = context as? Activity
@@ -2279,35 +5327,60 @@ fun AppScaffold(viewModel: MainViewModel) {
     val basePage = page
     val quickSubtitleEditorOpen =
         basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Editor
+    val quickSubtitleHistoryOpen =
+        basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.History
+    val quickSubtitleSubPageOpen =
+        basePage == pageQuickSubtitle && quickSubtitleRoute != QuickSubtitleRoutes.Main
+    val quickCardEditorOpen =
+        basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Editor
+    val quickCardSortOpen =
+        basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Sort
+    val quickCardScannerOpen =
+        basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Scanner
+    val quickCardScanTextOpen =
+        basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.ScanText
+    val quickCardWebOpen =
+        basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Web
+    val quickCardMainOpen =
+        basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Main
+    val quickCardSubPageOpen =
+        basePage == pageQuickCard && quickCardRoute != QuickCardRoutes.Main
     val settingsLogOpen =
         basePage == pageSettings && settingsRoute == SettingsRoutes.Log
+    var lastTopBarBackClickAtMs by remember { mutableLongStateOf(0L) }
     var drawerExpanded by rememberSaveable { mutableStateOf(false) }
     val runningStripEligible = !(drawingFullscreen && basePage == pageDrawing)
-    val showRunningStripButton = (state.running || state.pushToTalkMode) && runningStripEligible
-    val showRunningStripPanel = when {
-        !runningStripEligible -> false
-        state.pushToTalkMode -> !runningStripCollapsed
-        else -> state.running && !runningStripCollapsed
-    }
+    val showRunningStripButton = runningStripEligible
+    val showRunningStripPanel = runningStripEligible && !runningStripCollapsed
     val topMicLevel = viewModel.realtimeInputLevel
     val topPlaybackProgress = viewModel.realtimePlaybackProgress
     val drawerItems = listOf(
-        DrawerItem("实时转换", "graphic_eq"),
-        DrawerItem("便捷字幕", "subtitles"),
-        DrawerItem("语音包", "record_voice_over"),
-        DrawerItem("画板", "draw"),
-        DrawerItem("设置", "tune")
+        DrawerItem(pageQuickSubtitle, "便捷字幕", "subtitles"),
+        DrawerItem(pageQuickCard, "快捷名片", "badge"),
+        DrawerItem(pageVoicePack, "语音包", "record_voice_over"),
+        DrawerItem(pageDrawing, "画板", "draw"),
+        DrawerItem(pageSettings, "设置", "tune")
     )
-    val titles = drawerItems.map { it.title }
     val drawerSelectedPage = basePage
     LaunchedEffect(drawerItems.size) {
-        if (page !in 0..pageSettings) {
-            page = pageRealtime
+        val validPages = drawerItems.map { it.page }.toSet()
+        if (page !in validPages) {
+            page = pageQuickSubtitle
         }
     }
     LaunchedEffect(basePage, quickSubtitleRoute) {
         if (basePage != pageQuickSubtitle && quickSubtitleRoute != QuickSubtitleRoutes.Main) {
             quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+        }
+    }
+    LaunchedEffect(basePage, quickCardRoute) {
+        if (basePage != pageQuickCard && quickCardRoute != QuickCardRoutes.Main) {
+            quickCardNavController.popBackStack(QuickCardRoutes.Main, inclusive = false)
+        }
+    }
+    LaunchedEffect(basePage, quickCardWebOpen) {
+        if (basePage != pageQuickCard || !quickCardWebOpen) {
+            quickCardWebMenuExpanded = false
         }
     }
     LaunchedEffect(basePage, settingsRoute) {
@@ -2329,17 +5402,16 @@ fun AppScaffold(viewModel: MainViewModel) {
             scope.launch { drawerState.close() }
         }
     }
-    LaunchedEffect(state.pushToTalkMode) {
-        if (state.pushToTalkMode) {
-            runningStripCollapsed = true
-        }
-    }
-    LaunchedEffect(state.running, state.pushToTalkMode) {
-        if (!state.pushToTalkMode && !state.running) runningStripCollapsed = false
-    }
     LaunchedEffect(basePage, settingsLogOpen) {
         if (!settingsLogOpen) {
             logTopBarActions = null
+        }
+    }
+    LaunchedEffect(basePage, quickCardEditorOpen) {
+        if (basePage != pageQuickCard) {
+            quickCardTopBarActions = null
+        } else if (!quickCardEditorOpen) {
+            // main page keeps actions set by QuickCardNavHost
         }
     }
     val baseSoftInputMode = remember(activity) {
@@ -2359,6 +5431,30 @@ fun AppScaffold(viewModel: MainViewModel) {
             "AppScaffold.applySoftInputModeForRoute page=$basePage route=$quickSubtitleRoute " +
                     "editorOpen=$quickSubtitleEditorOpen softInput=${softInputModeSummary(window.attributes.softInputMode)}"
         )
+    }
+    fun popSecondaryPageSafely() {
+        val now = SystemClock.elapsedRealtime()
+        // Guard double taps: avoid consecutive pop during transition.
+        if (now - lastTopBarBackClickAtMs < 280L) return
+        lastTopBarBackClickAtMs = now
+        when {
+            quickSubtitleSubPageOpen -> {
+                quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+            }
+            settingsLogOpen -> {
+                settingsNavController.popBackStack(SettingsRoutes.Main, inclusive = false)
+            }
+            quickCardEditorOpen -> {
+                val handledByEditor = quickCardTopBarActions?.onBackRequest != null
+                quickCardTopBarActions?.onBackRequest?.invoke()
+                if (!handledByEditor) {
+                    quickCardNavController.popBackStack(QuickCardRoutes.Main, inclusive = false)
+                }
+            }
+            quickCardSubPageOpen -> {
+                quickCardNavController.popBackStack(QuickCardRoutes.Main, inclusive = false)
+            }
+        }
     }
 
     fun clearFocusAndHideIme(reason: String) {
@@ -2438,14 +5534,93 @@ fun AppScaffold(viewModel: MainViewModel) {
             viewModel.stop()
         }
     }
+    var realtimePttDragTarget by remember { mutableStateOf(PttConfirmDragTarget.DefaultSend) }
+    val realtimeConfirmOverlayEnabled =
+        basePage == pageRealtime && state.pushToTalkMode && state.pushToTalkConfirmInputMode
+    val realtimeShowPttConfirmOverlay =
+        realtimeConfirmOverlayEnabled && state.pushToTalkPressed
+    val realtimePttFabSize = 56.dp
+    val realtimePttFabEndInset = 16.dp
+    val realtimePttFabBottomOffset = 16.dp
+    val realtimePttStatusStripBottomOffset = realtimePttFabBottomOffset
+    val realtimePttStatusStripBottomBleed = 12.dp
+    val realtimeCompactModeDetectionEnabled =
+        isLandscape && realtimeConfirmOverlayEnabled
+    val realtimeImeBottomInset =
+        if (realtimeCompactModeDetectionEnabled) WindowInsets.ime.asPaddingValues().calculateBottomPadding() else 0.dp
+    val realtimeNavBottomInset =
+        if (realtimeCompactModeDetectionEnabled) WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() else 0.dp
+    val realtimeBottomObstructionInset =
+        if (realtimeImeBottomInset > realtimeNavBottomInset) realtimeImeBottomInset else realtimeNavBottomInset
+    val realtimeImeVisible = realtimeImeBottomInset > 0.dp
+    val realtimePttTopButtonsRequiredHeight = 96.dp
+    val realtimePttTopRowBottomReserved = if (isLandscape) 72.dp else 74.dp
+    val realtimePttTopEstimatedAvailableHeight =
+        configuration.screenHeightDp.dp - realtimeBottomObstructionInset -
+            (realtimePttFabSize + realtimePttFabBottomOffset + realtimePttStatusStripBottomBleed + 72.dp)
+    val realtimeCompactPttSideButtonsMode =
+        realtimeCompactModeDetectionEnabled &&
+            (realtimeImeVisible || realtimePttTopEstimatedAvailableHeight < realtimePttTopButtonsRequiredHeight)
+    val realtimePttGuideText = when (realtimePttDragTarget) {
+        PttConfirmDragTarget.DefaultSend -> "松开手指上屏"
+        PttConfirmDragTarget.ToInput -> "松开手指上屏"
+        PttConfirmDragTarget.Cancel -> "松开取消发送"
+    }
+    val realtimePttStripFabReserveWidth = realtimePttFabSize
+    val realtimePttStatusStripEndInset = realtimePttFabEndInset
+    val realtimePttStatusStripAnchorEndInset = realtimePttStatusStripEndInset + (realtimePttFabSize / 2)
+    val realtimePttStatusStripOuterBleed = 12.dp
+    val realtimePttStatusStripAnimatedEndInset by animateDpAsState(
+        targetValue = if (realtimeShowPttConfirmOverlay) {
+            realtimePttStatusStripEndInset
+        } else {
+            realtimePttStatusStripAnchorEndInset
+        },
+        animationSpec = if (realtimeShowPttConfirmOverlay) {
+            tween(durationMillis = 220, easing = FastOutSlowInEasing)
+        } else {
+            tween(durationMillis = 180, easing = FastOutSlowInEasing)
+        },
+        label = "realtime_ptt_status_strip_end_inset"
+    )
+    val realtimePttStatusStripStartInset = (10.dp - realtimePttStatusStripOuterBleed).coerceAtLeast(0.dp)
+    val realtimePttStatusStripTopBleed = (realtimePttStatusStripOuterBleed - 4.dp).coerceAtLeast(0.dp)
+    val realtimePttStatusStripAnimatedEndInsetWithBleed =
+        (realtimePttStatusStripAnimatedEndInset - realtimePttStatusStripOuterBleed).coerceAtLeast(0.dp)
+    val realtimePttStatusStripBottomInset =
+        (realtimePttStatusStripBottomOffset - realtimePttStatusStripBottomBleed).coerceAtLeast(0.dp)
+    LaunchedEffect(realtimeShowPttConfirmOverlay) {
+        if (!realtimeShowPttConfirmOverlay) {
+            realtimePttDragTarget = PttConfirmDragTarget.DefaultSend
+        }
+    }
 
     val topBar: @Composable ((() -> Unit)) -> Unit = { onNavClick ->
         val currentTitle = if (quickSubtitleEditorOpen) {
             "编辑便捷字幕"
+        } else if (quickSubtitleHistoryOpen) {
+            "历史记录"
+        } else if (quickCardEditorOpen) {
+            "编辑快捷名片"
+        } else if (quickCardSortOpen) {
+            "排序名片"
+        } else if (quickCardScannerOpen) {
+            "扫描二维码"
+        } else if (quickCardScanTextOpen) {
+            "二维码结果"
+        } else if (quickCardWebOpen) {
+            "二维码网页"
         } else if (settingsLogOpen) {
             "日志"
         } else {
-            titles.getOrElse(basePage) { "KIGTTS" }
+            when (basePage) {
+                pageQuickSubtitle -> "便捷字幕"
+                pageQuickCard -> "快捷名片"
+                pageVoicePack -> "语音包"
+                pageDrawing -> "画板"
+                pageSettings -> "设置"
+                else -> "KIGTTS"
+            }
         }
         Surface(
             modifier = Modifier
@@ -2462,20 +5637,21 @@ fun AppScaffold(viewModel: MainViewModel) {
                     .padding(start = landscapeCutoutStart, end = landscapeCutoutEnd),
                 title = {
                     Row(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        AnimatedContent(
+                        Crossfade(
+                            modifier = Modifier.weight(1f),
                             targetState = currentTitle,
-                            transitionSpec = {
-                                ContentTransform(
-                                    targetContentEnter = fadeIn(animationSpec = tween(140)),
-                                    initialContentExit = fadeOut(animationSpec = tween(110))
-                                )
-                            },
+                            animationSpec = tween(140, easing = LinearEasing),
                             label = "topbar_title_switch"
                         ) { titleText ->
-                            Text(titleText)
+                            Text(
+                                text = titleText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                         AnimatedVisibility(
                             visible = showRunningStripButton,
@@ -2505,8 +5681,9 @@ fun AppScaffold(viewModel: MainViewModel) {
                 navigationIcon = {
                     AnimatedContent(
                         targetState = when {
-                            quickSubtitleEditorOpen -> 1
+                            quickSubtitleSubPageOpen -> 1
                             settingsLogOpen -> 2
+                            quickCardSubPageOpen -> 3
                             else -> 0
                         },
                         transitionSpec = {
@@ -2521,13 +5698,9 @@ fun AppScaffold(viewModel: MainViewModel) {
                         },
                         label = "topbar_nav_switch"
                     ) { navMode ->
-                        if (navMode == 1 || navMode == 2) {
+                        if (navMode == 1 || navMode == 2 || navMode == 3) {
                             IconButton(onClick = {
-                                if (navMode == 1) {
-                                    quickSubtitleNavController.popBackStack()
-                                } else if (navMode == 2) {
-                                    settingsNavController.popBackStack()
-                                }
+                                popSecondaryPageSafely()
                             }) {
                                 MsIcon("arrow_back", contentDescription = "返回")
                             }
@@ -2539,7 +5712,24 @@ fun AppScaffold(viewModel: MainViewModel) {
                     }
                 },
                 actions = {
-                    val showQuickSubtitleActions = basePage == pageQuickSubtitle && !quickSubtitleEditorOpen
+                    val quickCardActions = quickCardTopBarActions
+                    val showQuickSubtitleActions =
+                        basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Main
+                    val showQuickCardMainActions =
+                        basePage == pageQuickCard &&
+                                quickCardRoute == QuickCardRoutes.Main &&
+                                quickCardActions != null
+                    val showQuickCardEditorActions =
+                        basePage == pageQuickCard &&
+                                quickCardRoute == QuickCardRoutes.Editor &&
+                                quickCardActions != null &&
+                                (quickCardActions.canCopy || quickCardActions.canDelete)
+                    val showQuickCardSortActions =
+                        basePage == pageQuickCard &&
+                                quickCardRoute == QuickCardRoutes.Sort &&
+                                quickCardActions?.canConfirm == true
+                    val showQuickCardWebActions =
+                        basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Web
                     val showDrawingActions = basePage == pageDrawing
                     val showVoicePackActions = basePage == pageVoicePack
                     val showSettingsEntryActions = basePage == pageSettings && !settingsLogOpen
@@ -2556,6 +5746,26 @@ fun AppScaffold(viewModel: MainViewModel) {
                         animationSpec = tween(130, easing = FastOutSlowInEasing),
                         label = "topbar_drawing_actions_alpha"
                     )
+                    val quickCardMainAlpha by animateFloatAsState(
+                        targetValue = if (showQuickCardMainActions) 1f else 0f,
+                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                        label = "topbar_quick_card_main_actions_alpha"
+                    )
+                    val quickCardEditorAlpha by animateFloatAsState(
+                        targetValue = if (showQuickCardEditorActions) 1f else 0f,
+                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                        label = "topbar_quick_card_editor_actions_alpha"
+                    )
+                    val quickCardSortAlpha by animateFloatAsState(
+                        targetValue = if (showQuickCardSortActions) 1f else 0f,
+                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                        label = "topbar_quick_card_sort_actions_alpha"
+                    )
+                    val quickCardWebAlpha by animateFloatAsState(
+                        targetValue = if (showQuickCardWebActions) 1f else 0f,
+                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                        label = "topbar_quick_card_web_actions_alpha"
+                    )
                     val voicePackAlpha by animateFloatAsState(
                         targetValue = if (showVoicePackActions) 1f else 0f,
                         animationSpec = tween(130, easing = FastOutSlowInEasing),
@@ -2571,9 +5781,22 @@ fun AppScaffold(viewModel: MainViewModel) {
                         animationSpec = tween(130, easing = FastOutSlowInEasing),
                         label = "topbar_settings_log_actions_alpha"
                     )
+                    val actionsWidthTarget = when {
+                        showSettingsLogActions -> 144.dp
+                        showQuickCardMainActions || showQuickCardEditorActions -> 96.dp
+                        showQuickCardSortActions -> 48.dp
+                        showQuickCardWebActions -> 48.dp
+                        showQuickSubtitleActions || showDrawingActions || showVoicePackActions || showSettingsEntryActions -> 48.dp
+                        else -> 0.dp
+                    }
+                    val actionsWidth by animateDpAsState(
+                        targetValue = actionsWidthTarget,
+                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                        label = "topbar_actions_width"
+                    )
 
                     Box(
-                        modifier = Modifier.width(144.dp),
+                        modifier = Modifier.width(actionsWidth),
                         contentAlignment = Alignment.CenterEnd
                     ) {
                         key("topbar_quick_subtitle_actions_layer") {
@@ -2611,6 +5834,134 @@ fun AppScaffold(viewModel: MainViewModel) {
                                     enabled = showDrawingActions && viewModel.drawStrokes.isNotEmpty()
                                 ) {
                                     MsIcon("save", contentDescription = "保存画板")
+                                }
+                            }
+                        }
+
+                        key("topbar_quick_card_main_actions_layer") {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .graphicsLayer { alpha = quickCardMainAlpha }
+                                    .zIndex(if (showQuickCardMainActions) 2f else 0f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                IconButton(
+                                    onClick = { quickCardActions?.onNew?.invoke() },
+                                    enabled = showQuickCardMainActions && quickCardActions != null
+                                ) {
+                                    MsIcon("add", contentDescription = "新建名片")
+                                }
+                                IconButton(
+                                    onClick = { quickCardActions?.onScan?.invoke() },
+                                    enabled = showQuickCardMainActions && quickCardActions != null
+                                ) {
+                                    MsIcon("qr_code_scanner", contentDescription = "扫描二维码")
+                                }
+                            }
+                        }
+
+                        key("topbar_quick_card_editor_actions_layer") {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .graphicsLayer { alpha = quickCardEditorAlpha }
+                                    .zIndex(if (showQuickCardEditorActions) 2f else 0f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                IconButton(
+                                    onClick = { quickCardActions?.onCopy?.invoke() },
+                                    enabled = showQuickCardEditorActions && quickCardActions?.canCopy == true
+                                ) {
+                                    MsIcon("content_copy", contentDescription = "复制名片")
+                                }
+                                IconButton(
+                                    onClick = { quickCardActions?.onDelete?.invoke() },
+                                    enabled = showQuickCardEditorActions && quickCardActions?.canDelete == true
+                                ) {
+                                    MsIcon("delete", contentDescription = "删除名片")
+                                }
+                            }
+                        }
+
+                        key("topbar_quick_card_sort_actions_layer") {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .graphicsLayer { alpha = quickCardSortAlpha }
+                                    .zIndex(if (showQuickCardSortActions) 2f else 0f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                IconButton(
+                                    onClick = { quickCardActions?.onConfirm?.invoke() },
+                                    enabled = showQuickCardSortActions
+                                ) {
+                                    MsIcon("check", contentDescription = "保存排序并返回")
+                                }
+                            }
+                        }
+
+                        key("topbar_quick_card_web_actions_layer") {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .graphicsLayer { alpha = quickCardWebAlpha }
+                                    .zIndex(if (showQuickCardWebActions) 2f else 0f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Box {
+                                    IconButton(
+                                        onClick = { quickCardWebMenuExpanded = true },
+                                        enabled = showQuickCardWebActions
+                                    ) {
+                                        MsIcon("more_vert", contentDescription = "更多")
+                                    }
+                                    DropdownMenu(
+                                        expanded = showQuickCardWebActions && quickCardWebMenuExpanded,
+                                        onDismissRequest = { quickCardWebMenuExpanded = false }
+                                    ) {
+                                        M2DropdownMenuItem(
+                                            onClick = {
+                                                quickCardWebMenuExpanded = false
+                                                if (quickCardWebUrl.isBlank()) {
+                                                    toast(context, "链接为空")
+                                                } else {
+                                                    openQuickCardLink(context, quickCardWebUrl)
+                                                }
+                                            }
+                                        ) {
+                                            Text("用浏览器打开")
+                                        }
+                                        M2DropdownMenuItem(
+                                            onClick = {
+                                                quickCardWebMenuExpanded = false
+                                                if (quickCardWebUrl.isBlank()) {
+                                                    toast(context, "链接为空")
+                                                } else {
+                                                    clipboard.setText(AnnotatedString(quickCardWebUrl))
+                                                    toast(context, "已复制链接")
+                                                }
+                                            }
+                                        ) {
+                                            Text("复制链接")
+                                        }
+                                        M2DropdownMenuItem(
+                                            onClick = {
+                                                quickCardWebMenuExpanded = false
+                                                if (quickCardWebUrl.isBlank()) {
+                                                    toast(context, "链接为空")
+                                                } else {
+                                                    sharePlainText(context, quickCardWebUrl, "分享链接")
+                                                }
+                                            }
+                                        ) {
+                                            Text("分享")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2692,69 +6043,16 @@ fun AppScaffold(viewModel: MainViewModel) {
     val fab: @Composable () -> Unit = {
         if (basePage == pageRealtime) {
             if (state.pushToTalkMode) {
-                var pushToTalkPressed by remember { mutableStateOf(false) }
-                val pttInteractionSource = remember { MutableInteractionSource() }
-                var pttPress by remember { mutableStateOf<PressInteraction.Press?>(null) }
-                FloatingActionButton(
-                    onClick = {},
-                    modifier = Modifier
-                        .pointerInteropFilter { event ->
-                            when (event.actionMasked) {
-                                MotionEvent.ACTION_DOWN -> {
-                                    pushToTalkPressed = true
-                                    onPushToTalkPressStart()
-                                    val press = PressInteraction.Press(Offset(event.x, event.y))
-                                    pttPress = press
-                                    pttInteractionSource.tryEmit(press)
-                                    true
-                                }
-                                MotionEvent.ACTION_UP -> {
-                                    if (pushToTalkPressed) {
-                                        pushToTalkPressed = false
-                                        onPushToTalkPressEnd(PttConfirmReleaseAction.SendToSubtitle)
-                                    }
-                                    pttPress?.let { press ->
-                                        pttInteractionSource.tryEmit(PressInteraction.Release(press))
-                                    }
-                                    pttPress = null
-                                    true
-                                }
-                                MotionEvent.ACTION_CANCEL,
-                                MotionEvent.ACTION_OUTSIDE -> {
-                                    if (pushToTalkPressed) {
-                                        pushToTalkPressed = false
-                                        onPushToTalkPressEnd(PttConfirmReleaseAction.Cancel)
-                                    }
-                                    pttPress?.let { press ->
-                                        pttInteractionSource.tryEmit(PressInteraction.Cancel(press))
-                                    }
-                                    pttPress = null
-                                    true
-                                }
-                                else -> true
-                            }
-                        },
-                    interactionSource = pttInteractionSource,
-                    backgroundColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    shape = CircleShape,
-                    elevation = FloatingActionButtonDefaults.elevation(
-                        defaultElevation = UiTokens.FabElevation,
-                        pressedElevation = 12.dp
-                    )
-                ) {
-                    Crossfade(
-                        targetState = pushToTalkPressed,
-                        animationSpec = tween(durationMillis = 180),
-                        label = "realtime_ptt_fab_icon"
-                    ) { pressed ->
-                        MsIcon(
-                            name = if (pressed) "settings_voice" else "mic",
-                            contentDescription = if (pressed) "按住说话中" else "按住说话",
-                            tint = MaterialTheme.colorScheme.onPrimary
-                        )
-                    }
-                }
+                QuickSubtitleMicFab(
+                    state = state,
+                    compactPttSideButtonsMode = realtimeCompactPttSideButtonsMode,
+                    enableInputAction = false,
+                    onToggleMic = onToggleRun,
+                    onPushToTalkPressStart = onPushToTalkPressStart,
+                    onPushToTalkPressEnd = onPushToTalkPressEnd,
+                    onPttDragTargetChanged = { realtimePttDragTarget = it },
+                    modifier = Modifier.size(realtimePttFabSize)
+                )
             } else {
                 FloatingActionButton(
                     onClick = onToggleRun,
@@ -2797,7 +6095,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                 label = "page_switch"
             ) { current ->
                 when (current) {
-                    pageRealtime -> RealtimeScreen(viewModel, state)
+                    pageRealtime -> RealtimeScreen(viewModel)
                     pageQuickSubtitle -> QuickSubtitleNavHost(
                         navController = quickSubtitleNavController,
                         viewModel = viewModel,
@@ -2805,7 +6103,17 @@ fun AppScaffold(viewModel: MainViewModel) {
                         onToggleMic = onToggleRun,
                         onPushToTalkPressStart = onPushToTalkPressStart,
                         onPushToTalkPressEnd = onPushToTalkPressEnd,
-                        fullscreenMode = quickSubtitleFullscreen && !quickSubtitleEditorOpen
+                        onOpenHistory = {
+                            quickSubtitleNavController.navigate(QuickSubtitleRoutes.History) {
+                                launchSingleTop = true
+                            }
+                        },
+                        fullscreenMode = quickSubtitleFullscreen && !quickSubtitleSubPageOpen
+                    )
+                    pageQuickCard -> QuickCardNavHost(
+                        navController = quickCardNavController,
+                        viewModel = viewModel,
+                        onTopBarActionsChange = { quickCardTopBarActions = it }
                     )
                     pageVoicePack -> VoicePackScreen(viewModel, state)
                     pageDrawing -> DrawingBoardScreen(
@@ -2862,8 +6170,63 @@ fun AppScaffold(viewModel: MainViewModel) {
                     status = state.status,
                     pushToTalkMode = state.pushToTalkMode,
                     pushToTalkPressed = state.pushToTalkPressed,
+                    inputDeviceLabel = state.inputDeviceLabel,
+                    outputDeviceLabel = state.outputDeviceLabel,
                     onToggleCollapsed = { runningStripCollapsed = !runningStripCollapsed },
                     modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (realtimeConfirmOverlayEnabled) {
+                QuickSubtitlePttConfirmOverlay(
+                    visible = realtimeShowPttConfirmOverlay,
+                    dragTarget = realtimePttDragTarget,
+                    streamingText = state.pushToTalkStreamingText,
+                    isLandscape = isLandscape,
+                    compactPttSideButtonsMode = realtimeCompactPttSideButtonsMode,
+                    showInputAction = false,
+                    applyNavigationBarsPadding = false,
+                    topRowBottomReservedOverride = realtimePttTopRowBottomReserved
+                )
+
+                AnimatedVisibility(
+                    visible = realtimeShowPttConfirmOverlay,
+                    modifier = Modifier
+                        .zIndex(6.5f)
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .imePadding()
+                        .padding(
+                            start = realtimePttStatusStripStartInset,
+                            end = realtimePttStatusStripAnimatedEndInsetWithBleed,
+                            bottom = realtimePttStatusStripBottomInset
+                        ),
+                    enter = fadeIn(animationSpec = tween(140)),
+                    exit = fadeOut(animationSpec = tween(110))
+                ) {
+                    Box(
+                        modifier = Modifier.padding(
+                            start = realtimePttStatusStripOuterBleed,
+                            top = realtimePttStatusStripTopBleed,
+                            end = realtimePttStatusStripOuterBleed,
+                            bottom = realtimePttStatusStripBottomBleed
+                        )
+                    ) {
+                        QuickSubtitlePttConfirmBottomStrip(
+                            guideText = realtimePttGuideText,
+                            reserveFabWidth = realtimePttStripFabReserveWidth,
+                            stripHeight = realtimePttFabSize
+                        )
+                    }
+                }
+
+                QuickSubtitlePttCompactSideButtonsOverlay(
+                    visible = realtimeShowPttConfirmOverlay && realtimeCompactPttSideButtonsMode,
+                    dragTarget = realtimePttDragTarget,
+                    fabSize = realtimePttFabSize,
+                    fabEndInset = realtimePttFabEndInset,
+                    fabBottomOffset = realtimePttFabBottomOffset,
+                    showInputAction = false,
+                    applyNavigationBarsPadding = false
                 )
             }
         }
@@ -2871,7 +6234,7 @@ fun AppScaffold(viewModel: MainViewModel) {
 
     val drawingImmersive = drawingFullscreen && basePage == pageDrawing
     val quickSubtitleImmersive =
-        quickSubtitleFullscreen && basePage == pageQuickSubtitle && !quickSubtitleEditorOpen
+        quickSubtitleFullscreen && basePage == pageQuickSubtitle && !quickSubtitleSubPageOpen
     val fullScreenImmersive = drawingImmersive || quickSubtitleImmersive
     BackHandler(enabled = drawingImmersive) {
         drawingFullscreen = false
@@ -3032,7 +6395,9 @@ fun AppScaffold(viewModel: MainViewModel) {
         } else {
             ModalDrawer(
                 drawerState = drawerState,
-                gesturesEnabled = basePage != pageDrawing && !state.pushToTalkPressed,
+                gesturesEnabled = basePage != pageDrawing &&
+                        !state.pushToTalkPressed &&
+                        !quickCardMainOpen,
                 drawerShape = RectangleShape,
                 drawerBackgroundColor = Color.Transparent,
                 drawerElevation = 0.dp,
@@ -3182,8 +6547,8 @@ private fun AppDrawerContent(
         if (showTopDivider) {
             Divider()
         }
-        items.forEachIndexed { index, item ->
-            val selected = page == index
+        items.forEach { item ->
+            val selected = page == item.page
             val interaction = remember { MutableInteractionSource() }
             val pressed by interaction.collectIsPressedAsState()
             val bg = when {
@@ -3199,7 +6564,7 @@ private fun AppDrawerContent(
                     .clickable(
                         interactionSource = interaction,
                         indication = rememberRipple(bounded = true)
-                    ) { onSelect(index) }
+                    ) { onSelect(item.page) }
                     .padding(start = itemStartPadding, end = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Start
@@ -4088,6 +7453,7 @@ private fun QuickSubtitleNavHost(
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
+    onOpenHistory: () -> Unit,
     fullscreenMode: Boolean
 ) {
     NavHost(
@@ -4154,6 +7520,7 @@ private fun QuickSubtitleNavHost(
                 onToggleMic = onToggleMic,
                 onPushToTalkPressStart = onPushToTalkPressStart,
                 onPushToTalkPressEnd = onPushToTalkPressEnd,
+                onOpenHistory = onOpenHistory,
                 onOpenEditor = { navController.navigate(QuickSubtitleRoutes.Editor) },
                 fullscreenMode = fullscreenMode
             )
@@ -4164,7 +7531,131 @@ private fun QuickSubtitleNavHost(
                 modifier = Modifier.fillMaxSize()
             )
         }
+        composable(QuickSubtitleRoutes.History) {
+            RealtimeScreen(viewModel)
+        }
     }
+}
+
+private const val QUICK_CARD_ASPECT_PORTRAIT = 0.52f
+private const val QUICK_CARD_ASPECT_LANDSCAPE = 2.75f
+private const val QUICK_CARD_LANDSCAPE_CARD_WIDTH_FRACTION = 0.94f
+private const val QUICK_CARD_CONTENT_ASPECT_PORTRAIT = 1f / 1.67f
+private const val QUICK_CARD_CONTENT_ASPECT_LANDSCAPE = 1.67f
+
+private fun quickCardThemeColor(hex: String): Color {
+    return runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrElse { UiTokens.Primary }
+}
+
+private fun quickCardThemeOnColor(bg: Color): Color {
+    return if (bg.luminance() > 0.56f) Color(0xFF111417) else Color.White
+}
+
+private fun QuickCard.heroImagePath(landscape: Boolean): String {
+    return if (landscape) {
+        landscapeImagePath.ifBlank { portraitImagePath }
+    } else {
+        portraitImagePath.ifBlank { landscapeImagePath }
+    }
+}
+
+private fun QuickCardDraft.toPreviewCard(): QuickCard {
+    return QuickCard(
+        id = editId ?: -1L,
+        type = type,
+        title = title.ifBlank { "名片名字" },
+        note = note,
+        themeColor = themeColor,
+        link = link,
+        portraitImagePath = portraitImagePath,
+        landscapeImagePath = landscapeImagePath
+    )
+}
+
+private fun buildQuickCardShareText(card: QuickCard): String {
+    return buildString {
+        append(card.title.ifBlank { "名片" })
+        if (card.note.isNotBlank()) append("\n${card.note}")
+        if (card.link.isNotBlank()) append("\n${card.link}")
+    }
+}
+
+private fun openQuickCardLink(context: Context, rawLink: String) {
+    val normalized = normalizeQrTextToWebUrl(rawLink)
+    if (normalized.isNullOrBlank()) {
+        toast(context, "链接无效")
+        return
+    }
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(normalized))
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        toast(context, "打开链接失败: ${e.message}")
+    }
+}
+
+private fun shareQuickCard(context: Context, card: QuickCard, landscape: Boolean) {
+    try {
+        val shareText = buildQuickCardShareText(card)
+        if (card.type == QuickCardType.Image) {
+            val imagePath = card.heroImagePath(landscape)
+            val source = if (imagePath.isBlank()) null else File(imagePath)
+            if (source != null && source.exists()) {
+                val shareDir = File(context.cacheDir, "share")
+                if (!shareDir.exists()) shareDir.mkdirs()
+                val out = File(shareDir, "quick_card_${System.currentTimeMillis()}.png")
+                source.copyTo(out, overwrite = true)
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    out
+                )
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_TEXT, shareText)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "分享名片"))
+                return
+            }
+        }
+        val textIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, shareText)
+        }
+        context.startActivity(Intent.createChooser(textIntent, "分享名片"))
+    } catch (e: Exception) {
+        toast(context, "分享失败: ${e.message}")
+    }
+}
+
+private fun generateQuickCardQrBitmap(content: String, sizePx: Int = 640): Bitmap? {
+    val text = content.trim()
+    if (text.isEmpty()) return null
+    return runCatching {
+        val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, sizePx, sizePx)
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        for (x in 0 until sizePx) {
+            for (y in 0 until sizePx) {
+                bmp.setPixel(x, y, if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+            }
+        }
+        bmp
+    }.getOrNull()
+}
+
+@Composable
+private fun rememberQuickCardBitmap(path: String): Bitmap? {
+    val bitmap by produceState<Bitmap?>(initialValue = null, key1 = path) {
+        value = withContext(Dispatchers.IO) {
+            if (path.isBlank()) return@withContext null
+            val file = File(path)
+            if (!file.exists()) return@withContext null
+            BitmapFactory.decodeFile(file.absolutePath)
+        }
+    }
+    return bitmap
 }
 
 @Composable
@@ -4245,6 +7736,7 @@ private fun SettingsNavHost(
 private fun QuickSubtitleMicFab(
     state: UiState,
     compactPttSideButtonsMode: Boolean = false,
+    enableInputAction: Boolean = true,
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
@@ -4273,8 +7765,8 @@ private fun QuickSubtitleMicFab(
         if (compactPttSideButtonsMode) {
             val inSideBand = kotlin.math.abs(dy) <= sideZoneVerticalTolerancePx
             return when {
-                inSideBand && dx <= -sideZoneTriggerPx -> PttConfirmDragTarget.ToInput
                 inSideBand && dx >= sideZoneTriggerPx -> PttConfirmDragTarget.Cancel
+                enableInputAction && inSideBand && dx <= -sideZoneTriggerPx -> PttConfirmDragTarget.ToInput
                 else -> PttConfirmDragTarget.DefaultSend
             }
         }
@@ -4286,8 +7778,10 @@ private fun QuickSubtitleMicFab(
         // - all remaining left area => send to input box
         return if (dx >= -cancelZoneLeftBiasPx) {
             PttConfirmDragTarget.Cancel
-        } else {
+        } else if (enableInputAction) {
             PttConfirmDragTarget.ToInput
+        } else {
+            PttConfirmDragTarget.DefaultSend
         }
     }
     val pttModifier = if (state.pushToTalkMode) {
@@ -4324,7 +7818,10 @@ private fun QuickSubtitleMicFab(
                             pushToTalkPressed = false
                             val releaseAction = when (dragTarget) {
                                 PttConfirmDragTarget.DefaultSend -> PttConfirmReleaseAction.SendToSubtitle
-                                PttConfirmDragTarget.ToInput -> PttConfirmReleaseAction.SendToInput
+                                PttConfirmDragTarget.ToInput -> {
+                                    if (enableInputAction) PttConfirmReleaseAction.SendToInput
+                                    else PttConfirmReleaseAction.SendToSubtitle
+                                }
                                 PttConfirmDragTarget.Cancel -> PttConfirmReleaseAction.Cancel
                             }
                             onPushToTalkPressEnd(releaseAction)
@@ -4392,17 +7889,21 @@ private fun QuickSubtitleMicFab(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 fun QuickSubtitleScreen(
     viewModel: MainViewModel,
     state: UiState,
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
+    onOpenHistory: () -> Unit,
     onOpenEditor: () -> Unit,
     fullscreenMode: Boolean
 ) {
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val groups = viewModel.quickSubtitleGroups
@@ -4412,9 +7913,80 @@ fun QuickSubtitleScreen(
     val quickItemsScrollState = rememberScrollState()
     val subtitleText = viewModel.quickSubtitleCurrentText
     val subtitleSize = viewModel.quickSubtitleFontSizeSp
+    val subtitleBold = viewModel.quickSubtitleBold
+    val subtitleCentered = viewModel.quickSubtitleCentered
+    val subtitleTextColor = if (subtitleText == QUICK_SUBTITLE_CLEARED_HINT) {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val subtitleAlign = if (subtitleCentered) TextAlign.Center else TextAlign.Start
     val inputText = viewModel.quickSubtitleInputText
     val playOnSend = viewModel.quickSubtitlePlayOnSend
     val quickInputCollapsed = viewModel.quickSubtitleInputCollapsed
+    val subtitleFullscreenDialogVisible = viewModel.quickSubtitlePreviewVisible
+    val copySubtitleText = {
+        val content = subtitleText.trim()
+        if (content.isNotEmpty()) {
+            clipboard.setText(AnnotatedString(content))
+            toast(context, "已复制")
+        }
+    }
+    val orangeActionButtons: @Composable (Boolean) -> Unit = { vertical ->
+        if (vertical) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Md2IconButton(
+                    icon = "format_bold",
+                    contentDescription = if (subtitleBold) "关闭粗体" else "开启粗体",
+                    onClick = { viewModel.updateQuickSubtitleBold(!subtitleBold) }
+                )
+                Md2IconButton(
+                    icon = if (subtitleCentered) "format_align_left" else "format_align_center",
+                    contentDescription = if (subtitleCentered) "左对齐文本" else "居中文本",
+                    onClick = { viewModel.updateQuickSubtitleCentered(!subtitleCentered) }
+                )
+                Md2IconButton(
+                    icon = "cleaning_services",
+                    contentDescription = "清屏",
+                    onClick = { viewModel.clearQuickSubtitleText() }
+                )
+                Md2IconButton(
+                    icon = "history",
+                    contentDescription = "历史记录",
+                    onClick = onOpenHistory
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Md2IconButton(
+                    icon = "format_bold",
+                    contentDescription = if (subtitleBold) "关闭粗体" else "开启粗体",
+                    onClick = { viewModel.updateQuickSubtitleBold(!subtitleBold) }
+                )
+                Md2IconButton(
+                    icon = if (subtitleCentered) "format_align_left" else "format_align_center",
+                    contentDescription = if (subtitleCentered) "左对齐文本" else "居中文本",
+                    onClick = { viewModel.updateQuickSubtitleCentered(!subtitleCentered) }
+                )
+                Md2IconButton(
+                    icon = "cleaning_services",
+                    contentDescription = "清屏",
+                    onClick = { viewModel.clearQuickSubtitleText() }
+                )
+                Md2IconButton(
+                    icon = "history",
+                    contentDescription = "历史记录",
+                    onClick = onOpenHistory
+                )
+            }
+        }
+    }
     var pttDragTarget by remember { mutableStateOf(PttConfirmDragTarget.DefaultSend) }
     val showPttConfirmOverlay =
         state.pushToTalkMode &&
@@ -4494,6 +8066,11 @@ fun QuickSubtitleScreen(
     }
     val hasVoice = state.voiceDir != null
     val statusBarInsetTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val layoutDirection = LocalLayoutDirection.current
+    val navBarsPadding = WindowInsets.navigationBars.asPaddingValues()
+    val navBarsStartInset = navBarsPadding.calculateStartPadding(layoutDirection)
+    val navBarsEndInset = navBarsPadding.calculateEndPadding(layoutDirection)
+    val navBarsBottomInset = navBarsPadding.calculateBottomPadding()
     val quickSubtitleTopBlankTarget =
         if (fullscreenMode) (statusBarInsetTop + UiTokens.PageTopBlank) else UiTokens.PageTopBlank
     val quickSubtitleTopBlank by animateDpAsState(
@@ -4504,9 +8081,9 @@ fun QuickSubtitleScreen(
     val landscapeQuickPanelWidth = 220.dp
     val landscapeQuickPanelGap = 8.dp
     val quickSubtitleBottomBlank = if (isLandscape) {
-        UiTokens.PageBottomBlank + 6.dp
+        UiTokens.PageBottomBlank - 12.dp + navBarsBottomInset
     } else {
-        UiTokens.PageBottomBlank + 68.dp
+        UiTokens.PageBottomBlank + 50.dp + navBarsBottomInset
     }
     val quickPanelExpanded = !quickInputCollapsed
     val quickPanelAnimatedWidth by animateDpAsState(
@@ -4541,6 +8118,7 @@ fun QuickSubtitleScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .padding(start = navBarsStartInset, end = navBarsEndInset)
         ) {
             Spacer(Modifier.height(quickSubtitleTopBlank))
             if (isLandscape) {
@@ -4576,55 +8154,91 @@ fun QuickSubtitleScreen(
                                     modifier = Modifier
                                         .weight(1f)
                                         .fillMaxHeight()
-                                        .verticalScroll(rememberScrollState())
-                                ) {
-                                    AnimatedContent(
-                                        targetState = subtitleText,
-                                        transitionSpec = {
-                                            ContentTransform(
-                                                targetContentEnter = fadeIn(animationSpec = tween(180)) +
-                                                    slideInVertically(
-                                                        initialOffsetY = { full -> full / 6 },
-                                                        animationSpec = tween(200, easing = FastOutSlowInEasing)
-                                                    ),
-                                                initialContentExit = fadeOut(animationSpec = tween(120)),
-                                                sizeTransform = null
-                                            )
-                                        },
-                                        label = "quick_subtitle_text_change"
-                                    ) { text ->
-                                        Text(
-                                            text = text,
-                                            style = MaterialTheme.typography.bodyLarge.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = subtitleSize.sp,
-                                                lineHeight = (subtitleSize * 1.15f).sp
-                                            )
+                                        .combinedClickable(
+                                            onClick = { viewModel.openQuickSubtitlePreview() },
+                                            onLongClick = copySubtitleText
                                         )
-                                    }
-                                }
-                                Column(
-                                    modifier = Modifier
-                                        .width(44.dp)
-                                        .fillMaxHeight(),
-                                    horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    MsIcon("search", contentDescription = "字体大小")
                                     Box(
                                         modifier = Modifier
-                                            .padding(top = 8.dp, bottom = 4.dp)
-                                            .weight(1f)
-                                            .fillMaxWidth(),
-                                        contentAlignment = Alignment.Center
+                                            .fillMaxSize()
+                                            .verticalScroll(rememberScrollState())
                                     ) {
-                                        Md2VerticalSlider(
-                                            value = subtitleSize,
-                                            onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
-                                            valueRange = 28f..96f,
+                                        AnimatedContent(
+                                            targetState = subtitleText,
+                                            transitionSpec = {
+                                                ContentTransform(
+                                                    targetContentEnter = fadeIn(animationSpec = tween(180)) +
+                                                        slideInVertically(
+                                                            initialOffsetY = { full -> full / 6 },
+                                                            animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                                        ),
+                                                    initialContentExit = fadeOut(animationSpec = tween(120)),
+                                                    sizeTransform = null
+                                                )
+                                            },
+                                            label = "quick_subtitle_text_change"
+                                        ) { text ->
+                                            val textColor = if (text == QUICK_SUBTITLE_CLEARED_HINT) {
+                                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            }
+                                            Text(
+                                                text = text,
+                                                style = MaterialTheme.typography.bodyLarge.copy(
+                                                    fontWeight = if (subtitleBold) FontWeight.Bold else FontWeight.Normal,
+                                                    fontSize = subtitleSize.sp,
+                                                    lineHeight = (subtitleSize * 1.15f).sp
+                                                ),
+                                                color = textColor,
+                                                textAlign = subtitleAlign,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .wrapContentWidth()
+                                        .fillMaxHeight(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .width(38.dp)
+                                            .fillMaxHeight(),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Top
+                                    ) {
+                                        Spacer(Modifier.height(4.dp))
+                                        orangeActionButtons(true)
+                                    }
+                                    Column(
+                                        modifier = Modifier
+                                            .width(32.dp)
+                                            .fillMaxHeight(),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        MsIcon("search", contentDescription = "字体大小")
+                                        Spacer(Modifier.height(4.dp))
+                                        Box(
                                             modifier = Modifier
-                                                .fillMaxHeight()
-                                                .width(28.dp)
-                                        )
+                                                .padding(top = 4.dp, bottom = 4.dp)
+                                                .weight(1f)
+                                                .fillMaxWidth(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Md2VerticalSlider(
+                                                value = subtitleSize,
+                                                onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                                valueRange = 28f..96f,
+                                                modifier = Modifier
+                                                    .fillMaxHeight()
+                                                    .width(28.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -4831,34 +8445,53 @@ fun QuickSubtitleScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxWidth()
-                                    .verticalScroll(rememberScrollState())
-                            ) {
-                                AnimatedContent(
-                                    targetState = subtitleText,
-                                    transitionSpec = {
-                                        ContentTransform(
-                                            targetContentEnter = fadeIn(animationSpec = tween(180)) +
-                                                slideInVertically(
-                                                    initialOffsetY = { full -> full / 6 },
-                                                    animationSpec = tween(200, easing = FastOutSlowInEasing)
-                                                ),
-                                            initialContentExit = fadeOut(animationSpec = tween(120)),
-                                            sizeTransform = null
-                                        )
-                                    },
-                                    label = "quick_subtitle_text_change"
-                                ) { text ->
-                                    Text(
-                                        text = text,
-                                        style = MaterialTheme.typography.bodyLarge.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = subtitleSize.sp,
-                                            lineHeight = (subtitleSize * 1.15f).sp
-                                        )
+                                    .combinedClickable(
+                                        onClick = { viewModel.openQuickSubtitlePreview() },
+                                        onLongClick = copySubtitleText
                                     )
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    AnimatedContent(
+                                        targetState = subtitleText,
+                                        transitionSpec = {
+                                            ContentTransform(
+                                                targetContentEnter = fadeIn(animationSpec = tween(180)) +
+                                                    slideInVertically(
+                                                        initialOffsetY = { full -> full / 6 },
+                                                        animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                                    ),
+                                                initialContentExit = fadeOut(animationSpec = tween(120)),
+                                                sizeTransform = null
+                                            )
+                                        },
+                                        label = "quick_subtitle_text_change"
+                                    ) { text ->
+                                        val textColor = if (text == QUICK_SUBTITLE_CLEARED_HINT) {
+                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
+                                        Text(
+                                            text = text,
+                                            style = MaterialTheme.typography.bodyLarge.copy(
+                                                fontWeight = if (subtitleBold) FontWeight.Bold else FontWeight.Normal,
+                                                fontSize = subtitleSize.sp,
+                                                lineHeight = (subtitleSize * 1.15f).sp
+                                            ),
+                                            color = textColor,
+                                            textAlign = subtitleAlign,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
+                            orangeActionButtons(false)
+                            Spacer(Modifier.height(4.dp))
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -5461,6 +9094,49 @@ fun QuickSubtitleScreen(
                 modifier = fabModifier
             )
         }
+
+        if (subtitleFullscreenDialogVisible) {
+            Dialog(
+                onDismissRequest = { viewModel.closeQuickSubtitlePreview() },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .combinedClickable(
+                            onClick = { viewModel.closeQuickSubtitlePreview() },
+                            onLongClick = copySubtitleText
+                        )
+                        .padding(14.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxSize(),
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = md2CardContainerColor(),
+                        elevation = UiTokens.MenuElevation
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Text(
+                                text = subtitleText,
+                                style = MaterialTheme.typography.bodyLarge.copy(
+                                    fontWeight = if (subtitleBold) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = (subtitleSize * 1.25f).coerceIn(36f, 140f).sp,
+                                    lineHeight = (subtitleSize * 1.36f).coerceIn(40f, 152f).sp
+                                ),
+                                color = subtitleTextColor,
+                                textAlign = subtitleAlign,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5470,10 +9146,13 @@ private fun QuickSubtitlePttConfirmOverlay(
     dragTarget: PttConfirmDragTarget,
     streamingText: String,
     isLandscape: Boolean,
-    compactPttSideButtonsMode: Boolean
+    compactPttSideButtonsMode: Boolean,
+    showInputAction: Boolean = true,
+    applyNavigationBarsPadding: Boolean = true,
+    topRowBottomReservedOverride: Dp? = null
 ) {
     val overlayHorizontalPadding = 16.dp
-    val topRowBottomReserved = if (isLandscape) 84.dp else 142.dp
+    val topRowBottomReserved = topRowBottomReservedOverride ?: if (isLandscape) 84.dp else 142.dp
     val topRowVerticalPadding = if (isLandscape) 6.dp else 18.dp
 
     val displayText = streamingText.ifBlank { "正在识别..." }
@@ -5502,7 +9181,13 @@ private fun QuickSubtitlePttConfirmOverlay(
                 modifier = Modifier
                     .matchParentSize()
                     .imePadding()
-                    .navigationBarsPadding()
+                    .then(
+                        if (applyNavigationBarsPadding) {
+                            Modifier.navigationBarsPadding()
+                        } else {
+                            Modifier
+                        }
+                    )
                     .background(overlayBrush)
             )
             if (!compactPttSideButtonsMode) {
@@ -5512,7 +9197,13 @@ private fun QuickSubtitlePttConfirmOverlay(
                         .fillMaxWidth()
                         .padding(horizontal = overlayHorizontalPadding, vertical = topRowVerticalPadding)
                         .imePadding()
-                        .navigationBarsPadding()
+                        .then(
+                            if (applyNavigationBarsPadding) {
+                                Modifier.navigationBarsPadding()
+                            } else {
+                                Modifier
+                            }
+                        )
                         .padding(bottom = topRowBottomReserved),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -5546,22 +9237,24 @@ private fun QuickSubtitlePttConfirmOverlay(
                                 overflow = TextOverflow.Clip
                             )
                         }
-                        Surface(
-                            modifier = Modifier.requiredSize(72.dp),
-                            shape = CircleShape,
-                            color = if (dragTarget == PttConfirmDragTarget.ToInput) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                Color(0xFF202124)
-                            },
-                            elevation = 6.dp
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                MsIcon(
-                                    name = "keyboard_return",
-                                    contentDescription = "输入到文本框",
-                                    tint = Color.White
-                                )
+                        if (showInputAction) {
+                            Surface(
+                                modifier = Modifier.requiredSize(72.dp),
+                                shape = CircleShape,
+                                color = if (dragTarget == PttConfirmDragTarget.ToInput) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color(0xFF202124)
+                                },
+                                elevation = 6.dp
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    MsIcon(
+                                        name = "keyboard_return",
+                                        contentDescription = "输入到文本框",
+                                        tint = Color.White
+                                    )
+                                }
                             }
                         }
                         Surface(
@@ -5595,7 +9288,9 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
     dragTarget: PttConfirmDragTarget,
     fabSize: Dp,
     fabEndInset: Dp,
-    fabBottomOffset: Dp
+    fabBottomOffset: Dp,
+    showInputAction: Boolean = true,
+    applyNavigationBarsPadding: Boolean = true
 ) {
     val sideGap = 10.dp
     AnimatedVisibility(
@@ -5608,34 +9303,48 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             val cancelEndInset = (fabEndInset - fabSize - sideGap).coerceAtLeast(0.dp)
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .imePadding()
-                    .navigationBarsPadding()
-                    .padding(end = fabEndInset + fabSize + sideGap, bottom = fabBottomOffset)
-                    .requiredSize(fabSize),
-                shape = CircleShape,
-                color = if (dragTarget == PttConfirmDragTarget.ToInput) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    Color(0xFF202124)
-                },
-                elevation = 6.dp
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    MsIcon(
-                        name = "keyboard_return",
-                        contentDescription = "输入到文本框",
-                        tint = Color.White
-                    )
+            if (showInputAction) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .imePadding()
+                        .then(
+                            if (applyNavigationBarsPadding) {
+                                Modifier.navigationBarsPadding()
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .padding(end = fabEndInset + fabSize + sideGap, bottom = fabBottomOffset)
+                        .requiredSize(fabSize),
+                    shape = CircleShape,
+                    color = if (dragTarget == PttConfirmDragTarget.ToInput) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        Color(0xFF202124)
+                    },
+                    elevation = 6.dp
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        MsIcon(
+                            name = "keyboard_return",
+                            contentDescription = "输入到文本框",
+                            tint = Color.White
+                        )
+                    }
                 }
             }
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .imePadding()
-                    .navigationBarsPadding()
+                    .then(
+                        if (applyNavigationBarsPadding) {
+                            Modifier.navigationBarsPadding()
+                        } else {
+                            Modifier
+                        }
+                    )
                     .padding(end = cancelEndInset, bottom = fabBottomOffset)
                     .requiredSize(fabSize),
                 shape = CircleShape,
@@ -6352,9 +10061,10 @@ private fun QuickSubtitleEditableRow(
 }
 
 @Composable
-fun RealtimeScreen(viewModel: MainViewModel, state: UiState) {
-    val inputLevel = viewModel.realtimeInputLevel
+fun RealtimeScreen(viewModel: MainViewModel) {
     val recognized = viewModel.realtimeRecognized
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val bottomPadding = UiTokens.PageBottomBlank
     LazyColumn(
         modifier = Modifier
@@ -6366,42 +10076,39 @@ fun RealtimeScreen(viewModel: MainViewModel, state: UiState) {
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item {
-            Md2StaggeredFloatIn(index = 0) {
-                Column {
-                    Text("输入音量", fontWeight = FontWeight.Bold)
-                    LinearProgressIndicator(
-                        progress = inputLevel.coerceIn(0f, 1f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp, bottom = 12.dp)
-                    )
-                    Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
-                    Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
-                    Text("状态：${state.status}")
-                    Spacer(Modifier.height(8.dp))
-                    Text("识别结果", fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(4.dp))
-                }
-            }
-        }
-
         if (recognized.isEmpty()) {
             item {
                 Text("暂无识别结果", style = MaterialTheme.typography.bodySmall)
             }
         } else {
             items(recognized, key = { it.id }) { item ->
-                RecognizedQueueItemCard(item)
+                RecognizedQueueItemCard(
+                    item = item,
+                    onLongCopy = {
+                        if (item.text.isNotBlank()) {
+                            clipboard.setText(AnnotatedString(item.text))
+                            toast(context, "已复制")
+                        }
+                    }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun RecognizedQueueItemCard(item: RecognizedItem) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun RecognizedQueueItemCard(
+    item: RecognizedItem,
+    onLongCopy: () -> Unit
+) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = onLongCopy
+            ),
         shape = RoundedCornerShape(UiTokens.Radius),
         backgroundColor = md2CardContainerColor(),
         elevation = UiTokens.CardElevation
@@ -6424,6 +10131,8 @@ private fun RunningStatusTopStrip(
     status: String,
     pushToTalkMode: Boolean,
     pushToTalkPressed: Boolean,
+    inputDeviceLabel: String,
+    outputDeviceLabel: String,
     onToggleCollapsed: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -6485,6 +10194,55 @@ private fun RunningStatusTopStrip(
                 LinearProgressIndicator(
                     progress = playbackProgress.coerceIn(0f, 1f),
                     modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    MsIcon("mic", contentDescription = "输入设备")
+                    Text(
+                        text = inputDeviceLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    MsIcon("volume_up", contentDescription = "输出设备")
+                    Text(
+                        text = outputDeviceLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    MsIcon("mic", contentDescription = "按住说话")
+                    Text("按住说话", style = MaterialTheme.typography.bodySmall)
+                }
+                Md2Switch(
+                    checked = pushToTalkMode,
+                    onCheckedChange = { viewModel.setPushToTalkMode(it) }
                 )
             }
         }
@@ -7664,6 +11422,18 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Md2Switch(
+                        checked = state.quickCardAutoSaveOnExit,
+                        onCheckedChange = { viewModel.setQuickCardAutoSaveOnExit(it) }
+                    )
+                    Text("退出名片编辑时自动保存")
+                }
+                Text("关闭时将弹窗询问“是否保存名片”", style = MaterialTheme.typography.bodySmall)
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
                         checked = state.keepAlive,
                         onCheckedChange = { viewModel.setKeepAlive(it) }
                     )
@@ -7843,6 +11613,24 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                 valueRange = 0f..1000f
             )
             Text("100% 为原始音量，>100% 为倍率增益", style = MaterialTheme.typography.bodySmall)
+            Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = state.piperNoiseScale,
+                onValueChange = { viewModel.setPiperNoiseScale(it) },
+                valueRange = 0f..2f
+            )
+            Text("语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = state.piperLengthScale,
+                onValueChange = { viewModel.setPiperLengthScale(it) },
+                valueRange = 0.1f..5f
+            )
+            Text("句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = state.piperSentenceSilence,
+                onValueChange = { viewModel.setPiperSentenceSilence(it) },
+                valueRange = 0f..2f
+            )
             val numberReplaceOptions = listOf("不替换", "数字替换为中文字符", "数字替换为中文表达")
             var numberReplaceExpanded by remember { mutableStateOf(false) }
             Text("数字替换", fontWeight = FontWeight.Bold)
@@ -8273,6 +12061,18 @@ private fun shareLogFile(context: Context, file: File) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, "分享日志"))
+    } catch (e: Exception) {
+        toast(context, "分享失败: ${e.message}")
+    }
+}
+
+private fun sharePlainText(context: Context, content: String, chooserTitle: String) {
+    try {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, content)
+        }
+        context.startActivity(Intent.createChooser(intent, chooserTitle))
     } catch (e: Exception) {
         toast(context, "分享失败: ${e.message}")
     }

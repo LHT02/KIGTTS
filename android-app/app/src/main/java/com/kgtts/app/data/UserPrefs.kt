@@ -31,15 +31,21 @@ object UserPrefs {
     private val KEY_AEC3_ENABLED = booleanPreferencesKey("aec3_enabled")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
+    private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
+    private val KEY_PIPER_LENGTH_SCALE = floatPreferencesKey("piper_length_scale")
+    private val KEY_PIPER_NOISE_W = floatPreferencesKey("piper_noise_w")
+    private val KEY_PIPER_SENTENCE_SILENCE = floatPreferencesKey("piper_sentence_silence")
     private val KEY_KEEP_ALIVE = booleanPreferencesKey("keep_alive")
     private val KEY_NUMBER_REPLACE_MODE = intPreferencesKey("number_replace_mode")
     private val KEY_LANDSCAPE_DRAWER_MODE = intPreferencesKey("landscape_drawer_mode")
     private val KEY_SOLID_TOP_BAR = booleanPreferencesKey("solid_top_bar")
     private val KEY_DRAWING_SAVE_RELATIVE_PATH = stringPreferencesKey("drawing_save_relative_path")
+    private val KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT = booleanPreferencesKey("quick_card_auto_save_on_exit")
     private val KEY_ASR_SEND_TO_QUICK_SUBTITLE = booleanPreferencesKey("asr_send_to_quick_subtitle")
     private val KEY_PUSH_TO_TALK_MODE = booleanPreferencesKey("push_to_talk_mode")
     private val KEY_PUSH_TO_TALK_CONFIRM_INPUT = booleanPreferencesKey("push_to_talk_confirm_input")
     private val KEY_QUICK_SUBTITLE_CONFIG = stringPreferencesKey("quick_subtitle_config")
+    private val KEY_QUICK_CARD_CONFIG = stringPreferencesKey("quick_card_config")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
@@ -60,11 +66,16 @@ object UserPrefs {
         val aec3Enabled: Boolean = false,
         val minVolumePercent: Int = 0,
         val playbackGainPercent: Int = 100,
+        val piperNoiseScale: Float = 0.667f,
+        val piperLengthScale: Float = 1.0f,
+        val piperNoiseW: Float = 0.8f,
+        val piperSentenceSilence: Float = 0.2f,
         val keepAlive: Boolean = false,
         val numberReplaceMode: Int = 0,
         val landscapeDrawerMode: Int = DRAWER_MODE_PERMANENT,
         val solidTopBar: Boolean = true,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
+        val quickCardAutoSaveOnExit: Boolean = false,
         val asrSendToQuickSubtitle: Boolean = true,
         val pushToTalkMode: Boolean = false,
         val pushToTalkConfirmInput: Boolean = false,
@@ -101,6 +112,10 @@ object UserPrefs {
             aec3Enabled = prefs[KEY_AEC3_ENABLED] ?: false,
             minVolumePercent = prefs[KEY_MIN_VOLUME_PERCENT] ?: 0,
             playbackGainPercent = (prefs[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
+            piperNoiseScale = (prefs[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
+            piperLengthScale = (prefs[KEY_PIPER_LENGTH_SCALE] ?: 1.0f).coerceIn(0.1f, 5f),
+            piperNoiseW = (prefs[KEY_PIPER_NOISE_W] ?: 0.8f).coerceIn(0f, 2f),
+            piperSentenceSilence = (prefs[KEY_PIPER_SENTENCE_SILENCE] ?: 0.2f).coerceIn(0f, 2f),
             keepAlive = prefs[KEY_KEEP_ALIVE] ?: false,
             numberReplaceMode = prefs[KEY_NUMBER_REPLACE_MODE] ?: 0,
             landscapeDrawerMode = (prefs[KEY_LANDSCAPE_DRAWER_MODE] ?: DRAWER_MODE_PERMANENT)
@@ -108,6 +123,7 @@ object UserPrefs {
             solidTopBar = prefs[KEY_SOLID_TOP_BAR] ?: true,
             drawingSaveRelativePath = (prefs[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
+            quickCardAutoSaveOnExit = prefs[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
             asrSendToQuickSubtitle = prefs[KEY_ASR_SEND_TO_QUICK_SUBTITLE] ?: true,
             pushToTalkMode = prefs[KEY_PUSH_TO_TALK_MODE] ?: false,
             pushToTalkConfirmInput = prefs[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
@@ -178,6 +194,30 @@ object UserPrefs {
         }
     }
 
+    suspend fun setPiperNoiseScale(context: Context, value: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PIPER_NOISE_SCALE] = value.coerceIn(0f, 2f)
+        }
+    }
+
+    suspend fun setPiperLengthScale(context: Context, value: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PIPER_LENGTH_SCALE] = value.coerceIn(0.1f, 5f)
+        }
+    }
+
+    suspend fun setPiperNoiseW(context: Context, value: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PIPER_NOISE_W] = value.coerceIn(0f, 2f)
+        }
+    }
+
+    suspend fun setPiperSentenceSilence(context: Context, value: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_PIPER_SENTENCE_SILENCE] = value.coerceIn(0f, 2f)
+        }
+    }
+
     suspend fun setKeepAlive(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_KEEP_ALIVE] = enabled
@@ -207,6 +247,12 @@ object UserPrefs {
         context.dataStore.edit { prefs ->
             prefs[KEY_DRAWING_SAVE_RELATIVE_PATH] =
                 path.ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH }
+        }
+    }
+
+    suspend fun setQuickCardAutoSaveOnExit(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] = enabled
         }
     }
 
@@ -371,6 +417,17 @@ object UserPrefs {
     suspend fun setQuickSubtitleConfig(context: Context, json: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_SUBTITLE_CONFIG] = json
+        }
+    }
+
+    suspend fun getQuickCardConfig(context: Context): String? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_QUICK_CARD_CONFIG]
+    }
+
+    suspend fun setQuickCardConfig(context: Context, json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_QUICK_CARD_CONFIG] = json
         }
     }
 
