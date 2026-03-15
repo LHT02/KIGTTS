@@ -7,4 +7,17 @@
         <item name="android:windowSplashScreenBackground">@color/splash_background_night</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
     </style>
+
+    <style name="ThemeOverlay.KGTTS.OverlayPopup" parent="@style/ThemeOverlay.KGTTS.OverlayPopup.Dark" />
+
+    <style name="ThemeOverlay.KGTTS.OverlayPopup.Dark">
+        <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
+        <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>
+        <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>
+    </style>
+
+    <style name="TextAppearance.KGTTS.OverlayPopup.Dark" parent="@android:style/TextAppearance.Material.Menu">
+        <item name="android:textColor">#E4E8EB</item>
+        <item name="android:textSize">14sp</item>
+    </style>
 </resources>

@@ -20,6 +20,8 @@ import android.graphics.drawable.Drawable
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
@@ -27,6 +29,7 @@ import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.util.TypedValue
+import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.ViewConfiguration
 import android.view.MotionEvent
@@ -151,6 +154,7 @@ class FloatingOverlayService : Service() {
     private var miniSubtitleBody: LinearLayout? = null
     private var miniQuickCardBody: LinearLayout? = null
     private var miniQuickCardPreviewContainer: FrameLayout? = null
+    private var miniQuickCardIndicatorContainer: LinearLayout? = null
     private var miniQuickCardItemsContainer: LinearLayout? = null
     private var miniQuickCardPager: ViewPager2? = null
     private var miniQuickCardPagerAdapter: MiniQuickCardPagerAdapter? = null
@@ -158,18 +162,16 @@ class FloatingOverlayService : Service() {
     private var miniActionFabIconView: TextView? = null
     private var miniBackButtonView: TextView? = null
     private var miniOpenButtonView: TextView? = null
+    private var miniPreviewOverlay: FrameLayout? = null
+    private var miniPreviewHost: FrameLayout? = null
 
     private var confirmOverlay: FrameLayout? = null
-    private var confirmGradientView: View? = null
+    private var confirmTextCardView: FrameLayout? = null
     private var confirmClipContainer: FrameLayout? = null
     private var confirmParams: WindowManager.LayoutParams? = null
     private var confirmTextView: TextView? = null
     private var leftActionButton: FrameLayout? = null
-    private var centerActionButton: FrameLayout? = null
-    private var centerActionIconView: TextView? = null
     private var rightActionButton: FrameLayout? = null
-    private var sendStrip: LinearLayout? = null
-    private var sendStripText: TextView? = null
 
     private var currentAsrDir: File? = null
     private var currentVoiceDir: File? = null
@@ -219,6 +221,8 @@ class FloatingOverlayService : Service() {
     private var quickSubtitleSaving = false
     private var miniQuickItemsCollapsed = false
     private var miniMode = MiniOverlayMode.Subtitle
+    private var miniPreviewMode = MiniPreviewMode.None
+    private var miniPreviewQuickCardId: Long? = null
     private var quickCards: List<QuickCard> = emptyList()
     private var quickCardSelectedIndex = 0
     private var quickCardConfigRawCache = ""
@@ -248,6 +252,12 @@ class FloatingOverlayService : Service() {
     }
 
     private enum class MiniOverlayMode {
+        Subtitle,
+        QuickCard
+    }
+
+    private enum class MiniPreviewMode {
+        None,
         Subtitle,
         QuickCard
     }
@@ -287,6 +297,10 @@ class FloatingOverlayService : Service() {
         RecyclerView.Adapter<MiniQuickCardPagerAdapter.PageViewHolder>() {
         private var items: List<QuickCard?> = listOf(null)
 
+        init {
+            setHasStableIds(true)
+        }
+
         inner class PageViewHolder(val container: FrameLayout) : RecyclerView.ViewHolder(container)
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): PageViewHolder {
@@ -314,6 +328,9 @@ class FloatingOverlayService : Service() {
         }
 
         override fun getItemCount(): Int = items.size
+
+        override fun getItemId(position: Int): Long =
+            items.getOrNull(position)?.id ?: Long.MIN_VALUE
 
         fun submitCards(cards: List<QuickCard>) {
             items = if (cards.isEmpty()) listOf(null) else cards
@@ -1406,6 +1423,7 @@ class FloatingOverlayService : Service() {
             clipChildren = false
             clipToPadding = false
             setPadding(dp(16), dp(16), dp(16), dp(16))
+            isClickable = true
             addView(
                 miniSubtitleTextView,
                 LinearLayout.LayoutParams(
@@ -1443,6 +1461,7 @@ class FloatingOverlayService : Service() {
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
+            setOnClickListener { openMiniSubtitlePreview() }
         }
 
         miniQuickItemsContainer = LinearLayout(this).apply {
@@ -1586,6 +1605,7 @@ class FloatingOverlayService : Service() {
                                     saveQuickCardSelectedIndex()
                                 }
                                 miniQuickCardPreviewContainer?.requestLayout()
+                                refreshMiniQuickCardIndicators()
                             }
                         }
                     )
@@ -1598,6 +1618,10 @@ class FloatingOverlayService : Service() {
                     )
                 )
             }
+        miniQuickCardIndicatorContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
         miniQuickCardBody = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -1607,6 +1631,15 @@ class FloatingOverlayService : Service() {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
+            )
+            addView(
+                miniQuickCardIndicatorContainer,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(10)
+                }
             )
         }
         val miniBodyHost = FrameLayout(this).apply {
@@ -1732,14 +1765,44 @@ class FloatingOverlayService : Service() {
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
+        }
+        miniPreviewHost = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            isClickable = true
+            setOnClickListener { }
+        }
+        miniPreviewOverlay = FrameLayout(this).apply {
+            visibility = View.GONE
+            alpha = 0f
+            setBackgroundColor(Color.TRANSPARENT)
+            clipChildren = false
+            clipToPadding = false
+            isClickable = true
+            setOnClickListener { closeMiniPreview() }
             addView(
-                miniStatusDetailRefs!!.card,
+                miniPreviewHost,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
                 )
             )
         }
+        miniRoot?.addView(
+            miniStatusDetailRefs!!.card,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+        miniRoot?.addView(
+            miniPreviewOverlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
 
         miniParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -1754,36 +1817,38 @@ class FloatingOverlayService : Service() {
         windowManager.addView(miniRoot, miniParams)
 
         confirmTextView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            setTextColor(overlayOnSurfaceColor())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER_HORIZONTAL
-            maxLines = 4
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            maxLines = 5
+            includeFontPadding = false
             text = "正在识别…"
         }
 
         leftActionButton = circleActionButton(symbolTextView("open_in_new", 28f, Color.WHITE))
-        centerActionIconView = symbolTextView("settings_voice", 30f, Color.WHITE)
-        centerActionButton = FrameLayout(this).apply {
-            background = circleDrawable(overlayPrimaryColor())
-            elevation = dp(8).toFloat()
+        rightActionButton = circleActionButton(symbolTextView("close", 28f, Color.WHITE))
+        confirmTextCardView = FrameLayout(this).apply {
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            elevation = dp(6).toFloat()
+            setPadding(dp(16), dp(12), dp(16), dp(12))
             addView(
-                centerActionIconView,
+                confirmTextView,
                 FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.CENTER
                 )
             )
         }
-        rightActionButton = circleActionButton(symbolTextView("close", 28f, Color.WHITE))
         confirmClipContainer = FrameLayout(this).apply {
             clipChildren = true
             clipToPadding = true
             setBackgroundColor(Color.TRANSPARENT)
             setPadding(dp(8), dp(8), dp(8), dp(8))
             addView(
-                confirmTextView,
+                confirmTextCardView,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1804,20 +1869,6 @@ class FloatingOverlayService : Service() {
             isClickable = false
             isFocusable = false
             setBackgroundColor(Color.TRANSPARENT)
-            confirmGradientView = View(this@FloatingOverlayService).apply {
-                background = GradientDrawable(
-                    GradientDrawable.Orientation.BOTTOM_TOP,
-                    overlayConfirmGradientColors()
-                )
-            }
-            addView(
-                confirmGradientView,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    dp(180),
-                    Gravity.BOTTOM
-                )
-            )
             addView(
                 confirmClipContainer,
                 FrameLayout.LayoutParams(
@@ -1848,15 +1899,11 @@ class FloatingOverlayService : Service() {
         fabSnapAnimator = null
         confirmOverlay?.let { runCatching { windowManager.removeView(it) } }
         confirmOverlay = null
-        confirmGradientView = null
+        confirmTextCardView = null
         confirmClipContainer = null
         confirmTextView = null
         leftActionButton = null
-        centerActionButton = null
-        centerActionIconView = null
         rightActionButton = null
-        sendStrip = null
-        sendStripText = null
         panelPickerOverlay?.let { runCatching { windowManager.removeView(it) } }
         panelPickerOverlay = null
         panelPickerListContainer = null
@@ -1894,6 +1941,14 @@ class FloatingOverlayService : Service() {
         miniQuickRow = null
         miniGroupIconView = null
         miniQuickCollapseButton = null
+        miniQuickCardBody = null
+        miniQuickCardPreviewContainer = null
+        miniQuickCardIndicatorContainer = null
+        miniQuickCardItemsContainer = null
+        miniQuickCardPager = null
+        miniQuickCardPagerAdapter = null
+        miniPreviewOverlay = null
+        miniPreviewHost = null
         miniActionFab = null
         miniActionFabIconView = null
         miniBackButtonView = null
@@ -1925,6 +1980,8 @@ class FloatingOverlayService : Service() {
         if (wasPickerVisible) showShortcutPicker()
         refreshPanelUi()
         refreshQuickSubtitleUi()
+        refreshQuickCardUi()
+        refreshMiniPreviewUi()
         updateFabUi()
         refreshFabIdleDockState()
     }
@@ -1939,7 +1996,6 @@ class FloatingOverlayService : Service() {
         fabIconView?.text = icon
         panelActionFabIconView?.text = icon
         miniActionFabIconView?.text = icon
-        centerActionIconView?.text = if (pttPressed) "settings_voice" else icon
         bubbleTextView?.text = latestRecognizedText
         bubbleRow?.visibility =
             if (!pttPressed && running && latestRecognizedText.isNotBlank() && !settings.pushToTalkMode) {
@@ -2436,6 +2492,7 @@ class FloatingOverlayService : Service() {
             }
             refreshMiniModeUi()
             updateMiniPanelPosition()
+            refreshMiniPreviewUi()
             miniRoot?.visibility = View.VISIBLE
             if (panelVisible) {
                 miniVisible = true
@@ -2461,6 +2518,7 @@ class FloatingOverlayService : Service() {
 
     private fun hideMiniPanel() {
         if (!miniVisible) return
+        closeMiniPreview()
         animateOverlayOut(miniContent) {
             miniVisible = false
             miniRoot?.visibility = View.GONE
@@ -2469,6 +2527,7 @@ class FloatingOverlayService : Service() {
     }
 
     private fun returnFromMiniToPanel() {
+        closeMiniPreview()
         showPanel()
     }
 
@@ -2878,6 +2937,34 @@ class FloatingOverlayService : Service() {
                 }
             )
         }
+        refreshMiniPreviewUi()
+    }
+
+    private fun refreshMiniQuickCardIndicators() {
+        val container = miniQuickCardIndicatorContainer ?: return
+        container.removeAllViews()
+        val count = max(1, quickCards.size)
+        repeat(count) { index ->
+            container.addView(
+                View(this).apply {
+                    background = circleDrawable(
+                        if (index == quickCardSelectedIndex.coerceIn(0, count - 1)) {
+                            overlayPrimaryColor()
+                        } else {
+                            overlayIndicatorInactiveColor()
+                        }
+                    )
+                    setOnClickListener {
+                        if (quickCards.isNotEmpty()) {
+                            miniQuickCardPager?.setCurrentItem(index.coerceIn(0, quickCards.lastIndex), true)
+                        }
+                    }
+                },
+                LinearLayout.LayoutParams(dp(8), dp(8)).apply {
+                    if (index > 0) leftMargin = dp(8)
+                }
+            )
+        }
     }
 
     private fun createMiniGroupSwipeTouchListener(): View.OnTouchListener {
@@ -3025,126 +3112,732 @@ class FloatingOverlayService : Service() {
         if (pager.currentItem != safeIndex) {
             pager.setCurrentItem(safeIndex, false)
         }
+        refreshMiniQuickCardIndicators()
+        refreshMiniPreviewUi()
     }
 
     private fun createMiniQuickCardPage(card: QuickCard?): View {
-        val cardWidth = min(dp(244), max(dp(196), overlayContentWidthPx(phoneMaxDp = 360, tabletMaxDp = 400) - dp(76)))
-        val heroHeight = (cardWidth * 1.67f).roundToInt()
-        val placeholderHeight = heroHeight + dp(88)
+        val contentWidth = min(
+            dp(244),
+            max(dp(196), overlayContentWidthPx(phoneMaxDp = 360, tabletMaxDp = 400) - dp(76))
+        )
+        return FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(
+                buildOverlayQuickCardCard(
+                    card = card,
+                    landscape = false,
+                    contentWidthPx = contentWidth,
+                    interactive = card != null,
+                    onCardClick = { card?.let { openMiniQuickCardPreview(it.id) } }
+                ),
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+    }
+
+    private fun openMiniQuickCardPreview(cardId: Long) {
+        miniPreviewMode = MiniPreviewMode.QuickCard
+        miniPreviewQuickCardId = cardId
+        refreshMiniPreviewUi()
+    }
+
+    private fun openMiniSubtitlePreview() {
+        miniPreviewMode = MiniPreviewMode.Subtitle
+        refreshMiniPreviewUi()
+    }
+
+    private fun closeMiniPreview() {
+        miniPreviewMode = MiniPreviewMode.None
+        miniPreviewQuickCardId = null
+        refreshMiniPreviewUi()
+    }
+
+    private fun refreshMiniPreviewUi() {
+        val overlay = miniPreviewOverlay ?: return
+        val host = miniPreviewHost ?: return
+        if (!miniVisible || miniPreviewMode == MiniPreviewMode.None) {
+            overlay.animate().cancel()
+            overlay.alpha = 0f
+            overlay.visibility = View.GONE
+            host.removeAllViews()
+            return
+        }
+        val previewView =
+            when (miniPreviewMode) {
+                MiniPreviewMode.QuickCard -> {
+                    val cardId = miniPreviewQuickCardId ?: quickCards.getOrNull(quickCardSelectedIndex)?.id
+                    val card = quickCards.firstOrNull { it.id == cardId }
+                    if (card == null) {
+                        miniPreviewMode = MiniPreviewMode.None
+                        miniPreviewQuickCardId = null
+                        null
+                    } else {
+                        val width =
+                            if (isLandscapeUi()) {
+                                min(dp(420), overlayContentWidthPx(phoneMaxDp = 520, tabletMaxDp = 560) - dp(24))
+                            } else {
+                                min(dp(300), overlayContentWidthPx(phoneMaxDp = 380, tabletMaxDp = 420) - dp(20))
+                            }
+                        buildOverlayQuickCardCard(
+                            card = card,
+                            landscape = isLandscapeUi(),
+                            contentWidthPx = width,
+                            interactive = false,
+                            onCardClick = null
+                        )
+                    }
+                }
+
+                MiniPreviewMode.Subtitle -> buildMiniSubtitlePreviewCard()
+                MiniPreviewMode.None -> null
+            }
+        if (previewView == null) {
+            overlay.alpha = 0f
+            overlay.visibility = View.GONE
+            host.removeAllViews()
+            return
+        }
+        host.removeAllViews()
+        host.addView(
+            previewView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        if (overlay.visibility != View.VISIBLE) {
+            overlay.alpha = 0f
+            overlay.visibility = View.VISIBLE
+            overlay.animate().cancel()
+            overlay.animate().alpha(1f).setDuration(180L).start()
+        } else {
+            overlay.alpha = 1f
+        }
+    }
+
+    private fun buildMiniSubtitlePreviewCard(): View {
+        val previewWidth = min(
+            dp(360),
+            overlayContentWidthPx(phoneMaxDp = 420, tabletMaxDp = 480) - dp(12)
+        )
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            elevation = dp(10).toFloat()
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            addView(
+                TextView(this@FloatingOverlayService).apply {
+                    setTextColor(overlayOnSurfaceColor())
+                    setTextSize(
+                        TypedValue.COMPLEX_UNIT_SP,
+                        quickSubtitleFontSizeSp.coerceIn(30f, 92f)
+                    )
+                    typeface = if (quickSubtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                    gravity = Gravity.CENTER
+                    textAlignment = View.TEXT_ALIGNMENT_CENTER
+                    text = quickSubtitleCurrentText.ifBlank { defaultQuickSubtitleText }
+                    maxLines = if (isLandscapeUi()) 5 else 8
+                    ellipsize = TextUtils.TruncateAt.END
+                    minWidth = previewWidth - dp(36)
+                },
+                LinearLayout.LayoutParams(
+                    previewWidth - dp(36),
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+    }
+
+    private fun createOverlayQuickCardLogoView(): ImageView =
+        ImageView(this).apply {
+            setImageResource(if (overlayDarkTheme) R.drawable.logo_white else R.drawable.logo_black)
+            adjustViewBounds = true
+            minimumWidth = dp(72)
+            maxWidth = dp(84)
+        }
+
+    private fun createOverlayQuickCardActionSymbol(
+        name: String,
+        tint: Int,
+        onClick: () -> Unit
+    ): TextView =
+        symbolTextView(name, 22f, tint).apply {
+            isClickable = true
+            isFocusable = true
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setOnClickListener { onClick() }
+        }
+
+    private fun QuickCard.overlayHeroImagePath(landscape: Boolean): String =
+        if (landscape) {
+            landscapeImagePath.ifBlank { portraitImagePath }
+        } else {
+            portraitImagePath.ifBlank { landscapeImagePath }
+        }
+
+    private fun normalizeOverlayWebUrl(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return null
+        if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            return trimmed
+        }
+        return if (!trimmed.contains("://") && trimmed.contains('.') && !trimmed.contains(' ')) {
+            "https://$trimmed"
+        } else {
+            null
+        }
+    }
+
+    private fun openOverlayQuickCardLink(rawLink: String) {
+        val normalized = normalizeOverlayWebUrl(rawLink) ?: return
+        runCatching {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(normalized)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }.onFailure {
+            AppLogger.e("FloatingOverlayService.openOverlayQuickCardLink failed", it)
+        }
+    }
+
+    private fun shareOverlayPlainText(content: String, chooserTitle: String) {
+        val text = content.trim()
+        if (text.isEmpty()) return
+        runCatching {
+            startActivity(
+                Intent.createChooser(
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, text)
+                    },
+                    chooserTitle
+                ).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }.onFailure {
+            AppLogger.e("FloatingOverlayService.shareOverlayPlainText failed", it)
+        }
+    }
+
+    private fun buildOverlayQuickCardCard(
+        card: QuickCard?,
+        landscape: Boolean,
+        contentWidthPx: Int,
+        interactive: Boolean,
+        onCardClick: (() -> Unit)?
+    ): View {
         val outerPadding = dp(10)
-        val outerWidth = cardWidth + outerPadding * 2
-        val outer = LinearLayout(this).apply {
+        return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
             elevation = dp(8).toFloat()
             clipChildren = false
             clipToPadding = false
             setPadding(outerPadding, outerPadding, outerPadding, outerPadding)
-        }
-        val pageRoot = FrameLayout(this).apply {
-            clipChildren = false
-            clipToPadding = false
-            addView(
-                outer,
-                FrameLayout.LayoutParams(
-                    outerWidth,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.CENTER
-                )
-            )
-        }
-        if (card == null) {
-            outer.addView(
-                FrameLayout(this).apply {
-                    minimumHeight = placeholderHeight
-                    background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
-                    addView(
-                        TextView(this@FloatingOverlayService).apply {
-                            setTextColor(overlayOnSurfaceVariantColor())
-                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-                            typeface = Typeface.DEFAULT_BOLD
-                            gravity = Gravity.CENTER
-                            text = "暂无快捷名片"
-                        },
-                        FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                    )
-                },
-                LinearLayout.LayoutParams(
-                    cardWidth,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            )
-            return pageRoot
-        }
-
-        val themeColor = parseQuickCardThemeColor(card.themeColor)
-        val onThemeColor = quickCardOnColor(themeColor)
-        val hero = FrameLayout(this).apply {
-            background = roundedRectDrawable(overlayRadiusDp, themeColor)
-            clipChildren = true
-            clipToPadding = true
-        }
-        populateMiniQuickCardHero(hero, card, themeColor, onThemeColor)
-        outer.addView(
-            hero,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                heroHeight
-            )
-        )
-        outer.addView(
-            LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.TOP
-                setPadding(0, dp(8), 0, dp(2))
+            if (interactive && onCardClick != null) {
+                isClickable = true
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    foreground = selectableDrawable()
+                }
+                setOnClickListener { onCardClick() }
+            }
+            if (card == null) {
                 addView(
-                    LinearLayout(this@FloatingOverlayService).apply {
-                        orientation = LinearLayout.VERTICAL
-                        addView(
-                            TextView(this@FloatingOverlayService).apply {
-                                setTextColor(overlayOnSurfaceColor())
-                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-                                typeface = Typeface.DEFAULT_BOLD
-                                maxLines = 1
-                                ellipsize = TextUtils.TruncateAt.END
-                                text = card.title.ifBlank { "名片名字" }
-                            }
-                        )
+                    FrameLayout(this@FloatingOverlayService).apply {
+                        minimumHeight = dp(260)
                         addView(
                             TextView(this@FloatingOverlayService).apply {
                                 setTextColor(overlayOnSurfaceVariantColor())
-                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                                maxLines = 2
-                                ellipsize = TextUtils.TruncateAt.END
-                                text = card.note.ifBlank { "愿你的生活充满诗与远方" }
-                            }
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                                typeface = Typeface.DEFAULT_BOLD
+                                gravity = Gravity.CENTER
+                                text = "暂无快捷名片"
+                            },
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
                         )
                     },
                     LinearLayout.LayoutParams(
-                        0,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        1f
+                        contentWidthPx,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                )
+            } else if (landscape) {
+                val heroWidth = min(dp(250), max(dp(176), (contentWidthPx * 0.62f).roundToInt()))
+                val heroHeight = (heroWidth / 1.67f).roundToInt()
+                addView(
+                    LinearLayout(this@FloatingOverlayService).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.TOP
+                        val hero = FrameLayout(this@FloatingOverlayService).apply {
+                            background = roundedRectDrawable(overlayRadiusDp, parseQuickCardThemeColor(card.themeColor))
+                            clipChildren = true
+                            clipToPadding = true
+                        }
+                        populateOverlayQuickCardHero(
+                            container = hero,
+                            card = card,
+                            themeColor = parseQuickCardThemeColor(card.themeColor),
+                            onThemeColor = quickCardOnColor(parseQuickCardThemeColor(card.themeColor)),
+                            landscape = true
+                        )
+                        addView(hero, LinearLayout.LayoutParams(heroWidth, heroHeight))
+                        addView(spaceView(dp(10), 1))
+                        addView(
+                            LinearLayout(this@FloatingOverlayService).apply {
+                                orientation = LinearLayout.VERTICAL
+                                addView(
+                                    LinearLayout(this@FloatingOverlayService).apply {
+                                        orientation = LinearLayout.HORIZONTAL
+                                        gravity = Gravity.TOP
+                                        addView(
+                                            LinearLayout(this@FloatingOverlayService).apply {
+                                                orientation = LinearLayout.VERTICAL
+                                                addView(
+                                                    TextView(this@FloatingOverlayService).apply {
+                                                        setTextColor(overlayOnSurfaceColor())
+                                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                                                        typeface = Typeface.DEFAULT_BOLD
+                                                        maxLines = 1
+                                                        ellipsize = TextUtils.TruncateAt.END
+                                                        text = card.title.ifBlank { "名片名字" }
+                                                    }
+                                                )
+                                                addView(
+                                                    TextView(this@FloatingOverlayService).apply {
+                                                        setTextColor(overlayOnSurfaceVariantColor())
+                                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                                                        maxLines = 3
+                                                        ellipsize = TextUtils.TruncateAt.END
+                                                        text = card.note.ifBlank { "愿你的生活充满诗与远方" }
+                                                    }
+                                                )
+                                            },
+                                            LinearLayout.LayoutParams(
+                                                0,
+                                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                                1f
+                                            )
+                                        )
+                                        addView(spaceView(dp(8), 1))
+                                        addView(createOverlayQuickCardLogoView())
+                                    }
+                                )
+                            },
+                            LinearLayout.LayoutParams(
+                                0,
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                1f
+                            )
+                        )
+                    },
+                    LinearLayout.LayoutParams(contentWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT)
+                )
+            } else {
+                val themeColor = parseQuickCardThemeColor(card.themeColor)
+                val onThemeColor = quickCardOnColor(themeColor)
+                val hero = FrameLayout(this@FloatingOverlayService).apply {
+                    background = roundedRectDrawable(overlayRadiusDp, themeColor)
+                    clipChildren = true
+                    clipToPadding = true
+                }
+                populateOverlayQuickCardHero(hero, card, themeColor, onThemeColor, false)
+                addView(
+                    hero,
+                    LinearLayout.LayoutParams(
+                        contentWidthPx,
+                        (contentWidthPx * 1.67f).roundToInt()
                     )
                 )
                 addView(
-                    ImageView(this@FloatingOverlayService).apply {
-                        setImageResource(if (overlayDarkTheme) R.drawable.logo_white else R.drawable.logo_black)
-                        adjustViewBounds = true
+                    LinearLayout(this@FloatingOverlayService).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.TOP
+                        setPadding(0, dp(8), 0, 0)
+                        addView(
+                            LinearLayout(this@FloatingOverlayService).apply {
+                                orientation = LinearLayout.VERTICAL
+                                addView(
+                                    TextView(this@FloatingOverlayService).apply {
+                                        setTextColor(overlayOnSurfaceColor())
+                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                                        typeface = Typeface.DEFAULT_BOLD
+                                        maxLines = 1
+                                        ellipsize = TextUtils.TruncateAt.END
+                                        text = card.title.ifBlank { "名片名字" }
+                                    }
+                                )
+                                addView(
+                                    TextView(this@FloatingOverlayService).apply {
+                                        setTextColor(overlayOnSurfaceVariantColor())
+                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                                        maxLines = 2
+                                        ellipsize = TextUtils.TruncateAt.END
+                                        text = card.note.ifBlank { "愿你的生活充满诗与远方" }
+                                    }
+                                )
+                            },
+                            LinearLayout.LayoutParams(
+                                0,
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                1f
+                            )
+                        )
+                        addView(spaceView(dp(8), 1))
+                        addView(createOverlayQuickCardLogoView())
                     },
-                    LinearLayout.LayoutParams(dp(84), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                        leftMargin = dp(8)
+                    LinearLayout.LayoutParams(contentWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT)
+                )
+            }
+        }
+    }
+
+    private fun populateOverlayQuickCardHero(
+        container: FrameLayout,
+        card: QuickCard,
+        themeColor: Int,
+        onThemeColor: Int,
+        landscape: Boolean
+    ) {
+        val linkText = card.link.trim()
+        val imagePath = card.overlayHeroImagePath(landscape)
+        when (card.type) {
+            QuickCardType.Image -> {
+                val imageView = ImageView(this).apply {
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    tag = imagePath
+                }
+                val placeholder = TextView(this).apply {
+                    setTextColor(onThemeColor)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                    gravity = Gravity.CENTER
+                    text = if (imagePath.isBlank()) "未设置图片" else "加载图片中..."
+                }
+                container.addView(
+                    imageView,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                container.addView(
+                    placeholder,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                if (linkText.isNotBlank()) {
+                    container.addView(
+                        View(this).apply {
+                            background = GradientDrawable(
+                                GradientDrawable.Orientation.TOP_BOTTOM,
+                                intArrayOf(Color.TRANSPARENT, ColorUtils.setAlphaComponent(Color.BLACK, 110))
+                            )
+                        },
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            if (landscape) dp(80) else dp(96),
+                            Gravity.BOTTOM
+                        )
+                    )
+                    container.addView(
+                        LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            setPadding(dp(10), dp(8), dp(10), dp(8))
+                            addView(
+                                TextView(this@FloatingOverlayService).apply {
+                                    setTextColor(Color.WHITE)
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                    text = linkText
+                                },
+                                LinearLayout.LayoutParams(
+                                    0,
+                                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                                    1f
+                                )
+                            )
+                            addView(createOverlayQuickCardActionSymbol("open_in_new", Color.WHITE) {
+                                openOverlayQuickCardLink(linkText)
+                            })
+                            addView(spaceView(dp(2), 1))
+                            addView(createOverlayQuickCardActionSymbol("share", Color.WHITE) {
+                                shareOverlayPlainText(linkText, "分享链接")
+                            })
+                        },
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.BOTTOM
+                        )
+                    )
+                }
+                if (imagePath.isNotBlank()) {
+                    scope.launch {
+                        val bitmap = withContext(Dispatchers.IO) { decodeBitmapFromPath(imagePath) }
+                        if (imageView.tag == imagePath && imageView.isAttachedToWindow) {
+                            if (bitmap != null) {
+                                imageView.setImageBitmap(bitmap)
+                                placeholder.visibility = View.GONE
+                                imageView.requestLayout()
+                                miniQuickCardPreviewContainer?.requestLayout()
+                            } else {
+                                placeholder.text = "未设置图片"
+                            }
+                        }
+                    }
+                }
+            }
+
+            QuickCardType.Qr -> {
+                val body = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(dp(16), dp(16), dp(16), dp(16))
+                }
+                val qrFrame = FrameLayout(this).apply {
+                    background = roundedRectDrawable(overlayRadiusDp, Color.WHITE)
+                }
+                val qrImage = ImageView(this).apply {
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    tag = linkText
+                }
+                val qrPlaceholder = TextView(this).apply {
+                    setTextColor(Color.BLACK)
+                    gravity = Gravity.CENTER
+                    text = if (linkText.isBlank()) "未设置链接" else "生成二维码中..."
+                }
+                qrFrame.addView(
+                    qrImage,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    ).apply {
+                        leftMargin = dp(16)
+                        topMargin = dp(16)
+                        rightMargin = dp(16)
+                        bottomMargin = dp(16)
                     }
                 )
-            },
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        return pageRoot
+                qrFrame.addView(
+                    qrPlaceholder,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                body.addView(
+                    qrFrame,
+                    LinearLayout.LayoutParams(
+                        if (landscape) dp(116) else dp(146),
+                        if (landscape) dp(116) else dp(146)
+                    )
+                )
+                if (linkText.isNotBlank()) {
+                    body.addView(spaceView(1, dp(10)))
+                    body.addView(
+                        TextView(this).apply {
+                            setTextColor(onThemeColor)
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            text = linkText
+                            gravity = Gravity.CENTER
+                        }
+                    )
+                    body.addView(spaceView(1, dp(4)))
+                    body.addView(
+                        LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER
+                            addView(createOverlayQuickCardActionSymbol("open_in_new", onThemeColor) {
+                                openOverlayQuickCardLink(linkText)
+                            })
+                            addView(spaceView(dp(2), 1))
+                            addView(createOverlayQuickCardActionSymbol("share", onThemeColor) {
+                                shareOverlayPlainText(linkText, "分享链接")
+                            })
+                        }
+                    )
+                }
+                container.addView(
+                    body,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                if (linkText.isNotBlank()) {
+                    scope.launch {
+                        val qrBitmap = withContext(Dispatchers.Default) {
+                            generateQuickCardQrBitmap(linkText)
+                        }
+                        if (qrImage.tag == linkText && qrImage.isAttachedToWindow) {
+                            if (qrBitmap != null) {
+                                qrImage.setImageBitmap(qrBitmap)
+                                qrPlaceholder.visibility = View.GONE
+                            } else {
+                                qrPlaceholder.text = "未设置链接"
+                            }
+                        }
+                    }
+                }
+            }
+
+            QuickCardType.Text -> {
+                val watermarkText = card.title.ifBlank { "名片名字" }
+                if (landscape) {
+                    container.addView(
+                        TextView(this).apply {
+                            setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 62f)
+                            typeface = Typeface.DEFAULT_BOLD
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            text = watermarkText
+                            gravity = Gravity.START or Gravity.BOTTOM
+                        },
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            Gravity.BOTTOM or Gravity.START
+                        ).apply {
+                            leftMargin = dp(8)
+                            bottomMargin = dp(4)
+                            rightMargin = dp(48)
+                        }
+                    )
+                    container.addView(
+                        View(this).apply {
+                            background = GradientDrawable(
+                                GradientDrawable.Orientation.LEFT_RIGHT,
+                                intArrayOf(Color.TRANSPARENT, themeColor)
+                            )
+                        },
+                        FrameLayout.LayoutParams(dp(68), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END)
+                    )
+                } else {
+                    val watermark = TextView(this).apply {
+                        setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 96f)
+                        typeface = Typeface.DEFAULT_BOLD
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        text = watermarkText
+                    }
+                    container.addView(
+                        watermark,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.TOP or Gravity.END
+                        )
+                    )
+                    watermark.post {
+                        watermark.pivotX = watermark.measuredWidth.toFloat()
+                        watermark.pivotY = 0f
+                        watermark.rotation = 90f
+                        watermark.translationY = watermark.measuredWidth.toFloat() + dp(10).toFloat()
+                    }
+                    container.addView(
+                        View(this).apply {
+                            background = GradientDrawable(
+                                GradientDrawable.Orientation.TOP_BOTTOM,
+                                intArrayOf(Color.TRANSPARENT, themeColor)
+                            )
+                        },
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            dp(72),
+                            Gravity.BOTTOM
+                        )
+                    )
+                }
+                container.addView(
+                    LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(12), dp(16), dp(12), dp(12))
+                        addView(
+                            TextView(this@FloatingOverlayService).apply {
+                                setTextColor(onThemeColor)
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
+                                typeface = Typeface.DEFAULT_BOLD
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.END
+                                text = watermarkText
+                            }
+                        )
+                        if (card.note.isNotBlank()) {
+                            addView(
+                                TextView(this@FloatingOverlayService).apply {
+                                    setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 230))
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                                    maxLines = 2
+                                    ellipsize = TextUtils.TruncateAt.END
+                                    text = card.note
+                                }
+                            )
+                        }
+                    },
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.TOP or Gravity.START
+                    )
+                )
+                if (linkText.isNotBlank()) {
+                    container.addView(
+                        LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            setPadding(dp(12), dp(8), dp(12), dp(8))
+                            addView(
+                                TextView(this@FloatingOverlayService).apply {
+                                    setTextColor(onThemeColor)
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                    text = linkText
+                                },
+                                LinearLayout.LayoutParams(
+                                    0,
+                                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                                    1f
+                                )
+                            )
+                            addView(createOverlayQuickCardActionSymbol("open_in_new", onThemeColor) {
+                                openOverlayQuickCardLink(linkText)
+                            })
+                            addView(spaceView(dp(2), 1))
+                            addView(createOverlayQuickCardActionSymbol("share", onThemeColor) {
+                                shareOverlayPlainText(linkText, "分享链接")
+                            })
+                        },
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.BOTTOM
+                        )
+                    )
+                }
+            }
+        }
     }
 
     private fun populateMiniQuickCardHero(
@@ -4450,7 +5143,14 @@ class FloatingOverlayService : Service() {
                 addView(spaceView(dp(4), 1))
                 addView(symbolTextView("expand_more", 18f, overlayOnSurfaceVariantColor()))
                 setOnClickListener { anchor ->
-                    PopupMenu(this@FloatingOverlayService, anchor).apply {
+                    val popupStyle = overlayPopupMenuStyleRes()
+                    PopupMenu(
+                        ContextThemeWrapper(this@FloatingOverlayService, popupStyle),
+                        anchor,
+                        Gravity.NO_GRAVITY,
+                        0,
+                        popupStyle
+                    ).apply {
                         labels.forEachIndexed { index, (_, text) -> menu.add(0, index, index, text) }
                         setOnMenuItemClickListener { item ->
                             labels.getOrNull(item.itemId)?.first?.let(onSelect)
@@ -4865,7 +5565,7 @@ class FloatingOverlayService : Service() {
         val overlay = confirmOverlay ?: return
         val params = confirmParams ?: return
         val clip = confirmClipContainer ?: return
-        val prompt = confirmTextView ?: return
+        val card = confirmTextCardView ?: return
         val left = leftActionButton ?: return
         val right = rightActionButton ?: return
         val fab = activeConfirmFab() ?: return
@@ -4882,7 +5582,7 @@ class FloatingOverlayService : Service() {
         val fabCenterY = fabLoc[1] - overlayLoc[1] + fabHeight / 2f
         val actionSize = dp(72)
         val contentPadding = dp(12)
-        val sideGap = dp(14)
+        val sideGap = dp(16)
         val sideCenterOffset = (fabWidth / 2f) + (actionSize / 2f) + sideGap
         val actionCenterY =
             fabCenterY.coerceIn((contentPadding + actionSize / 2).toFloat(), (overlay.height - contentPadding - actionSize / 2).toFloat())
@@ -4904,26 +5604,16 @@ class FloatingOverlayService : Service() {
             .coerceAtMost((overlay.width - actionSize - contentPadding).toFloat())
         right.y = actionTop.toFloat()
 
-        val promptWidth = overlay.width - dp(36)
-        prompt.maxWidth = promptWidth
-        prompt.measure(
-            View.MeasureSpec.makeMeasureSpec(promptWidth, View.MeasureSpec.AT_MOST),
+        val cardWidth = (overlay.width - dp(24)).coerceAtLeast(dp(168))
+        card.measure(
+            View.MeasureSpec.makeMeasureSpec(cardWidth, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         )
-        val promptHeight = prompt.measuredHeight
-        prompt.x = dp(18).toFloat()
-        prompt.y = (actionTop - promptHeight - dp(18)).coerceAtLeast(dp(12)).toFloat()
-
-        val gradient = confirmGradientView
-        val gradientTop = (prompt.y - dp(16)).roundToInt().coerceAtLeast(0)
-        val gradientHeight = (overlay.height - gradientTop).coerceAtLeast(dp(72))
-        (gradient?.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
-            lp.height = gradientHeight
-            lp.topMargin = gradientTop
-            lp.bottomMargin = 0
-            lp.gravity = Gravity.TOP
-            gradient.layoutParams = lp
-        }
+        val cardHeight = card.measuredHeight
+        val cardLeft = ((overlay.width - cardWidth) / 2f).coerceAtLeast(contentPadding.toFloat())
+        val cardTop = (actionTop - cardHeight - dp(14)).coerceAtLeast(contentPadding).toFloat()
+        card.x = cardLeft
+        card.y = cardTop
 
         clip.invalidate()
     }
@@ -5047,6 +5737,10 @@ class FloatingOverlayService : Service() {
             intArrayOf(0x8C000000.toInt(), 0x22000000, 0x00000000)
         }
 
+    private fun overlayPopupMenuStyleRes(): Int =
+        if (overlayDarkTheme) R.style.ThemeOverlay_KGTTS_OverlayPopup_Dark
+        else R.style.ThemeOverlay_KGTTS_OverlayPopup_Light
+
     private fun roundedRectDrawable(radiusDp: Float, color: Int): GradientDrawable =
         GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -5054,13 +5748,15 @@ class FloatingOverlayService : Service() {
             setColor(color)
         }
 
-    private fun selectableDrawable(): Drawable? {
-        val typedValue = TypedValue()
-        if (!theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, typedValue, true)) {
-            return null
-        }
-        return ContextCompat.getDrawable(this, typedValue.resourceId)
-    }
+    private fun selectableDrawable(): Drawable =
+        RippleDrawable(
+            ColorStateList.valueOf(
+                if (overlayDarkTheme) ColorUtils.setAlphaComponent(Color.WHITE, 40)
+                else ColorUtils.setAlphaComponent(overlayPrimaryColor(), 38)
+            ),
+            null,
+            roundedRectDrawable(overlayRadiusDp, Color.WHITE)
+        )
 
     private fun circleDrawable(color: Int): GradientDrawable =
         GradientDrawable().apply {
