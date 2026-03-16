@@ -15,9 +15,7 @@
         <item name="android:navigationBarColor" tools:targetApi="l">#000000</item>
     </style>
 
-    <style name="ThemeOverlay.KGTTS.OverlayPopup" parent="@style/ThemeOverlay.KGTTS.OverlayPopup.Light" />
-
-    <style name="ThemeOverlay.KGTTS.OverlayPopup.Light">
+    <style name="ThemeOverlay.KGTTS.OverlayPopup" parent="">
         <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
         <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
         <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>

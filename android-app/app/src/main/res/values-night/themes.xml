@@ -8,9 +8,7 @@
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
     </style>
 
-    <style name="ThemeOverlay.KGTTS.OverlayPopup" parent="@style/ThemeOverlay.KGTTS.OverlayPopup.Dark" />
-
-    <style name="ThemeOverlay.KGTTS.OverlayPopup.Dark">
+    <style name="ThemeOverlay.KGTTS.OverlayPopup" parent="">
         <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
         <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>
         <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>

@@ -183,6 +183,7 @@ import com.kgtts.app.data.UserPrefs
 import com.kgtts.app.overlay.FloatingOverlayService
 import com.kgtts.app.overlay.OverlayBridge
 import com.kgtts.app.overlay.RealtimeOwnerGate
+import com.kgtts.app.overlay.RealtimeRuntimeBridge
 import com.kgtts.app.service.KeepAliveService
 import com.kgtts.app.util.AppLogger
 import com.kgtts.app.util.QuickCardRenderCache
@@ -5621,6 +5622,37 @@ fun AppScaffold(viewModel: MainViewModel) {
     )
     val pendingQuickSubtitleLaunchRequest = viewModel.pendingQuickSubtitleLaunchRequest
     val drawerSelectedPage = basePage
+    DisposableEffect(viewModel) {
+        val delegate = object : RealtimeRuntimeBridge.AppDelegate {
+            override fun startRealtime() {
+                viewModel.start()
+            }
+
+            override fun stopRealtime() {
+                viewModel.stop()
+            }
+
+            override fun submitQuickSubtitle(target: String, text: String) {
+                viewModel.applyExternalQuickSubtitleRequest(target, text)
+            }
+        }
+        RealtimeRuntimeBridge.registerAppDelegate(delegate)
+        onDispose {
+            RealtimeRuntimeBridge.unregisterAppDelegate(delegate)
+        }
+    }
+    SideEffect {
+        RealtimeRuntimeBridge.updateAppSnapshot(
+            RealtimeRuntimeBridge.Snapshot(
+                running = state.running,
+                latestRecognizedText = viewModel.realtimeRecognized.firstOrNull()?.text.orEmpty(),
+                inputLevel = topMicLevel.coerceIn(0f, 1f),
+                playbackProgress = topPlaybackProgress.coerceIn(0f, 1f),
+                inputDeviceLabel = state.inputDeviceLabel,
+                outputDeviceLabel = state.outputDeviceLabel
+            )
+        )
+    }
     LaunchedEffect(drawerItems.size) {
         val validPages = drawerItems.map { it.page }.toSet()
         if (page !in validPages) {
