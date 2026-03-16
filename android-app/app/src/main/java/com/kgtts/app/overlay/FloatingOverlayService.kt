@@ -1058,6 +1058,7 @@ class FloatingOverlayService : Service() {
             registerOnPageChangeCallback(
                 object : ViewPager2.OnPageChangeCallback() {
                     override fun onPageSelected(position: Int) {
+                        collapseOverlayStatusExpanded()
                         val nextIndex = position.coerceIn(0, max(0, panelPageCount - 1))
                         if (panelPageIndex != nextIndex) {
                             panelPageIndex = nextIndex
@@ -1272,7 +1273,13 @@ class FloatingOverlayService : Service() {
             clipToPadding = false
             isClickable = true
             isFocusable = false
-            setOnClickListener { hidePanel() }
+            setOnClickListener {
+                if (overlayStatusExpanded) {
+                    collapseOverlayStatusExpanded()
+                } else {
+                    hidePanel()
+                }
+            }
             addView(
                 panelContent,
                 FrameLayout.LayoutParams(
@@ -1755,6 +1762,7 @@ class FloatingOverlayService : Service() {
                     registerOnPageChangeCallback(
                         object : ViewPager2.OnPageChangeCallback() {
                             override fun onPageSelected(position: Int) {
+                                collapseOverlayStatusExpanded()
                                 if (quickCards.isEmpty()) return
                                 val safeIndex = position.coerceIn(0, quickCards.lastIndex)
                                 if (safeIndex != quickCardSelectedIndex) {
@@ -1915,7 +1923,13 @@ class FloatingOverlayService : Service() {
             clipToPadding = false
             isClickable = true
             isFocusable = false
-            setOnClickListener { hideMiniPanel() }
+            setOnClickListener {
+                if (overlayStatusExpanded) {
+                    collapseOverlayStatusExpanded()
+                } else {
+                    hideMiniPanel()
+                }
+            }
             addView(
                 miniContent,
                 FrameLayout.LayoutParams(
@@ -2638,6 +2652,7 @@ class FloatingOverlayService : Service() {
 
     private fun showPanel() {
         scope.launch {
+            collapseOverlayStatusExpanded(animate = false)
             loadOverlayShortcuts()
             loadOverlayLauncherLayout()
             refreshPanelUi()
@@ -2679,6 +2694,7 @@ class FloatingOverlayService : Service() {
 
     private fun showMiniPanel(mode: MiniOverlayMode = MiniOverlayMode.Subtitle) {
         scope.launch {
+            collapseOverlayStatusExpanded(animate = false)
             miniMode = mode
             when (miniMode) {
                 MiniOverlayMode.Subtitle -> {
@@ -5055,6 +5071,7 @@ class FloatingOverlayService : Service() {
     }
 
     private fun switchPanelPageBy(delta: Int) {
+        collapseOverlayStatusExpanded()
         if (panelPageCount <= 1) {
             snapPanelToNearestPage()
             return
@@ -5275,14 +5292,43 @@ class FloatingOverlayService : Service() {
         handlePanelDragLocation(pager.width, xInPager)
     }
 
-    private fun toggleOverlayStatusExpanded() {
-        overlayStatusExpanded = !overlayStatusExpanded
-        if (overlayStatusExpanded) {
+    private fun setOverlayStatusExpanded(expanded: Boolean, animate: Boolean = true) {
+        if (overlayStatusExpanded == expanded) {
+            if (!expanded && !animate) {
+                listOfNotNull(panelStatusDetailRefs?.card, miniStatusDetailRefs?.card).forEach { view ->
+                    view.animate().cancel()
+                    view.alpha = 1f
+                    view.translationY = 0f
+                    view.visibility = View.GONE
+                }
+            }
+            return
+        }
+        overlayStatusExpanded = expanded
+        if (expanded) {
             if (panelVisible) updatePanelPosition()
             if (miniVisible) updateMiniPanelPosition()
         }
-        panelStatusDetailRefs?.card?.let { animateStatusCardVisibility(it, overlayStatusExpanded) }
-        miniStatusDetailRefs?.card?.let { animateStatusCardVisibility(it, overlayStatusExpanded) }
+        listOfNotNull(panelStatusDetailRefs?.card, miniStatusDetailRefs?.card).forEach { view ->
+            if (animate) {
+                animateStatusCardVisibility(view, expanded)
+            } else {
+                view.animate().cancel()
+                view.alpha = 1f
+                view.translationY = 0f
+                view.visibility = if (expanded) View.VISIBLE else View.GONE
+            }
+        }
+        panelStatusTriggerContainer?.alpha = if (overlayStatusExpanded) 1f else 0.94f
+        miniStatusTriggerContainer?.alpha = if (overlayStatusExpanded) 1f else 0.94f
+    }
+
+    private fun collapseOverlayStatusExpanded(animate: Boolean = true) {
+        setOverlayStatusExpanded(expanded = false, animate = animate)
+    }
+
+    private fun toggleOverlayStatusExpanded() {
+        setOverlayStatusExpanded(expanded = !overlayStatusExpanded, animate = true)
     }
 
     private fun animateStatusCardVisibility(view: View, show: Boolean) {
@@ -5529,7 +5575,7 @@ class FloatingOverlayService : Service() {
 
     private fun snapPlaybackGainPercent(value: Int): Int {
         val clamped = value.coerceIn(0, 1000)
-        return if (abs(clamped - 100) <= 18) 100 else clamped
+        return if (abs(clamped - 100) <= 20) 100 else clamped
     }
 
     private fun overlayLayoutTransition(): LayoutTransition =

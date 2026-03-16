@@ -197,6 +197,7 @@ import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -510,6 +511,7 @@ class MainViewModel(
 
     private var controller: RealtimeController? = null
     private var restartJob: Job? = null
+    private var settingsObserveJob: Job? = null
     private val lastProgressUpdateAtMs = mutableMapOf<Long, Long>()
     private var lastLevelUpdateAtMs = 0L
     private var speakerProfiles = mutableListOf<UserPrefs.SpeakerVerifyProfile>()
@@ -649,6 +651,75 @@ class MainViewModel(
     init {
         loadQuickSubtitleConfig()
         loadQuickCardConfig()
+        observeSettingsChanges()
+    }
+
+    private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
+        speakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv)
+            .take(MAX_SPEAKER_PROFILES)
+            .toMutableList()
+        val hasProfiles = speakerProfiles.isNotEmpty()
+        val speakerVerifyEnabled = settings.speakerVerifyEnabled && hasProfiles
+        val nextAec3Status = if (settings.aec3Enabled) {
+            if (uiState.aec3Status == "未启用") "待启动" else uiState.aec3Status
+        } else {
+            "未启用"
+        }
+        val nextAec3Diag = if (settings.aec3Enabled) {
+            if (uiState.aec3Diag == "AEC3 诊断：未启用") "AEC3 诊断：待启动" else uiState.aec3Diag
+        } else {
+            "AEC3 诊断：未启用"
+        }
+        uiState = uiState.copy(
+            muteWhilePlaying = settings.muteWhilePlaying,
+            muteWhilePlayingDelaySec = settings.muteWhilePlayingDelaySec,
+            echoSuppression = settings.echoSuppression,
+            communicationMode = settings.communicationMode,
+            preferredInputType = settings.preferredInputType,
+            preferredOutputType = settings.preferredOutputType,
+            aec3Enabled = settings.aec3Enabled,
+            aec3Status = nextAec3Status,
+            aec3Diag = nextAec3Diag,
+            minVolumePercent = settings.minVolumePercent,
+            playbackGainPercent = settings.playbackGainPercent,
+            piperNoiseScale = settings.piperNoiseScale,
+            piperLengthScale = settings.piperLengthScale,
+            piperNoiseW = 0.8f,
+            piperSentenceSilence = settings.piperSentenceSilence,
+            keepAlive = settings.keepAlive,
+            numberReplaceMode = settings.numberReplaceMode,
+            landscapeDrawerMode = settings.landscapeDrawerMode,
+            solidTopBar = settings.solidTopBar,
+            drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
+            quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
+            asrSendToQuickSubtitle = settings.asrSendToQuickSubtitle,
+            pushToTalkMode = settings.pushToTalkMode,
+            pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
+            floatingOverlayEnabled = settings.floatingOverlayEnabled,
+            floatingOverlayAutoDock = settings.floatingOverlayAutoDock,
+            speakerVerifyEnabled = speakerVerifyEnabled,
+            speakerVerifyThreshold = settings.speakerVerifyThreshold,
+            speakerProfileReady = hasProfiles,
+            speakerProfiles = speakerProfiles.map { SpeakerProfileUiItem(id = it.id, name = it.name) },
+            speakerLastSimilarity = if (speakerVerifyEnabled) uiState.speakerLastSimilarity else -1f,
+            pushToTalkPressed = if (settings.pushToTalkMode) uiState.pushToTalkPressed else false,
+            pushToTalkStreamingText = if (settings.pushToTalkMode) uiState.pushToTalkStreamingText else ""
+        )
+        applySettingsToController(settings)
+        if (settings.speakerVerifyEnabled && !speakerVerifyEnabled) {
+            viewModelScope.launch(Dispatchers.IO) {
+                UserPrefs.setSpeakerVerifyEnabled(appContext, false)
+            }
+        }
+    }
+
+    private fun observeSettingsChanges() {
+        settingsObserveJob?.cancel()
+        settingsObserveJob = viewModelScope.launch {
+            UserPrefs.observeSettings(appContext).collectLatest { settings ->
+                applySettingsSnapshot(settings)
+            }
+        }
     }
 
     private fun loadQuickSubtitleConfig() {
@@ -1500,48 +1571,7 @@ class MainViewModel(
     fun loadSettings() {
         viewModelScope.launch {
             val settings = UserPrefs.getSettings(appContext)
-            speakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv)
-                .take(MAX_SPEAKER_PROFILES)
-                .toMutableList()
-            val hasProfiles = speakerProfiles.isNotEmpty()
-            val speakerVerifyEnabled = settings.speakerVerifyEnabled && hasProfiles
-            uiState = uiState.copy(
-                muteWhilePlaying = settings.muteWhilePlaying,
-                muteWhilePlayingDelaySec = settings.muteWhilePlayingDelaySec,
-                echoSuppression = settings.echoSuppression,
-                communicationMode = settings.communicationMode,
-                preferredInputType = settings.preferredInputType,
-                preferredOutputType = settings.preferredOutputType,
-                aec3Enabled = settings.aec3Enabled,
-                aec3Status = if (settings.aec3Enabled) "待启动" else "未启用",
-                aec3Diag = if (settings.aec3Enabled) "AEC3 诊断：待启动" else "AEC3 诊断：未启用",
-                minVolumePercent = settings.minVolumePercent,
-                playbackGainPercent = settings.playbackGainPercent,
-                piperNoiseScale = settings.piperNoiseScale,
-                piperLengthScale = settings.piperLengthScale,
-                piperNoiseW = 0.8f,
-                piperSentenceSilence = settings.piperSentenceSilence,
-                keepAlive = settings.keepAlive,
-                numberReplaceMode = settings.numberReplaceMode,
-                landscapeDrawerMode = settings.landscapeDrawerMode,
-                solidTopBar = settings.solidTopBar,
-                drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
-                quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
-                asrSendToQuickSubtitle = settings.asrSendToQuickSubtitle,
-                pushToTalkMode = settings.pushToTalkMode,
-                pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
-                floatingOverlayEnabled = settings.floatingOverlayEnabled,
-                floatingOverlayAutoDock = settings.floatingOverlayAutoDock,
-                speakerVerifyEnabled = speakerVerifyEnabled,
-                speakerVerifyThreshold = settings.speakerVerifyThreshold,
-                speakerProfileReady = hasProfiles,
-                speakerProfiles = speakerProfiles.map { SpeakerProfileUiItem(id = it.id, name = it.name) },
-                speakerLastSimilarity = -1f
-            )
-            applySettingsToController(settings)
-            if (settings.speakerVerifyEnabled && !speakerVerifyEnabled) {
-                UserPrefs.setSpeakerVerifyEnabled(appContext, false)
-            }
+            applySettingsSnapshot(settings)
         }
     }
 
@@ -2407,6 +2437,8 @@ class MainViewModel(
     override fun onCleared() {
         val activeController = controller
         controller = null
+        settingsObserveJob?.cancel()
+        settingsObserveJob = null
         if (activeController != null) {
             runCatching {
                 kotlinx.coroutines.runBlocking(Dispatchers.IO) {
