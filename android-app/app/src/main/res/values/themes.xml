@@ -1,6 +1,28 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Theme.KGTTS" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_screen</item>
         <item name="android:statusBarColor" tools:targetApi="l">?attr/colorPrimary</item>
         <item name="android:navigationBarColor" tools:targetApi="l">?attr/colorSurface</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo_day</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_background_day</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.KGTTS.Cropper" parent="Theme.Material3.DayNight">
+        <item name="colorPrimary">#038387</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="android:statusBarColor" tools:targetApi="l">#038387</item>
+        <item name="android:navigationBarColor" tools:targetApi="l">#000000</item>
+    </style>
+
+    <style name="ThemeOverlay.KGTTS.OverlayPopup" parent="">
+        <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
+        <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+        <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+    </style>
+
+    <style name="TextAppearance.KGTTS.OverlayPopup.Light" parent="@android:style/TextAppearance.Material.Menu">
+        <item name="android:textColor">#111417</item>
+        <item name="android:textSize">14sp</item>
     </style>
 </resources>

@@ -53,7 +53,7 @@ class KeepAliveService : Service() {
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("KGTTS 后台运行中")
+            .setContentTitle("KIGTTS 后台运行中")
             .setContentText("保持录音与播放在锁屏/息屏下持续运行")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
@@ -64,7 +64,7 @@ class KeepAliveService : Service() {
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
-        val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KGTTS:KeepAlive")
+        val wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KIGTTS:KeepAlive")
         wl.setReferenceCounted(false)
         wl.acquire()
         wakeLock = wl

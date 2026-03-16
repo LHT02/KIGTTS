@@ -70,6 +70,8 @@ Electron_Trainer/.electron-cache/
 android-app/.gradle/
 android-app/.idea/
 android-app/local.properties
+android-app/keystore.properties
+android-app/release/*.jks
 android-app/**/build/
 android-app/app/.cxx/
 android-app/app/.externalNativeBuild/

@@ -38,4 +38,22 @@ if (-not (Test-Path $resourcesRoot)) {
   }
 }
 
+# Copy top-level legal docs into distribution root
+$repoRoot = Split-Path -Parent $root
+$legalFiles = @("LICENSE", "COPYING", "NOTICE", "THIRD_PARTY_LICENSES.md")
+foreach ($f in $legalFiles) {
+  $src = Join-Path $repoRoot $f
+  if (Test-Path $src) {
+    Copy-Item $src (Join-Path $distRoot $f) -Force
+  } else {
+    Write-Warning "missing legal file: $src"
+  }
+}
+
+# Keep bundled third-party license alongside runtime files when available
+$piperLicense = Join-Path $root "third_party\piper\LICENSE.md"
+if (Test-Path $piperLicense) {
+  Copy-Item $piperLicense (Join-Path $distRoot "PIPER_LICENSE.md") -Force
+}
+
 Write-Host "Build complete. See dist\\kgt_trainer\\kgt_trainer.exe"

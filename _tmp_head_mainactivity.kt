@@ -1,0 +1,6443 @@
+package com.kgtts.app.ui
+
+import android.Manifest
+import android.app.Activity
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Paint
+import android.graphics.BitmapFactory
+import android.media.MediaScannerConnection
+import android.os.Build
+import android.os.Bundle
+import android.os.SystemClock
+import android.provider.DocumentsContract
+import android.provider.MediaStore
+import android.view.MotionEvent
+import android.view.Surface
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.material.*
+import androidx.compose.material.DropdownMenuItem as M2DropdownMenuItem
+import androidx.compose.material.ripple.rememberRipple
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.pointer.pointerInteropFilter
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
+import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.interpolator.view.animation.FastOutSlowInInterpolator
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.kgtts.app.R
+import com.canhub.cropper.CropImageContract
+import com.canhub.cropper.CropImageContractOptions
+import com.canhub.cropper.CropImageOptions
+import com.canhub.cropper.CropImageView
+import com.kgtts.app.audio.AudioRoutePreference
+import com.kgtts.app.audio.RealtimeController
+import com.kgtts.app.data.ModelRepository
+import com.kgtts.app.data.VoicePackInfo
+import com.kgtts.app.data.UserPrefs
+import com.kgtts.app.service.KeepAliveService
+import com.kgtts.app.util.AppLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import androidx.recyclerview.widget.ItemTouchHelper
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.DefaultItemAnimator
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.RecyclerView
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.sin
+
+private fun isXiaomiFamilyDevice(): Boolean {
+    val m = Build.MANUFACTURER?.lowercase() ?: return false
+    return m.contains("xiaomi") || m.contains("redmi") || m.contains("poco")
+}
+
+private fun softInputModeSummary(mode: Int): String {
+    val adjust = when (mode and WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST) {
+        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE -> "resize"
+        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN -> "pan"
+        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING -> "nothing"
+        WindowManager.LayoutParams.SOFT_INPUT_ADJUST_UNSPECIFIED -> "unspecified"
+        else -> "unknown"
+    }
+    val state = when (mode and WindowManager.LayoutParams.SOFT_INPUT_MASK_STATE) {
+        WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED -> "unspecified"
+        WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED -> "unchanged"
+        WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN -> "hidden"
+        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN -> "always_hidden"
+        WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE -> "visible"
+        WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE -> "always_visible"
+        else -> "unknown"
+    }
+    return "adjust=$adjust,state=$state,raw=0x${mode.toString(16)}"
+}
+
+private fun normalizeDrawingSaveRelativePath(raw: String): String {
+    val cleaned = raw
+        .trim()
+        .replace('\\', '/')
+        .trim('/')
+    if (cleaned.isEmpty()) {
+        return UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+    }
+    val normalized = cleaned
+        .split('/')
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && it != "." && it != ".." }
+        .joinToString("/")
+    return if (normalized.isEmpty()) {
+        UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+    } else {
+        normalized
+    }
+}
+
+private fun drawingRelativePathFromTreeUri(uri: android.net.Uri): String? {
+    val treeId = runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull() ?: return null
+    val sep = treeId.indexOf(':')
+    if (sep <= 0 || sep >= treeId.length - 1) return null
+    val volume = treeId.substring(0, sep).lowercase(Locale.US)
+    val rawPath = treeId.substring(sep + 1)
+    return when (volume) {
+        "primary" -> normalizeDrawingSaveRelativePath(rawPath)
+        "home" -> {
+            val tail = rawPath.trim().trim('/')
+            normalizeDrawingSaveRelativePath(
+                if (tail.isEmpty()) "Documents" else "Documents/$tail"
+            )
+        }
+        else -> null
+    }
+}
+
+data class UiState(
+    val asrDir: File? = null,
+    val voiceDir: File? = null,
+    val voicePacks: List<VoicePackInfo> = emptyList(),
+    val recognized: List<RecognizedItem> = emptyList(),
+    val running: Boolean = false,
+    val status: String = "待命",
+    val muteWhilePlaying: Boolean = false,
+    val muteWhilePlayingDelaySec: Float = 0f,
+    val echoSuppression: Boolean = false,
+    val communicationMode: Boolean = false,
+    val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
+    val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
+    val aec3Enabled: Boolean = false,
+    val aec3Status: String = "未启用",
+    val aec3Diag: String = "AEC3 诊断：未启用",
+    val minVolumePercent: Int = 0,
+    val playbackGainPercent: Int = 100,
+    val keepAlive: Boolean = false,
+    val numberReplaceMode: Int = 0,
+    val landscapeDrawerMode: Int = UserPrefs.DRAWER_MODE_PERMANENT,
+    val solidTopBar: Boolean = true,
+    val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
+    val asrSendToQuickSubtitle: Boolean = true,
+    val inputLevel: Float = 0f,
+    val inputDeviceLabel: String = "未知",
+    val outputDeviceLabel: String = "未知"
+)
+
+data class RecognizedItem(
+    val id: Long,
+    val text: String,
+    val progress: Float = 0f
+)
+
+data class QuickSubtitleGroup(
+    val id: Long,
+    val title: String,
+    val icon: String,
+    val items: List<String>
+)
+
+data class DrawPoint(
+    val x: Float,
+    val y: Float
+)
+
+data class DrawStrokeData(
+    val points: List<DrawPoint>,
+    val color: Color,
+    val width: Float,
+    val eraser: Boolean
+)
+
+data class DrawingSaveResult(
+    val fullPath: String
+)
+
+private fun defaultQuickSubtitleGroups(): List<QuickSubtitleGroup> = listOf(
+    QuickSubtitleGroup(
+        id = 1L,
+        title = "常用",
+        icon = "sentiment_satisfied",
+        items = listOf(
+            "您好，我现在不太方便说话",
+            "您好，可以加个好友吗",
+            "稍等一下，我马上回复您",
+            "感谢理解，辛苦了"
+        )
+    ),
+    QuickSubtitleGroup(
+        id = 2L,
+        title = "游戏",
+        icon = "sports_esports",
+        items = listOf(
+            "我在组队，语音不方便",
+            "请跟我走这边",
+            "注意右侧有人",
+            "这把打得很好"
+        )
+    ),
+    QuickSubtitleGroup(
+        id = 3L,
+        title = "办公",
+        icon = "work",
+        items = listOf(
+            "我在开会，稍后回复",
+            "请把需求再发我一份",
+            "这个我今天内处理",
+            "收到，谢谢"
+        )
+    )
+)
+
+class MainViewModel(
+    private val repo: ModelRepository,
+    private val appContext: ComponentActivity
+) : ViewModel() {
+    var uiState by mutableStateOf(UiState())
+        private set
+    var realtimeRecognized by mutableStateOf<List<RecognizedItem>>(emptyList())
+        private set
+    var realtimeInputLevel by mutableFloatStateOf(0f)
+        private set
+    var realtimePlaybackProgress by mutableFloatStateOf(0f)
+        private set
+
+    private var controller: RealtimeController? = null
+    private var restartJob: Job? = null
+    private val lastProgressUpdateAtMs = mutableMapOf<Long, Long>()
+    private var lastLevelUpdateAtMs = 0L
+
+    private companion object {
+        private const val LEVEL_UPDATE_INTERVAL_MS = 33L
+        private const val LEVEL_UPDATE_DELTA = 0.02f
+        private const val PROGRESS_UPDATE_INTERVAL_MS = 48L
+        private const val PROGRESS_UPDATE_DELTA = 0.02f
+        private const val MAX_RECOGNIZED_ITEMS = 100
+    }
+    val drawStrokes = mutableStateListOf<DrawStrokeData>()
+    var drawColor by mutableStateOf(UiTokens.Primary)
+        private set
+    var drawBrushSize by mutableStateOf(12f)
+        private set
+    var drawEraserSize by mutableStateOf(12f)
+        private set
+    var drawEraser by mutableStateOf(false)
+        private set
+    var quickSubtitleGroups by mutableStateOf(defaultQuickSubtitleGroups())
+        private set
+    var quickSubtitleSelectedGroupId by mutableLongStateOf(1L)
+        private set
+    var quickSubtitleCurrentText by mutableStateOf("您好，我现在\n不太方便\n说话")
+        private set
+    var quickSubtitleInputText by mutableStateOf("")
+        private set
+    var quickSubtitlePlayOnSend by mutableStateOf(true)
+        private set
+    var quickSubtitleInputCollapsed by mutableStateOf(false)
+        private set
+    var quickSubtitleFontSizeSp by mutableFloatStateOf(56f)
+        private set
+    var drawingToolbarCollapsed by mutableStateOf(false)
+        private set
+    private var quickSubtitleNextGroupId = 4L
+    private var quickSubtitleSaving = false
+
+    init {
+        loadQuickSubtitleConfig()
+    }
+
+    private fun loadQuickSubtitleConfig() {
+        viewModelScope.launch {
+            val raw = UserPrefs.getQuickSubtitleConfig(appContext)
+            if (raw.isNullOrBlank()) return@launch
+            runCatching {
+                parseQuickSubtitleConfig(raw)
+            }
+        }
+    }
+
+    private fun parseQuickSubtitleConfig(raw: String) {
+        val root = JSONObject(raw)
+        val groupsArr = root.optJSONArray("groups") ?: JSONArray()
+        val parsedGroups = mutableListOf<QuickSubtitleGroup>()
+        var maxId = 0L
+        for (i in 0 until groupsArr.length()) {
+            val g = groupsArr.optJSONObject(i) ?: continue
+            val id = g.optLong("id", i.toLong() + 1L).coerceAtLeast(1L)
+            val title = g.optString("title", "未命名分组").ifBlank { "未命名分组" }
+            val icon = g.optString("icon", "sentiment_satisfied").ifBlank { "sentiment_satisfied" }
+            val itemsArr = g.optJSONArray("items") ?: JSONArray()
+            val items = mutableListOf<String>()
+            for (j in 0 until itemsArr.length()) {
+                val text = itemsArr.optString(j, "").trim()
+                if (text.isNotEmpty()) items.add(text)
+            }
+            if (items.isEmpty()) items.add("请输入常用短句")
+            parsedGroups.add(
+                QuickSubtitleGroup(
+                    id = id,
+                    title = title,
+                    icon = icon,
+                    items = items
+                )
+            )
+            if (id > maxId) maxId = id
+        }
+        val finalGroups = if (parsedGroups.isNotEmpty()) parsedGroups else defaultQuickSubtitleGroups()
+        val selectedId = root.optLong("selectedGroupId", finalGroups.first().id)
+        val fontSize = root.optDouble("fontSizeSp", 56.0).toFloat().coerceIn(28f, 96f)
+        val currentText = root.optString("currentText", quickSubtitleCurrentText).ifBlank { quickSubtitleCurrentText }
+        val inputText = root.optString("inputText", "")
+        val playOnSend = root.optBoolean("playOnSend", true)
+        quickSubtitleGroups = finalGroups
+        quickSubtitleSelectedGroupId =
+            finalGroups.firstOrNull { it.id == selectedId }?.id ?: finalGroups.first().id
+        quickSubtitleFontSizeSp = fontSize
+        quickSubtitleCurrentText = currentText
+        quickSubtitleInputText = inputText
+        quickSubtitlePlayOnSend = playOnSend
+        quickSubtitleNextGroupId = maxOf(maxId + 1L, (finalGroups.maxOfOrNull { it.id } ?: 0L) + 1L)
+    }
+
+    private fun saveQuickSubtitleConfig() {
+        if (quickSubtitleSaving) return
+        quickSubtitleSaving = true
+        val root = JSONObject().apply {
+            put("selectedGroupId", quickSubtitleSelectedGroupId)
+            put("fontSizeSp", quickSubtitleFontSizeSp.toDouble())
+            put("currentText", quickSubtitleCurrentText)
+            put("inputText", quickSubtitleInputText)
+            put("playOnSend", quickSubtitlePlayOnSend)
+            val groupsArr = JSONArray()
+            quickSubtitleGroups.forEach { g ->
+                groupsArr.put(
+                    JSONObject().apply {
+                        put("id", g.id)
+                        put("title", g.title)
+                        put("icon", g.icon)
+                        val itemsArr = JSONArray()
+                        g.items.forEach { itemsArr.put(it) }
+                        put("items", itemsArr)
+                    }
+                )
+            }
+            put("groups", groupsArr)
+        }
+        val payload = root.toString()
+        viewModelScope.launch {
+            try {
+                UserPrefs.setQuickSubtitleConfig(appContext, payload)
+            } finally {
+                quickSubtitleSaving = false
+            }
+        }
+    }
+
+    fun currentQuickSubtitleGroupIndex(): Int {
+        val idx = quickSubtitleGroups.indexOfFirst { it.id == quickSubtitleSelectedGroupId }
+        return if (idx >= 0) idx else 0
+    }
+
+    fun selectQuickSubtitleGroup(index: Int) {
+        val clamped = index.coerceIn(0, quickSubtitleGroups.lastIndex.coerceAtLeast(0))
+        val target = quickSubtitleGroups.getOrNull(clamped) ?: return
+        quickSubtitleSelectedGroupId = target.id
+        saveQuickSubtitleConfig()
+    }
+
+    fun applyQuickSubtitleText(text: String, enqueueSpeak: Boolean = true) {
+        val message = text.trim()
+        if (message.isEmpty()) return
+        quickSubtitleCurrentText = message
+        if (enqueueSpeak) speakText(message)
+        saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitleInputText(text: String) {
+        quickSubtitleInputText = text
+    }
+
+    fun submitQuickSubtitleInput(playVoice: Boolean = quickSubtitlePlayOnSend) {
+        val message = quickSubtitleInputText.trim()
+        if (message.isEmpty()) return
+        quickSubtitleCurrentText = message
+        quickSubtitleInputText = ""
+        if (playVoice) {
+            speakText(message)
+        } else {
+            uiState = uiState.copy(status = "已更新字幕文本")
+        }
+        saveQuickSubtitleConfig()
+    }
+
+    fun setQuickSubtitleFontSize(size: Float) {
+        quickSubtitleFontSizeSp = size.coerceIn(28f, 96f)
+        saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitlePlayOnSend(enabled: Boolean) {
+        quickSubtitlePlayOnSend = enabled
+        saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitleInputCollapsed(collapsed: Boolean) {
+        quickSubtitleInputCollapsed = collapsed
+    }
+
+    fun updateQuickSubtitleGroupMeta(index: Int, title: String, icon: String) {
+        if (index !in quickSubtitleGroups.indices) return
+        val next = quickSubtitleGroups.toMutableList()
+        val prev = next[index]
+        next[index] = prev.copy(
+            title = title.trim().ifEmpty { "未命名分组" },
+            icon = icon.ifBlank { "sentiment_satisfied" }
+        )
+        quickSubtitleGroups = next
+        saveQuickSubtitleConfig()
+    }
+
+    fun addQuickSubtitleGroup() {
+        val newId = quickSubtitleNextGroupId++
+        quickSubtitleGroups = quickSubtitleGroups + QuickSubtitleGroup(
+            id = newId,
+            title = "新分组",
+            icon = "sentiment_neutral",
+            items = listOf("请输入常用短句")
+        )
+        quickSubtitleSelectedGroupId = newId
+        saveQuickSubtitleConfig()
+    }
+
+    fun removeQuickSubtitleGroup(index: Int) {
+        if (quickSubtitleGroups.size <= 1) return
+        if (index !in quickSubtitleGroups.indices) return
+        val removedId = quickSubtitleGroups[index].id
+        val next = quickSubtitleGroups.toMutableList().apply { removeAt(index) }
+        quickSubtitleGroups = next
+        if (quickSubtitleSelectedGroupId == removedId) {
+            quickSubtitleSelectedGroupId = next[index.coerceAtMost(next.lastIndex)].id
+        }
+        saveQuickSubtitleConfig()
+    }
+
+    fun moveQuickSubtitleGroup(from: Int, to: Int) {
+        if (from !in quickSubtitleGroups.indices || to !in quickSubtitleGroups.indices) return
+        if (from == to) return
+        val next = quickSubtitleGroups.toMutableList()
+        val item = next.removeAt(from)
+        next.add(to, item)
+        quickSubtitleGroups = next
+        saveQuickSubtitleConfig()
+    }
+
+    fun addQuickSubtitleItem(groupIndex: Int, value: String = "新快捷文本") {
+        if (groupIndex !in quickSubtitleGroups.indices) return
+        val text = value.trim().ifEmpty { "新快捷文本" }
+        val next = quickSubtitleGroups.toMutableList()
+        val g = next[groupIndex]
+        next[groupIndex] = g.copy(items = g.items + text)
+        quickSubtitleGroups = next
+        saveQuickSubtitleConfig()
+    }
+
+    fun removeQuickSubtitleItem(groupIndex: Int, itemIndex: Int) {
+        if (groupIndex !in quickSubtitleGroups.indices) return
+        val g = quickSubtitleGroups[groupIndex]
+        if (itemIndex !in g.items.indices) return
+        if (g.items.size <= 1) return
+        val items = g.items.toMutableList().apply { removeAt(itemIndex) }
+        val next = quickSubtitleGroups.toMutableList()
+        next[groupIndex] = g.copy(items = items)
+        quickSubtitleGroups = next
+        saveQuickSubtitleConfig()
+    }
+
+    fun moveQuickSubtitleItem(groupIndex: Int, from: Int, to: Int) {
+        if (groupIndex !in quickSubtitleGroups.indices) return
+        val g = quickSubtitleGroups[groupIndex]
+        if (from !in g.items.indices || to !in g.items.indices || from == to) return
+        val items = g.items.toMutableList()
+        val item = items.removeAt(from)
+        items.add(to, item)
+        val next = quickSubtitleGroups.toMutableList()
+        next[groupIndex] = g.copy(items = items)
+        quickSubtitleGroups = next
+        saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitleItem(groupIndex: Int, itemIndex: Int, value: String) {
+        if (groupIndex !in quickSubtitleGroups.indices) return
+        val g = quickSubtitleGroups[groupIndex]
+        if (itemIndex !in g.items.indices) return
+        val items = g.items.toMutableList()
+        items[itemIndex] = value
+        val next = quickSubtitleGroups.toMutableList()
+        next[groupIndex] = g.copy(items = items)
+        quickSubtitleGroups = next
+        saveQuickSubtitleConfig()
+    }
+
+    fun setQuickSubtitleItems(groupIndex: Int, items: List<String>) {
+        if (groupIndex !in quickSubtitleGroups.indices) return
+        val g = quickSubtitleGroups[groupIndex]
+        val next = quickSubtitleGroups.toMutableList()
+        next[groupIndex] = g.copy(items = items.toList())
+        quickSubtitleGroups = next
+        saveQuickSubtitleConfig()
+    }
+
+    private fun ensureController(): RealtimeController {
+        controller?.let { return it }
+        val created = RealtimeController(
+            appContext,
+            viewModelScope,
+            onResult = { id, text ->
+                val item = RecognizedItem(id = id, text = text)
+                val next = (listOf(item) + realtimeRecognized).take(MAX_RECOGNIZED_ITEMS)
+                realtimeRecognized = next
+                val validIds = next.asSequence().map { it.id }.toSet()
+                lastProgressUpdateAtMs.keys.retainAll(validIds)
+                if (uiState.asrSendToQuickSubtitle) {
+                    val normalized = text.trim()
+                    if (normalized.isNotEmpty() && normalized != quickSubtitleCurrentText) {
+                        quickSubtitleCurrentText = normalized
+                    }
+                }
+            },
+            onProgress = { id, progress ->
+                val items = realtimeRecognized
+                val idx = items.indexOfFirst { it.id == id }
+                if (idx >= 0) {
+                    val current = items[idx]
+                    val nextProgress = maxOf(current.progress, progress.coerceIn(0f, 1f))
+                    val progressDelta = nextProgress - current.progress
+                    val now = SystemClock.elapsedRealtime()
+                    val last = lastProgressUpdateAtMs[id] ?: 0L
+                    val intervalReady = (now - last) >= PROGRESS_UPDATE_INTERVAL_MS || nextProgress >= 0.99f
+                    if (progressDelta >= PROGRESS_UPDATE_DELTA && intervalReady) {
+                        lastProgressUpdateAtMs[id] = now
+                        val updated = current.copy(progress = nextProgress)
+                        val next = items.toMutableList()
+                        next[idx] = updated
+                        realtimeRecognized = next
+                    }
+                }
+                realtimePlaybackProgress = progress.coerceIn(0f, 1f)
+            },
+            onLevel = { level ->
+                val next = level.coerceIn(0f, 1f)
+                val now = SystemClock.elapsedRealtime()
+                val prev = realtimeInputLevel
+                val delta = kotlin.math.abs(prev - next)
+                val intervalReady = (now - lastLevelUpdateAtMs) >= LEVEL_UPDATE_INTERVAL_MS
+                if (delta >= LEVEL_UPDATE_DELTA || intervalReady) {
+                    realtimeInputLevel = next
+                    lastLevelUpdateAtMs = now
+                }
+            },
+            onInputDevice = { label ->
+                if (label != uiState.inputDeviceLabel) {
+                    uiState = uiState.copy(inputDeviceLabel = label)
+                }
+            },
+            onOutputDevice = { label ->
+                if (label != uiState.outputDeviceLabel) {
+                    uiState = uiState.copy(outputDeviceLabel = label)
+                }
+            },
+            onAec3Status = { status ->
+                if (status != uiState.aec3Status) {
+                    uiState = uiState.copy(aec3Status = status)
+                }
+            },
+            onAec3Diag = { diag ->
+                if (diag != uiState.aec3Diag) {
+                    uiState = uiState.copy(aec3Diag = diag)
+                }
+            },
+            onError = { msg -> uiState = uiState.copy(status = msg, running = false) },
+            initialSuppressWhilePlaying = uiState.muteWhilePlaying,
+            initialUseVoiceCommunication = uiState.echoSuppression,
+            initialCommunicationMode = uiState.communicationMode,
+            initialMinVolumePercent = uiState.minVolumePercent,
+            initialPlaybackGainPercent = uiState.playbackGainPercent,
+            initialSuppressDelaySec = uiState.muteWhilePlayingDelaySec,
+            initialPreferredInputType = uiState.preferredInputType,
+            initialPreferredOutputType = uiState.preferredOutputType,
+            initialUseAec3 = uiState.aec3Enabled,
+            initialNumberReplaceMode = uiState.numberReplaceMode,
+            initialAllowSystemAecWithAec3 = true
+        )
+        controller = created
+        return created
+    }
+
+    private fun preloadAsr(asrDir: File?) {
+        if (asrDir == null) return
+        val activeController = ensureController()
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                activeController.loadAsr(asrDir)
+            }
+        }
+    }
+
+    private fun preloadTts(voiceDir: File?) {
+        if (voiceDir == null) return
+        val activeController = ensureController()
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                activeController.loadTts(voiceDir)
+            }
+        }
+    }
+
+    fun loadBundledAsr() {
+        if (uiState.asrDir != null) return
+        viewModelScope.launch {
+            val dir = withContext(Dispatchers.IO) { repo.ensureBundledAsr() }
+            if (dir != null) {
+                uiState = uiState.copy(asrDir = dir, status = "已加载内置 ASR 模型")
+                preloadAsr(dir)
+            } else {
+                uiState = uiState.copy(status = "未找到内置 ASR 模型")
+            }
+        }
+    }
+
+    fun loadLastVoice() {
+        viewModelScope.launch {
+            val lastName = UserPrefs.getLastVoiceName(appContext)
+            val lastDir = lastName?.let { repo.resolveVoicePack(it) }
+            uiState = uiState.copy(
+                voiceDir = lastDir ?: uiState.voiceDir,
+                status = if (lastDir != null) "已加载上次音色包" else uiState.status
+            )
+            preloadTts(lastDir)
+            refreshVoicePacks()
+        }
+    }
+
+    fun loadSettings() {
+        viewModelScope.launch {
+            val settings = UserPrefs.getSettings(appContext)
+            uiState = uiState.copy(
+                muteWhilePlaying = settings.muteWhilePlaying,
+                muteWhilePlayingDelaySec = settings.muteWhilePlayingDelaySec,
+                echoSuppression = settings.echoSuppression,
+                communicationMode = settings.communicationMode,
+                preferredInputType = settings.preferredInputType,
+                preferredOutputType = settings.preferredOutputType,
+                aec3Enabled = settings.aec3Enabled,
+                aec3Status = if (settings.aec3Enabled) "待启动" else "未启用",
+                aec3Diag = if (settings.aec3Enabled) "AEC3 诊断：待启动" else "AEC3 诊断：未启用",
+                minVolumePercent = settings.minVolumePercent,
+                playbackGainPercent = settings.playbackGainPercent,
+                keepAlive = settings.keepAlive,
+                numberReplaceMode = settings.numberReplaceMode,
+                landscapeDrawerMode = settings.landscapeDrawerMode,
+                solidTopBar = settings.solidTopBar,
+                drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
+                asrSendToQuickSubtitle = settings.asrSendToQuickSubtitle
+            )
+            applySettingsToController(settings)
+        }
+    }
+
+    fun importAsr(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val dir = withContext(Dispatchers.IO) { repo.importAsr(uri, appContext.contentResolver) }
+            uiState = uiState.copy(asrDir = dir, status = "ASR 模型导入完成")
+            preloadAsr(dir)
+        }
+    }
+
+    fun importVoice(uri: android.net.Uri) {
+        viewModelScope.launch {
+            val dir = withContext(Dispatchers.IO) { repo.importVoice(uri, appContext.contentResolver) }
+            UserPrefs.setLastVoiceName(appContext, dir.name)
+            uiState = uiState.copy(voiceDir = dir, status = "音色包导入完成")
+            preloadTts(dir)
+            refreshVoicePacks()
+        }
+    }
+
+    fun selectVoice(dir: File) {
+        viewModelScope.launch {
+            UserPrefs.setLastVoiceName(appContext, dir.name)
+            uiState = uiState.copy(voiceDir = dir, status = "已选择音色包")
+            preloadTts(dir)
+            refreshVoicePacks()
+        }
+    }
+
+    fun refreshVoicePacks() {
+        viewModelScope.launch {
+            val packs = withContext(Dispatchers.IO) { repo.listVoicePacks() }
+            uiState = uiState.copy(voicePacks = packs)
+        }
+    }
+
+    fun updateVoiceMeta(pack: VoicePackInfo, name: String, remark: String) {
+        val trimmedName = name.trim().ifEmpty { "未命名" }
+        val trimmedRemark = remark.trim()
+        viewModelScope.launch {
+            repo.updateVoiceMeta(pack.dir) { meta ->
+                meta.copy(name = trimmedName, remark = trimmedRemark)
+            }
+            refreshVoicePacks()
+        }
+    }
+
+    fun updateVoiceAvatar(pack: VoicePackInfo, uri: android.net.Uri) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                repo.updateVoiceAvatar(pack.dir, appContext.contentResolver, uri, "avatar.png")
+            }
+            refreshVoicePacks()
+        }
+    }
+
+    fun toggleVoicePin(pack: VoicePackInfo) {
+        viewModelScope.launch {
+            repo.updateVoiceMeta(pack.dir) { meta ->
+                meta.copy(pinned = !meta.pinned)
+            }
+            refreshVoicePacks()
+        }
+    }
+
+    fun moveVoice(pack: VoicePackInfo, delta: Int) {
+        val list = uiState.voicePacks
+        val idx = list.indexOfFirst { it.dir == pack.dir }
+        if (idx < 0) return
+        val newIdx = idx + delta
+        if (newIdx !in list.indices) return
+        val a = list[idx]
+        val b = list[newIdx]
+        if (a.meta.pinned != b.meta.pinned) return
+        viewModelScope.launch {
+            repo.updateVoiceMeta(a.dir) { meta -> meta.copy(order = b.meta.order) }
+            repo.updateVoiceMeta(b.dir) { meta -> meta.copy(order = a.meta.order) }
+            refreshVoicePacks()
+        }
+    }
+
+    fun reorderVoicePacks(newOrder: List<VoicePackInfo>) {
+        // Optimistically apply UI order to avoid one-frame fallback to stale state.
+        uiState = uiState.copy(voicePacks = newOrder)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                newOrder.forEachIndexed { index, pack ->
+                    repo.updateVoiceMeta(pack.dir) { meta ->
+                        meta.copy(order = index.toLong())
+                    }
+                }
+            }
+            refreshVoicePacks()
+        }
+    }
+
+    fun deleteVoice(pack: VoicePackInfo) {
+        val current = uiState.voiceDir?.absolutePath == pack.dir.absolutePath
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                repo.deleteVoicePack(pack.dir)
+            }
+            if (current) {
+                uiState = uiState.copy(voiceDir = null)
+            }
+            refreshVoicePacks()
+        }
+    }
+
+    fun shareVoice(pack: VoicePackInfo) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val shareDir = File(appContext.cacheDir, "share")
+            val fileName = "${pack.dir.name}.zip"
+            val outZip = File(shareDir, fileName)
+            repo.zipVoicePack(pack.dir, outZip)
+            withContext(Dispatchers.Main) {
+                val uri = FileProvider.getUriForFile(
+                    appContext,
+                    appContext.packageName + ".fileprovider",
+                    outZip
+                )
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                appContext.startActivity(Intent.createChooser(intent, "分享语音包"))
+            }
+        }
+    }
+
+    fun setMuteWhilePlaying(enabled: Boolean) {
+        uiState = uiState.copy(muteWhilePlaying = enabled)
+        controller?.setSuppressWhilePlaying(enabled)
+        viewModelScope.launch {
+            UserPrefs.setMuteWhilePlaying(appContext, enabled)
+        }
+    }
+
+    fun setMuteWhilePlayingDelay(seconds: Float) {
+        val clamped = seconds.coerceIn(0f, 5f)
+        uiState = uiState.copy(muteWhilePlayingDelaySec = clamped)
+        controller?.setSuppressDelaySec(clamped)
+        viewModelScope.launch {
+            UserPrefs.setMuteWhilePlayingDelaySec(appContext, clamped)
+        }
+    }
+
+    fun setMinVolumePercent(percent: Int) {
+        uiState = uiState.copy(minVolumePercent = percent)
+        controller?.setMinVolumePercent(percent)
+        viewModelScope.launch {
+            UserPrefs.setMinVolumePercent(appContext, percent)
+        }
+    }
+
+    fun setPlaybackGainPercent(percent: Int) {
+        val clamped = percent.coerceIn(0, 1000)
+        uiState = uiState.copy(playbackGainPercent = clamped)
+        controller?.setPlaybackGainPercent(clamped)
+        viewModelScope.launch {
+            UserPrefs.setPlaybackGainPercent(appContext, clamped)
+        }
+    }
+
+    fun setKeepAlive(enabled: Boolean) {
+        val running = uiState.running
+        uiState = uiState.copy(keepAlive = enabled)
+        viewModelScope.launch {
+            UserPrefs.setKeepAlive(appContext, enabled)
+        }
+        if (running) {
+            if (enabled) {
+                KeepAliveService.start(appContext)
+            } else {
+                KeepAliveService.stop(appContext)
+            }
+        }
+    }
+
+    fun setNumberReplaceMode(mode: Int) {
+        val clamped = mode.coerceIn(0, 2)
+        uiState = uiState.copy(numberReplaceMode = clamped)
+        controller?.setNumberReplaceMode(clamped)
+        viewModelScope.launch {
+            UserPrefs.setNumberReplaceMode(appContext, clamped)
+        }
+    }
+
+    fun setAsrSendToQuickSubtitle(enabled: Boolean) {
+        uiState = uiState.copy(asrSendToQuickSubtitle = enabled)
+        viewModelScope.launch {
+            UserPrefs.setAsrSendToQuickSubtitle(appContext, enabled)
+        }
+    }
+
+    fun setLandscapeDrawerMode(mode: Int) {
+        val clamped = mode.coerceIn(UserPrefs.DRAWER_MODE_HIDDEN, UserPrefs.DRAWER_MODE_PERMANENT)
+        uiState = uiState.copy(landscapeDrawerMode = clamped)
+        viewModelScope.launch {
+            UserPrefs.setLandscapeDrawerMode(appContext, clamped)
+        }
+    }
+
+    fun setSolidTopBar(enabled: Boolean) {
+        uiState = uiState.copy(solidTopBar = enabled)
+        viewModelScope.launch {
+            UserPrefs.setSolidTopBar(appContext, enabled)
+        }
+    }
+
+    fun setDrawingSaveRelativePath(path: String) {
+        val normalized = normalizeDrawingSaveRelativePath(path)
+        uiState = uiState.copy(
+            drawingSaveRelativePath = normalized,
+            status = "画板保存路径：$normalized"
+        )
+        viewModelScope.launch {
+            UserPrefs.setDrawingSaveRelativePath(appContext, normalized)
+        }
+    }
+
+    fun setDrawingSavePathFromTreeUri(uri: android.net.Uri) {
+        val resolved = drawingRelativePathFromTreeUri(uri)
+        if (resolved == null) {
+            uiState = uiState.copy(status = "不支持该目录，请选择内部存储目录")
+            return
+        }
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        runCatching {
+            appContext.contentResolver.takePersistableUriPermission(uri, flags)
+        }
+        setDrawingSaveRelativePath(resolved)
+    }
+
+    fun updateDrawColor(color: Color) {
+        drawColor = color
+        drawEraser = false
+    }
+
+    fun updateDrawBrushSize(size: Float) {
+        val clamped = size.coerceIn(2f, 48f)
+        if (drawEraser) {
+            drawEraserSize = clamped
+        } else {
+            drawBrushSize = clamped
+        }
+    }
+
+    fun updateDrawEraser(enabled: Boolean) {
+        drawEraser = enabled
+    }
+
+    fun updateDrawingToolbarCollapsed(collapsed: Boolean) {
+        drawingToolbarCollapsed = collapsed
+    }
+
+    fun clearDrawingBoard() {
+        drawStrokes.clear()
+    }
+
+    fun appendDrawingStroke(points: List<DrawPoint>) {
+        if (points.size < 2) return
+        val effectiveWidth = if (drawEraser) drawEraserSize * 5f else drawBrushSize
+        drawStrokes.add(
+            DrawStrokeData(
+                points = points,
+                color = drawColor,
+                width = effectiveWidth,
+                eraser = drawEraser
+            )
+        )
+    }
+
+    fun saveDrawingSnapshot() {
+        val strokes = drawStrokes.toList()
+        if (strokes.isEmpty()) {
+            uiState = uiState.copy(status = "画板为空，无可保存内容")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val width = 1080
+                val height = 1920
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(bitmap)
+                canvas.drawColor(android.graphics.Color.WHITE)
+
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.STROKE
+                    strokeCap = Paint.Cap.ROUND
+                    strokeJoin = Paint.Join.ROUND
+                }
+
+                strokes.forEach { stroke ->
+                    paint.color = if (stroke.eraser) android.graphics.Color.WHITE else stroke.color.toArgb()
+                    paint.strokeWidth = stroke.width
+                    val pts = stroke.points
+                    for (i in 1 until pts.size) {
+                        val p0 = pts[i - 1]
+                        val p1 = pts[i]
+                        canvas.drawLine(
+                            p0.x * width,
+                            p0.y * height,
+                            p1.x * width,
+                            p1.y * height,
+                            paint
+                        )
+                    }
+                }
+
+                val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                val fileName = "drawing_$ts.png"
+                val relativePath = normalizeDrawingSaveRelativePath(uiState.drawingSaveRelativePath)
+                val resolver = appContext.contentResolver
+                val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                }
+                val uri = resolver.insert(collection, values)
+                    ?: error("无法创建图片媒体条目")
+                try {
+                    resolver.openOutputStream(uri)?.use { out ->
+                        val ok = bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        if (!ok) error("图片编码失败")
+                    } ?: error("无法打开图片输出流")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        resolver.update(
+                            uri,
+                            ContentValues().apply {
+                                put(MediaStore.Images.Media.IS_PENDING, 0)
+                            },
+                            null,
+                            null
+                        )
+                    }
+                } catch (e: Exception) {
+                    resolver.delete(uri, null, null)
+                    throw e
+                } finally {
+                    bitmap.recycle()
+                }
+
+                val fullPath = "/storage/emulated/0/${relativePath.trim('/')}/$fileName"
+                runCatching {
+                    MediaScannerConnection.scanFile(
+                        appContext,
+                        arrayOf(fullPath),
+                        arrayOf("image/png"),
+                        null
+                    )
+                    appContext.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, uri))
+                }
+                DrawingSaveResult(fullPath = fullPath)
+            }
+
+            result.onSuccess { saved ->
+                AppLogger.i("drawing saved: ${saved.fullPath}")
+                withContext(Dispatchers.Main) {
+                    uiState = uiState.copy(status = "画板已保存：${saved.fullPath}")
+                    Toast.makeText(appContext, "画板已保存：${saved.fullPath}", Toast.LENGTH_LONG).show()
+                }
+            }.onFailure { e ->
+                AppLogger.e("drawing save failed", e)
+                withContext(Dispatchers.Main) {
+                    uiState = uiState.copy(status = "画板保存失败：${e.message ?: "未知错误"}")
+                    Toast.makeText(appContext, "画板保存失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    fun setEchoSuppression(enabled: Boolean) {
+        val wasRunning = uiState.running
+        uiState = uiState.copy(echoSuppression = enabled)
+        controller?.setUseVoiceCommunication(enabled)
+        viewModelScope.launch {
+            UserPrefs.setEchoSuppression(appContext, enabled)
+        }
+        if (wasRunning) {
+            restartJob?.cancel()
+            restartJob = viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    controller?.restartRecorder()
+                }
+            }
+        }
+    }
+
+    fun setCommunicationMode(enabled: Boolean) {
+        val wasRunning = uiState.running
+        uiState = uiState.copy(communicationMode = enabled)
+        controller?.setCommunicationMode(enabled)
+        viewModelScope.launch {
+            UserPrefs.setCommunicationMode(appContext, enabled)
+        }
+        if (wasRunning) {
+            restartJob?.cancel()
+            restartJob = viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    controller?.restartRecorder()
+                }
+            }
+        }
+    }
+
+    fun setPreferredOutputType(type: Int) {
+        val wasRunning = uiState.running
+        uiState = uiState.copy(preferredOutputType = type)
+        controller?.setPreferredOutputType(type)
+        viewModelScope.launch {
+            UserPrefs.setPreferredOutputType(appContext, type)
+        }
+        if (wasRunning) {
+            restartJob?.cancel()
+            restartJob = viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    controller?.restartRecorder()
+                }
+            }
+        }
+    }
+
+    fun setPreferredInputType(type: Int) {
+        val wasRunning = uiState.running
+        uiState = uiState.copy(preferredInputType = type)
+        controller?.setPreferredInputType(type)
+        viewModelScope.launch {
+            UserPrefs.setPreferredInputType(appContext, type)
+        }
+        if (wasRunning) {
+            restartJob?.cancel()
+            restartJob = viewModelScope.launch {
+                withContext(Dispatchers.IO) {
+                    controller?.restartRecorder()
+                }
+            }
+        }
+    }
+
+    fun setAec3Enabled(enabled: Boolean) {
+        uiState = uiState.copy(
+            aec3Enabled = enabled,
+            aec3Status = if (enabled) "初始化中" else "未启用"
+        )
+        controller?.setUseAec3(enabled)
+        viewModelScope.launch {
+            UserPrefs.setAec3Enabled(appContext, enabled)
+        }
+    }
+
+    fun speakText(text: String) {
+        val message = text.trim()
+        if (message.isEmpty()) return
+        val voice = uiState.voiceDir
+        if (voice == null) {
+            uiState = uiState.copy(status = "请先选择语音包")
+            return
+        }
+        val activeController = ensureController()
+        viewModelScope.launch {
+            val queued = withContext(Dispatchers.IO) {
+                if (!activeController.loadTts(voice)) return@withContext false
+                activeController.enqueueSpeakText(message) != null
+            }
+            if (queued) {
+                uiState = uiState.copy(status = "已加入朗读队列")
+            }
+        }
+    }
+
+    fun start() {
+        val asr = uiState.asrDir
+        val voice = uiState.voiceDir
+        if (asr == null || voice == null) {
+            uiState = uiState.copy(status = "请先导入 ASR 模型和 voicepack")
+            return
+        }
+        restartJob?.cancel()
+        restartJob = null
+        val activeController = ensureController()
+        // 每次启动新会话前清空上次识别列表，避免新旧会话复用同一结果ID导致UI键冲突。
+        realtimeRecognized = emptyList()
+        realtimeInputLevel = 0f
+        realtimePlaybackProgress = 0f
+        lastProgressUpdateAtMs.clear()
+        lastLevelUpdateAtMs = 0L
+        uiState = uiState.copy(running = true, status = "启动麦克风中")
+        viewModelScope.launch {
+            val started = withContext(Dispatchers.IO) {
+                if (!activeController.loadAsr(asr)) return@withContext false
+                if (!activeController.loadTts(voice)) return@withContext false
+                activeController.startMic()
+            }
+            if (started && uiState.running) {
+                uiState = uiState.copy(status = "运行中")
+                if (uiState.keepAlive) {
+                    KeepAliveService.start(appContext)
+                }
+            } else {
+                realtimeInputLevel = 0f
+                realtimePlaybackProgress = 0f
+                KeepAliveService.stop(appContext)
+                if (uiState.running) {
+                    uiState = uiState.copy(running = false, status = "麦克风启动失败")
+                }
+            }
+        }
+    }
+
+    fun stop() {
+        restartJob?.cancel()
+        restartJob = null
+        val activeController = controller ?: run {
+            uiState = uiState.copy(running = false, status = "麦克风已停止")
+            return
+        }
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                activeController.stopMic()
+            }
+            KeepAliveService.stop(appContext)
+            realtimeInputLevel = 0f
+            realtimePlaybackProgress = 0f
+            uiState = uiState.copy(running = false, status = "麦克风已停止")
+        }
+    }
+
+    override fun onCleared() {
+        val activeController = controller
+        controller = null
+        if (activeController != null) {
+            runCatching {
+                kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                    activeController.stop()
+                }
+            }
+        }
+        super.onCleared()
+    }
+
+    private fun applySettingsToController(settings: UserPrefs.AppSettings) {
+        controller?.setSuppressWhilePlaying(settings.muteWhilePlaying)
+        controller?.setSuppressDelaySec(settings.muteWhilePlayingDelaySec)
+        controller?.setMinVolumePercent(settings.minVolumePercent)
+        controller?.setPlaybackGainPercent(settings.playbackGainPercent)
+        controller?.setUseAec3(settings.aec3Enabled)
+        controller?.setUseVoiceCommunication(settings.echoSuppression)
+        controller?.setCommunicationMode(settings.communicationMode)
+        controller?.setPreferredInputType(settings.preferredInputType)
+        controller?.setPreferredOutputType(settings.preferredOutputType)
+        controller?.setNumberReplaceMode(settings.numberReplaceMode)
+        controller?.setAllowSystemAecWithAec3(true)
+    }
+}
+
+private object UiTokens {
+    val Primary = Color(0xFF038387)
+    val Radius = 4.dp
+    val TopBarElevation = 8.dp
+    val CardElevation = 2.dp
+    val FabElevation = 6.dp
+    val MenuElevation = 8.dp
+    val PageTopBlank = 8.dp
+    val PageBottomBlank = 92.dp
+    val DrawerWidthExpanded = 216.dp
+    val DrawerWidthCollapsed = 72.dp
+    val LightCard = Color(0xFFFFFFFF)
+    val DarkCard = Color(0xFF1D2023)
+}
+
+private val KgtLightColors = lightColors(
+    primary = UiTokens.Primary,
+    onPrimary = Color.White,
+    secondary = UiTokens.Primary,
+    onSecondary = Color.White,
+    background = Color(0xFFF1F3F5),
+    onBackground = Color(0xFF111417),
+    surface = UiTokens.LightCard,
+    onSurface = Color(0xFF111417)
+)
+
+private val KgtDarkColors = darkColors(
+    primary = UiTokens.Primary,
+    onPrimary = Color.White,
+    secondary = UiTokens.Primary,
+    onSecondary = Color.White,
+    background = Color(0xFF121416),
+    onBackground = Color(0xFFE4E8EB),
+    surface = UiTokens.DarkCard,
+    onSurface = Color(0xFFE4E8EB)
+)
+
+private data class Md2ExtraColors(
+    val surfaceVariant: Color,
+    val onSurfaceVariant: Color,
+    val outline: Color
+)
+
+private val KgtLightExtraColors = Md2ExtraColors(
+    surfaceVariant = Color(0xFFE8ECEF),
+    onSurfaceVariant = Color(0xFF495156),
+    outline = Color(0xFF9CA5AC)
+)
+
+private val KgtDarkExtraColors = Md2ExtraColors(
+    surfaceVariant = Color(0xFF262A2E),
+    onSurfaceVariant = Color(0xFFB6BEC4),
+    outline = Color(0xFF757F87)
+)
+
+private val LocalMd2ExtraColors = staticCompositionLocalOf { KgtLightExtraColors }
+
+private data class Md2ColorScheme(
+    val primary: Color,
+    val onPrimary: Color,
+    val secondary: Color,
+    val onSecondary: Color,
+    val background: Color,
+    val onBackground: Color,
+    val surface: Color,
+    val onSurface: Color,
+    val surfaceVariant: Color,
+    val onSurfaceVariant: Color,
+    val outline: Color
+)
+
+private val MaterialTheme.colorScheme: Md2ColorScheme
+    @Composable
+    get() {
+        val base = MaterialTheme.colors
+        val extra = LocalMd2ExtraColors.current
+        return Md2ColorScheme(
+            primary = base.primary,
+            onPrimary = base.onPrimary,
+            secondary = base.secondary,
+            onSecondary = base.onSecondary,
+            background = base.background,
+            onBackground = base.onBackground,
+            surface = base.surface,
+            onSurface = base.onSurface,
+            surfaceVariant = extra.surfaceVariant,
+            onSurfaceVariant = extra.onSurfaceVariant,
+            outline = extra.outline
+        )
+    }
+
+private val Typography.titleSmall: TextStyle get() = subtitle2
+private val Typography.titleMedium: TextStyle get() = h6
+private val Typography.bodyLarge: TextStyle get() = body1
+private val Typography.bodyMedium: TextStyle get() = body2
+private val Typography.bodySmall: TextStyle get() = caption
+private val Typography.labelMedium: TextStyle get() = caption
+private val Typography.labelSmall: TextStyle get() = overline
+
+private val KgtTypography = Typography(
+    h6 = TextStyle(
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.sp
+    ),
+    subtitle2 = TextStyle(
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.sp
+    ),
+    body1 = TextStyle(
+        fontSize = 16.sp,
+        fontWeight = FontWeight.Normal,
+        letterSpacing = 0.sp
+    ),
+    body2 = TextStyle(
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Normal,
+        letterSpacing = 0.sp
+    ),
+    button = TextStyle(
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Medium,
+        letterSpacing = 0.sp
+    ),
+    caption = TextStyle(
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Normal,
+        letterSpacing = 0.sp
+    ),
+    overline = TextStyle(
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Normal,
+        letterSpacing = 0.sp
+    )
+)
+
+private val Md2Shapes = Shapes(
+    small = RoundedCornerShape(UiTokens.Radius),
+    medium = RoundedCornerShape(UiTokens.Radius),
+    large = RoundedCornerShape(UiTokens.Radius)
+)
+
+@Composable
+private fun md2CardContainerColor(): Color {
+    return if (isSystemInDarkTheme()) UiTokens.DarkCard else UiTokens.LightCard
+}
+
+private val MaterialSymbolsSharp = FontFamily(
+    Font(
+        resId = R.font.material_symbols_sharp,
+        weight = FontWeight.W500
+    )
+)
+
+@Composable
+private fun MsIcon(
+    name: String,
+    contentDescription: String?,
+    modifier: Modifier = Modifier,
+    tint: Color = LocalContentColor.current
+) {
+    val a11yModifier = if (contentDescription != null) {
+        modifier.semantics { this.contentDescription = contentDescription }
+    } else {
+        modifier
+    }
+    Text(
+        text = name,
+        modifier = a11yModifier,
+        color = tint,
+        style = TextStyle(
+            fontFamily = MaterialSymbolsSharp,
+            fontWeight = FontWeight.W500,
+            fontSize = 24.sp,
+            lineHeight = 24.sp,
+            letterSpacing = 0.sp,
+            fontFeatureSettings = "'liga' 1"
+        )
+    )
+}
+
+@Composable
+private fun Md2StaggeredFloatIn(
+    index: Int,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    var visible by remember(index, enabled) { mutableStateOf(!enabled) }
+
+    LaunchedEffect(index, enabled) {
+        if (!enabled) {
+            visible = true
+            return@LaunchedEffect
+        }
+        visible = false
+        delay((40L * index).coerceAtMost(260L))
+        visible = true
+    }
+
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+        enter = fadeIn(animationSpec = tween(220)) +
+                slideInVertically(
+                    initialOffsetY = { full -> (full * 0.12f).toInt() },
+                    animationSpec = tween(240, easing = FastOutSlowInEasing)
+                ),
+        exit = fadeOut(animationSpec = tween(90))
+    ) {
+        content()
+    }
+}
+
+private data class DrawerItem(
+    val title: String,
+    val icon: String
+)
+
+data class LogTopBarActions(
+    val onRefresh: () -> Unit,
+    val onCopy: () -> Unit,
+    val onShare: () -> Unit,
+    val canCopy: Boolean,
+    val canShare: Boolean
+)
+
+private object QuickSubtitleRoutes {
+    const val Main = "quick_subtitle/main"
+    const val Editor = "quick_subtitle/editor"
+}
+
+class MainActivity : ComponentActivity() {
+    private var lastDecorFitsSystemWindows: Boolean = false
+    private var pendingBackgroundReturnFix: Boolean = false
+    private var delayedResumeFixRunnable: Runnable? = null
+
+    private val viewModel: MainViewModel by viewModels {
+        val repo = ModelRepository(this@MainActivity)
+        object : ViewModelProvider.Factory {
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                @Suppress("UNCHECKED_CAST")
+                return MainViewModel(repo, this@MainActivity) as T
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.parseColor("#038387")),
+            navigationBarStyle = SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
+        applyWindowInsetPolicyForMode()
+        AppLogger.init(this)
+        AppLogger.i("MainActivity.onCreate")
+        viewModel.loadBundledAsr()
+        viewModel.loadLastVoice()
+        viewModel.loadSettings()
+        setContent {
+            val dark = isSystemInDarkTheme()
+            val colors = if (dark) KgtDarkColors else KgtLightColors
+            val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
+            CompositionLocalProvider(LocalMd2ExtraColors provides extraColors) {
+                MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        AppScaffold(viewModel)
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode)
+        applyWindowInsetPolicyForMode()
+        AppLogger.i(
+            "MainActivity.onMultiWindowModeChanged inMultiWindow=$isInMultiWindowMode " +
+                    "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
+        )
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (pendingBackgroundReturnFix) {
+            pendingBackgroundReturnFix = false
+            delayedResumeFixRunnable?.let { window.decorView.removeCallbacks(it) }
+            delayedResumeFixRunnable = Runnable {
+                val stateMask =
+                    window.attributes.softInputMode and WindowManager.LayoutParams.SOFT_INPUT_MASK_STATE
+                window.setSoftInputMode(stateMask or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                lastDecorFitsSystemWindows = false
+                AppLogger.i(
+                    "MainActivity.delayedResumeFix applied delayMs=500 " +
+                            "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
+                )
+            }
+            window.decorView.postDelayed(delayedResumeFixRunnable, 500L)
+            AppLogger.i("MainActivity.delayedResumeFix scheduled delayMs=500")
+        }
+        AppLogger.i(
+            "MainActivity.onResume inMultiWindow=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInMultiWindowMode else false} " +
+                    "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
+        )
+    }
+
+    override fun onPause() {
+        delayedResumeFixRunnable?.let { window.decorView.removeCallbacks(it) }
+        delayedResumeFixRunnable = null
+        AppLogger.i(
+            "MainActivity.onPause inMultiWindow=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) isInMultiWindowMode else false} " +
+                    "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
+        )
+        super.onPause()
+    }
+
+    override fun onStop() {
+        pendingBackgroundReturnFix = true
+        AppLogger.i("MainActivity.onStop markPendingBackgroundReturnFix=true")
+        super.onStop()
+    }
+
+    private fun applyWindowInsetPolicyForMode() {
+        val inMultiWindow = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            isInMultiWindowMode
+        } else {
+            false
+        }
+        // Multi-window/floating mode: let the framework fit system windows to avoid title-bar overlap.
+        // Fullscreen mode: keep edge-to-edge behavior.
+        WindowCompat.setDecorFitsSystemWindows(window, inMultiWindow)
+        lastDecorFitsSystemWindows = inMultiWindow
+        AppLogger.i(
+            "applyWindowInsetPolicyForMode inMultiWindow=$inMultiWindow " +
+                    "decorFits=$lastDecorFitsSystemWindows softInput=${softInputModeSummary(window.attributes.softInputMode)}"
+        )
+    }
+}
+
+private val Md2ControlShape = RoundedCornerShape(UiTokens.Radius)
+
+@Composable
+private fun Md2Button(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = Md2ControlShape,
+        elevation = ButtonDefaults.elevation(
+            defaultElevation = 2.dp,
+            pressedElevation = 8.dp,
+            disabledElevation = 0.dp
+        ),
+        colors = ButtonDefaults.buttonColors(
+            backgroundColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary,
+            disabledBackgroundColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+            disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        content = content
+    )
+}
+
+@Composable
+private fun Md2OutlinedButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = Md2ControlShape,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.8f)),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.primary,
+            disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+        ),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+        content = content
+    )
+}
+
+@Composable
+private fun Md2TextButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    content: @Composable RowScope.() -> Unit
+) {
+    TextButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        shape = Md2ControlShape,
+        colors = ButtonDefaults.textButtonColors(
+            contentColor = MaterialTheme.colorScheme.primary,
+            disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+        ),
+        content = content
+    )
+}
+
+@Composable
+private fun Md2IconButton(
+    icon: String,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.size(36.dp)
+    ) {
+        MsIcon(
+            name = icon,
+            contentDescription = contentDescription,
+            tint = if (enabled) LocalContentColor.current else LocalContentColor.current.copy(alpha = 0.38f)
+        )
+    }
+}
+
+@Composable
+private fun Md2Switch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    val dark = isSystemInDarkTheme()
+    val uncheckedTrack = if (dark) Color(0xFF697378) else Color(0xFFB3C1C6)
+    val uncheckedThumb = if (dark) Color(0xFFE6EFF2) else Color.White
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        modifier = modifier,
+        enabled = enabled,
+        colors = SwitchDefaults.colors(
+            checkedThumbColor = MaterialTheme.colorScheme.primary,
+            checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.48f),
+            uncheckedThumbColor = uncheckedThumb,
+            uncheckedTrackColor = uncheckedTrack,
+            disabledCheckedThumbColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.38f),
+            disabledCheckedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
+            disabledUncheckedThumbColor = uncheckedThumb.copy(alpha = 0.38f),
+            disabledUncheckedTrackColor = uncheckedTrack.copy(alpha = 0.3f)
+        )
+    )
+}
+
+@Composable
+private fun Md2OutlinedField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        modifier = modifier,
+        singleLine = true,
+        shape = Md2ControlShape,
+        colors = TextFieldDefaults.outlinedTextFieldColors(
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+            focusedLabelColor = MaterialTheme.colorScheme.primary,
+            unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            cursorColor = MaterialTheme.colorScheme.primary
+        )
+    )
+}
+
+@Composable
+fun AppScaffold(viewModel: MainViewModel) {
+    val pageRealtime = 0
+    val pageQuickSubtitle = 1
+    val pageVoicePack = 2
+    val pageDrawing = 3
+    val pageSettings = 4
+    val pageLog = 5
+
+    var page by rememberSaveable { mutableStateOf(0) }
+    var drawingFullscreen by rememberSaveable { mutableStateOf(false) }
+    var quickSubtitleFullscreen by rememberSaveable { mutableStateOf(false) }
+    var runningStripCollapsed by rememberSaveable { mutableStateOf(false) }
+    var logTopBarActions by remember { mutableStateOf<LogTopBarActions?>(null) }
+    val quickSubtitleNavController = rememberNavController()
+    val quickSubtitleBackStackEntry by quickSubtitleNavController.currentBackStackEntryAsState()
+    val quickSubtitleRoute = quickSubtitleBackStackEntry?.destination?.route ?: QuickSubtitleRoutes.Main
+    val state = viewModel.uiState
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val localView = LocalView.current
+    val activity = context as? Activity
+    val inMultiWindowMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        activity?.isInMultiWindowMode == true
+    } else {
+        false
+    }
+    val miuiFloatingTopCompensation = 0.dp
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val isDarkTheme = isSystemInDarkTheme()
+    val topBarColor = if (state.solidTopBar) md2CardContainerColor() else MaterialTheme.colorScheme.primary
+    val topBarContentColor = if (state.solidTopBar) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary
+    val hiddenDrawerScrimColor = MaterialTheme.colorScheme.onSurface.copy(
+        alpha = if (isDarkTheme) 0.56f else 0.32f
+    )
+    SideEffect {
+        activity?.window?.let { window ->
+            window.statusBarColor = topBarColor.toArgb()
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isNavigationBarContrastEnforced = false
+            }
+            WindowCompat.getInsetsController(window, window.decorView)
+                ?.isAppearanceLightStatusBars = topBarColor.luminance() > 0.5f
+            WindowCompat.getInsetsController(window, window.decorView)
+                ?.isAppearanceLightNavigationBars = !isDarkTheme
+        }
+    }
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val layoutDirection = LocalLayoutDirection.current
+    val displayCutoutPadding = WindowInsets.displayCutout.asPaddingValues()
+    val landscapeCutoutStart = if (isLandscape && !inMultiWindowMode) {
+        displayCutoutPadding.calculateStartPadding(layoutDirection)
+    } else {
+        0.dp
+    }
+    val landscapeCutoutEnd = if (isLandscape && !inMultiWindowMode) {
+        displayCutoutPadding.calculateEndPadding(layoutDirection)
+    } else {
+        0.dp
+    }
+    val hiddenDrawerWidth = remember(configuration.screenWidthDp) {
+        val screenWidth = configuration.screenWidthDp.dp
+        val targetWidth = UiTokens.DrawerWidthExpanded
+        // Keep a small right-side visible area on narrow screens to avoid hard overflow.
+        val compatEdgeGap = 24.dp
+        val maxAllowed = (screenWidth - compatEdgeGap).coerceAtLeast(0.dp)
+        if (maxAllowed <= 0.dp) screenWidth else minOf(targetWidth, maxAllowed)
+    }
+    val permanentDrawerCollapsedWidth = UiTokens.DrawerWidthCollapsed + landscapeCutoutStart
+    val permanentDrawerExpandedWidth = UiTokens.DrawerWidthExpanded + landscapeCutoutStart
+    val hiddenDrawerSurfaceWidth = hiddenDrawerWidth + landscapeCutoutStart
+    val usePermanentDrawer =
+        isLandscape && state.landscapeDrawerMode == UserPrefs.DRAWER_MODE_PERMANENT
+    val basePage = page
+    val quickSubtitleEditorOpen =
+        basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Editor
+    var drawerExpanded by rememberSaveable { mutableStateOf(false) }
+    val showRunningStrip = state.running && !(drawingFullscreen && basePage == pageDrawing)
+    val topMicLevel = viewModel.realtimeInputLevel
+    val topPlaybackProgress = viewModel.realtimePlaybackProgress
+    val drawerItems = listOf(
+        DrawerItem("实时转换", "graphic_eq"),
+        DrawerItem("便捷字幕", "subtitles"),
+        DrawerItem("语音包", "record_voice_over"),
+        DrawerItem("画板", "draw"),
+        DrawerItem("设置", "tune"),
+        DrawerItem("日志", "article")
+    )
+    val titles = drawerItems.map { it.title }
+    val drawerSelectedPage = basePage
+    LaunchedEffect(drawerItems.size) {
+        if (page !in 0..pageLog) {
+            page = pageRealtime
+        }
+    }
+    LaunchedEffect(basePage, quickSubtitleRoute) {
+        if (basePage != pageQuickSubtitle && quickSubtitleRoute != QuickSubtitleRoutes.Main) {
+            quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+        }
+    }
+    LaunchedEffect(page) {
+        if (page != pageDrawing) drawingFullscreen = false
+        if (page != pageQuickSubtitle) quickSubtitleFullscreen = false
+    }
+    LaunchedEffect(drawingFullscreen, page) {
+        if (drawingFullscreen && page == pageDrawing && !usePermanentDrawer) {
+            scope.launch { drawerState.close() }
+        }
+    }
+    LaunchedEffect(usePermanentDrawer) {
+        if (usePermanentDrawer) {
+            scope.launch { drawerState.close() }
+        }
+    }
+    LaunchedEffect(state.running) {
+        if (!state.running) runningStripCollapsed = false
+    }
+    LaunchedEffect(basePage) {
+        if (basePage != pageLog) {
+            logTopBarActions = null
+        }
+    }
+    val baseSoftInputMode = remember(activity) {
+        activity?.window?.attributes?.softInputMode
+    }
+    fun applySoftInputModeForRoute() {
+        val window = activity?.window ?: return
+        val base = baseSoftInputMode ?: return
+        val stateMask = base and WindowManager.LayoutParams.SOFT_INPUT_MASK_STATE
+        val adjustMask = if (quickSubtitleEditorOpen) {
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        } else {
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING
+        }
+        window.setSoftInputMode(stateMask or adjustMask)
+        AppLogger.i(
+            "AppScaffold.applySoftInputModeForRoute page=$basePage route=$quickSubtitleRoute " +
+                    "editorOpen=$quickSubtitleEditorOpen softInput=${softInputModeSummary(window.attributes.softInputMode)}"
+        )
+    }
+
+    fun clearFocusAndHideIme(reason: String) {
+        activity?.currentFocus?.clearFocus()
+        localView.clearFocus()
+        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(localView.windowToken, 0)
+        AppLogger.i("AppScaffold.clearFocusAndHideIme reason=$reason")
+    }
+
+    SideEffect {
+        applySoftInputModeForRoute()
+    }
+    DisposableEffect(activity, lifecycleOwner, baseSoftInputMode) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_RESUME) {
+                applySoftInputModeForRoute()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            val window = activity?.window
+            val base = baseSoftInputMode
+            if (window != null && base != null) {
+                window.setSoftInputMode(base)
+            }
+        }
+    }
+    LaunchedEffect(basePage, quickSubtitleRoute) {
+        if (basePage != pageQuickSubtitle || quickSubtitleRoute != QuickSubtitleRoutes.Main) {
+            clearFocusAndHideIme("leave_quick_subtitle_main")
+        }
+    }
+    LaunchedEffect(basePage, quickSubtitleRoute, quickSubtitleEditorOpen, inMultiWindowMode) {
+        val mode = activity?.window?.attributes?.softInputMode ?: 0
+        AppLogger.i(
+            "AppScaffold.routeChanged page=$basePage route=$quickSubtitleRoute " +
+                    "editorOpen=$quickSubtitleEditorOpen inMultiWindow=$inMultiWindowMode " +
+                    "softInput=${softInputModeSummary(mode)}"
+        )
+    }
+
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) viewModel.start() else toast(context, "需要麦克风权限")
+    }
+    val voicePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.importVoice(uri) else toast(context, "未选择文件")
+    }
+
+    val onToggleRun = {
+        if (state.running) {
+            viewModel.stop()
+        } else {
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    val topBar: @Composable ((() -> Unit)) -> Unit = { onNavClick ->
+        val currentTitle = if (quickSubtitleEditorOpen) {
+            "编辑便捷字幕"
+        } else {
+            titles.getOrElse(basePage) { "KGTTS" }
+        }
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = miuiFloatingTopCompensation)
+                .zIndex(2f),
+            color = topBarColor,
+            elevation = UiTokens.TopBarElevation
+        ) {
+            TopAppBar(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (!inMultiWindowMode) Modifier.statusBarsPadding() else Modifier)
+                    .padding(start = landscapeCutoutStart, end = landscapeCutoutEnd),
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AnimatedContent(
+                            targetState = currentTitle,
+                            transitionSpec = {
+                                ContentTransform(
+                                    targetContentEnter = fadeIn(animationSpec = tween(140)),
+                                    initialContentExit = fadeOut(animationSpec = tween(110))
+                                )
+                            },
+                            label = "topbar_title_switch"
+                        ) { titleText ->
+                            Text(titleText)
+                        }
+                        AnimatedVisibility(
+                            visible = showRunningStrip,
+                            enter = fadeIn(animationSpec = tween(140)) +
+                                    androidx.compose.animation.slideInHorizontally(
+                                        initialOffsetX = { full -> full / 3 },
+                                        animationSpec = tween(140, easing = FastOutSlowInEasing)
+                                    ),
+                            exit = fadeOut(animationSpec = tween(120)) +
+                                    androidx.compose.animation.slideOutHorizontally(
+                                        targetOffsetX = { full -> full / 3 },
+                                        animationSpec = tween(120, easing = FastOutSlowInEasing)
+                                    )
+                        ) {
+                            RunningStripTopBarToggle(
+                                micLevel = topMicLevel,
+                                playbackProgress = topPlaybackProgress,
+                                expanded = !runningStripCollapsed,
+                                contentColor = topBarContentColor,
+                                onToggle = { runningStripCollapsed = !runningStripCollapsed }
+                            )
+                        }
+                    }
+                },
+                navigationIcon = {
+                    AnimatedContent(
+                        targetState = quickSubtitleEditorOpen,
+                        transitionSpec = {
+                            ContentTransform(
+                                targetContentEnter = fadeIn(animationSpec = tween(120)),
+                                initialContentExit = fadeOut(animationSpec = tween(90))
+                            )
+                        },
+                        label = "topbar_nav_switch"
+                    ) { editorOpen ->
+                        if (editorOpen) {
+                            IconButton(onClick = { quickSubtitleNavController.popBackStack() }) {
+                                MsIcon("arrow_back", contentDescription = "返回")
+                            }
+                        } else {
+                            IconButton(onClick = onNavClick) {
+                                MsIcon("menu", contentDescription = "打开菜单")
+                            }
+                        }
+                    }
+                },
+                actions = {
+                    val actionState = basePage to quickSubtitleEditorOpen
+                    Crossfade(
+                        targetState = actionState,
+                        animationSpec = tween(durationMillis = 130),
+                        label = "topbar_actions_switch"
+                    ) { (pageForAction, editorOpen) ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(0.dp)
+                        ) {
+                            when (pageForAction) {
+                                pageQuickSubtitle -> {
+                                    if (!editorOpen) {
+                                        IconButton(
+                                            onClick = { quickSubtitleFullscreen = !quickSubtitleFullscreen }
+                                        ) {
+                                            MsIcon(
+                                                name = if (quickSubtitleFullscreen) "fullscreen_exit" else "fullscreen",
+                                                contentDescription = if (quickSubtitleFullscreen) "退出全屏" else "进入全屏"
+                                            )
+                                        }
+                                    }
+                                }
+                                pageDrawing -> {
+                                    val canSaveDrawing = viewModel.drawStrokes.isNotEmpty()
+                                    IconButton(
+                                        onClick = { viewModel.saveDrawingSnapshot() },
+                                        enabled = canSaveDrawing
+                                    ) {
+                                        MsIcon("save", contentDescription = "保存画板")
+                                    }
+                                }
+                                pageVoicePack -> {
+                                    IconButton(onClick = { voicePicker.launch("*/*") }) {
+                                        MsIcon("folder_open", contentDescription = "导入语音包")
+                                    }
+                                }
+                                pageLog -> {
+                                    val actions = logTopBarActions
+                                    if (actions != null) {
+                                        IconButton(onClick = actions.onRefresh) {
+                                            MsIcon("refresh", contentDescription = "刷新日志")
+                                        }
+                                        IconButton(
+                                            onClick = actions.onCopy,
+                                            enabled = actions.canCopy
+                                        ) {
+                                            MsIcon("content_copy", contentDescription = "复制日志")
+                                        }
+                                        IconButton(
+                                            onClick = actions.onShare,
+                                            enabled = actions.canShare
+                                        ) {
+                                            MsIcon("share", contentDescription = "分享日志")
+                                        }
+                                    }
+                                }
+                                else -> Unit
+                            }
+                        }
+                    }
+                },
+                backgroundColor = Color.Transparent,
+                contentColor = topBarContentColor,
+                elevation = 0.dp
+            )
+        }
+    }
+
+    val fab: @Composable () -> Unit = {
+        if (basePage == pageRealtime) {
+            FloatingActionButton(
+                onClick = onToggleRun,
+                backgroundColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = CircleShape,
+                elevation = FloatingActionButtonDefaults.elevation(
+                    defaultElevation = UiTokens.FabElevation,
+                    pressedElevation = 12.dp
+                )
+            ) {
+                MsIcon(
+                    name = if (state.running) "stop" else "play_arrow",
+                    contentDescription = if (state.running) "关闭麦克风" else "开启麦克风",
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+    }
+
+    val contentArea: @Composable (Modifier) -> Unit = { modifier ->
+        Box(modifier = modifier.fillMaxSize()) {
+            AnimatedContent(
+                targetState = basePage,
+                transitionSpec = {
+                    ContentTransform(
+                        targetContentEnter = fadeIn(animationSpec = tween(220, delayMillis = 80)) +
+                                slideInVertically(
+                                    initialOffsetY = { full -> full / 10 },
+                                    animationSpec = tween(220, delayMillis = 80)
+                                ),
+                        initialContentExit = fadeOut(animationSpec = tween(90)) +
+                                slideOutVertically(
+                                    targetOffsetY = { full -> -full / 10 },
+                                    animationSpec = tween(90)
+                                )
+                    )
+                },
+                label = "page_switch"
+            ) { current ->
+                when (current) {
+                    pageRealtime -> RealtimeScreen(viewModel, state)
+                    pageQuickSubtitle -> QuickSubtitleNavHost(
+                        navController = quickSubtitleNavController,
+                        viewModel = viewModel,
+                        state = state,
+                        onToggleMic = onToggleRun,
+                        fullscreenMode = quickSubtitleFullscreen && !quickSubtitleEditorOpen
+                    )
+                    pageVoicePack -> VoicePackScreen(viewModel, state)
+                    pageDrawing -> DrawingBoardScreen(
+                        viewModel = viewModel,
+                        fullscreen = drawingFullscreen,
+                        onToggleFullscreen = { drawingFullscreen = !drawingFullscreen }
+                    )
+                    pageSettings -> SettingsScreen(viewModel, state)
+                    pageLog -> LogScreen(
+                        onTopBarActionsChange = { logTopBarActions = it }
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = showRunningStrip && !runningStripCollapsed,
+                modifier = Modifier
+                    .matchParentSize()
+                    .zIndex(1f),
+                enter = fadeIn(animationSpec = tween(120)),
+                exit = fadeOut(animationSpec = tween(90))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            runningStripCollapsed = true
+                        }
+                )
+            }
+            AnimatedVisibility(
+                visible = showRunningStrip && !runningStripCollapsed,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .fillMaxWidth()
+                    .zIndex(2f),
+                enter = fadeIn(animationSpec = tween(120)) +
+                        slideInVertically(
+                            initialOffsetY = { full -> -full },
+                            animationSpec = tween(220, easing = FastOutSlowInEasing)
+                        ),
+                exit = fadeOut(animationSpec = tween(90)) +
+                        slideOutVertically(
+                            targetOffsetY = { full -> -full },
+                            animationSpec = tween(170, easing = FastOutSlowInEasing)
+                        )
+            ) {
+                RunningStatusTopStrip(
+                    viewModel = viewModel,
+                    status = state.status,
+                    onToggleCollapsed = { runningStripCollapsed = !runningStripCollapsed },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+
+    val drawingImmersive = drawingFullscreen && basePage == pageDrawing
+    val quickSubtitleImmersive =
+        quickSubtitleFullscreen && basePage == pageQuickSubtitle && !quickSubtitleEditorOpen
+    val fullScreenImmersive = drawingImmersive || quickSubtitleImmersive
+    BackHandler(enabled = drawingImmersive) {
+        drawingFullscreen = false
+    }
+    BackHandler(enabled = quickSubtitleImmersive) {
+        quickSubtitleFullscreen = false
+    }
+    LaunchedEffect(fullScreenImmersive) {
+        if (fullScreenImmersive) {
+            drawerExpanded = false
+            drawerState.close()
+        }
+    }
+    LaunchedEffect(drawingImmersive, inMultiWindowMode) {
+        val window = activity?.window ?: return@LaunchedEffect
+        val controller = WindowCompat.getInsetsController(window, window.decorView) ?: return@LaunchedEffect
+        if (drawingImmersive && !inMultiWindowMode) {
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.statusBars())
+            AppLogger.i("AppScaffold.statusBars=hidden drawingImmersive=true")
+        } else {
+            controller.show(WindowInsetsCompat.Type.statusBars())
+            AppLogger.i("AppScaffold.statusBars=shown drawingImmersive=false")
+        }
+    }
+    val topBarVisible = !fullScreenImmersive
+    val animatedPermanentRailWidth by animateDpAsState(
+        targetValue = if (topBarVisible) permanentDrawerCollapsedWidth else 0.dp,
+        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        label = "permanent_drawer_rail_width"
+    )
+    val animatedContentStartPadding by animateDpAsState(
+        targetValue = if (fullScreenImmersive) landscapeCutoutStart else 0.dp,
+        animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing),
+        label = "content_start_padding"
+    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (usePermanentDrawer) {
+            Scaffold(
+                topBar = {
+                    AnimatedVisibility(
+                        visible = topBarVisible,
+                        enter = fadeIn(animationSpec = tween(130)) +
+                                expandVertically(
+                                    expandFrom = Alignment.Top,
+                                    animationSpec = tween(180, easing = FastOutSlowInEasing)
+                                ),
+                        exit = fadeOut(animationSpec = tween(100)) +
+                                shrinkVertically(
+                                    shrinkTowards = Alignment.Top,
+                                    animationSpec = tween(140, easing = FastOutSlowInEasing)
+                                )
+                    ) {
+                        topBar { drawerExpanded = !drawerExpanded }
+                    }
+                },
+                floatingActionButton = fab,
+                backgroundColor = MaterialTheme.colorScheme.background
+            ) { innerPadding ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding)
+                ) {
+                    Row(modifier = Modifier.fillMaxSize()) {
+                        Surface(
+                            modifier = Modifier
+                                .width(animatedPermanentRailWidth)
+                                .fillMaxHeight()
+                                .zIndex(3f),
+                            shape = RectangleShape,
+                            color = MaterialTheme.colorScheme.surface,
+                            elevation = if (animatedPermanentRailWidth > 0.dp) UiTokens.MenuElevation else 0.dp
+                        ) {
+                            if (animatedPermanentRailWidth > 0.5.dp) {
+                                AppDrawerContent(
+                                    items = drawerItems,
+                                    page = drawerSelectedPage,
+                                    expanded = false,
+                                    applyStatusBarPadding = false,
+                                    showHeader = false,
+                                    showTopDivider = false,
+                                    topInset = 8.dp,
+                                    horizontalStartInset = landscapeCutoutStart,
+                                    onSelect = { page = it }
+                                )
+                            } else {
+                                Box(modifier = Modifier.fillMaxSize())
+                            }
+                        }
+                        contentArea(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .graphicsLayer { clip = true }
+                                .zIndex(0f)
+                                .padding(start = animatedContentStartPadding, end = landscapeCutoutEnd)
+                        )
+                    }
+
+                    AnimatedVisibility(
+                        visible = drawerExpanded && topBarVisible,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .zIndex(3f),
+                        enter = fadeIn(animationSpec = tween(120)) +
+                                androidx.compose.animation.slideInHorizontally(
+                                    initialOffsetX = { -it / 6 },
+                                    animationSpec = tween(120, easing = FastOutSlowInEasing)
+                                ),
+                        exit = fadeOut(animationSpec = tween(90)) +
+                                androidx.compose.animation.slideOutHorizontally(
+                                    targetOffsetX = { -it / 6 },
+                                    animationSpec = tween(90, easing = FastOutSlowInEasing)
+                                )
+                    ) {
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            Surface(
+                                modifier = Modifier
+                                    .width(permanentDrawerExpandedWidth)
+                                    .fillMaxHeight()
+                                    .zIndex(4f),
+                                shape = RectangleShape,
+                                color = MaterialTheme.colorScheme.surface,
+                                elevation = UiTokens.MenuElevation
+                            ) {
+                                AppDrawerContent(
+                                    items = drawerItems,
+                                    page = drawerSelectedPage,
+                                    expanded = true,
+                                    applyStatusBarPadding = false,
+                                    showHeader = false,
+                                    showTopDivider = false,
+                                    topInset = 8.dp,
+                                    horizontalStartInset = landscapeCutoutStart,
+                                    onSelect = {
+                                        page = it
+                                        drawerExpanded = false
+                                    }
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) {
+                                        drawerExpanded = false
+                                        runningStripCollapsed = true
+                                    }
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            ModalDrawer(
+                drawerState = drawerState,
+                drawerShape = RectangleShape,
+                drawerBackgroundColor = Color.Transparent,
+                drawerElevation = 0.dp,
+                scrimColor = hiddenDrawerScrimColor,
+                drawerContent = {
+                    Row(
+                        modifier = Modifier.fillMaxHeight()
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .width(hiddenDrawerSurfaceWidth)
+                                .fillMaxHeight(),
+                            shape = RectangleShape,
+                            color = MaterialTheme.colorScheme.surface,
+                            elevation = UiTokens.MenuElevation
+                        ) {
+                            AppDrawerContent(
+                                items = drawerItems,
+                                page = drawerSelectedPage,
+                                expanded = true,
+                                applyStatusBarPadding = !inMultiWindowMode,
+                                showHeader = true,
+                                showTopDivider = true,
+                                topInset = 12.dp,
+                                horizontalStartInset = landscapeCutoutStart,
+                                onSelect = {
+                                    page = it
+                                    scope.launch { drawerState.close() }
+                                }
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    scope.launch { drawerState.close() }
+                                }
+                        )
+                    }
+                }
+            ) {
+                Scaffold(
+                    topBar = {
+                        AnimatedVisibility(
+                            visible = topBarVisible,
+                            enter = fadeIn(animationSpec = tween(130)) +
+                                    expandVertically(
+                                        expandFrom = Alignment.Top,
+                                        animationSpec = tween(180, easing = FastOutSlowInEasing)
+                                    ),
+                            exit = fadeOut(animationSpec = tween(100)) +
+                                    shrinkVertically(
+                                        shrinkTowards = Alignment.Top,
+                                        animationSpec = tween(140, easing = FastOutSlowInEasing)
+                                    )
+                        ) {
+                            topBar { scope.launch { drawerState.open() } }
+                        }
+                    },
+                    floatingActionButton = fab,
+                    backgroundColor = MaterialTheme.colorScheme.background
+                    ) { innerPadding ->
+                        contentArea(
+                            Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                                .padding(start = landscapeCutoutStart, end = landscapeCutoutEnd)
+                        )
+                    }
+                }
+        }
+    }
+}
+
+@Composable
+private fun AppDrawerContent(
+    items: List<DrawerItem>,
+    page: Int,
+    expanded: Boolean,
+    applyStatusBarPadding: Boolean,
+    showHeader: Boolean,
+    showTopDivider: Boolean,
+    topInset: Dp,
+    horizontalStartInset: Dp = 0.dp,
+    onSelect: (Int) -> Unit
+) {
+    val animatedItemStartPadding by animateDpAsState(
+        targetValue = if (expanded) 16.dp else 27.dp,
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+        label = "drawer_item_start_padding"
+    )
+    val animatedLabelAlpha by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+        label = "drawer_label_alpha"
+    )
+    val animatedLabelTranslateX by animateFloatAsState(
+        targetValue = if (expanded) 0f else -8f,
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+        label = "drawer_label_tx"
+    )
+    val animatedLabelSpacer by animateDpAsState(
+        targetValue = if (expanded) 12.dp else 0.dp,
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+        label = "drawer_label_spacer"
+    )
+    val animatedLabelWidth by animateDpAsState(
+        targetValue = if (expanded) 120.dp else 0.dp,
+        animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+        label = "drawer_label_width"
+    )
+    val itemStartPadding = animatedItemStartPadding
+    val labelAlpha = animatedLabelAlpha
+    val labelTranslateX = animatedLabelTranslateX
+    val labelSpacer = animatedLabelSpacer
+    val labelWidth = animatedLabelWidth
+
+    Column(
+        modifier = Modifier
+            .then(if (applyStatusBarPadding) Modifier.statusBarsPadding() else Modifier)
+            .fillMaxSize()
+            .padding(start = horizontalStartInset)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Spacer(Modifier.height(topInset))
+        if (showHeader && expanded) {
+            Text(
+                text = "KGTTS",
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        } else if (showHeader) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "KG",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        if (showTopDivider) {
+            Divider()
+        }
+        items.forEachIndexed { index, item ->
+            val selected = page == index
+            val interaction = remember { MutableInteractionSource() }
+            val pressed by interaction.collectIsPressedAsState()
+            val bg = when {
+                pressed -> MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                else -> Color.Transparent
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .background(bg)
+                    .clickable(
+                        interactionSource = interaction,
+                        indication = rememberRipple(bounded = true)
+                    ) { onSelect(index) }
+                    .padding(start = itemStartPadding, end = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Start
+            ) {
+                MsIcon(name = item.icon, contentDescription = item.title)
+                Spacer(Modifier.width(labelSpacer))
+                Box(
+                    modifier = Modifier
+                        .width(labelWidth)
+                        .graphicsLayer {
+                            alpha = labelAlpha
+                            translationX = labelTranslateX
+                        },
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ModelScreen(viewModel: MainViewModel, state: UiState) {
+    Column(
+        modifier = Modifier
+            .padding(horizontal = 16.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("模型管理", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("ASR 模型导入已迁移", fontWeight = FontWeight.SemiBold)
+                Text("请前往“设置 > 模型与资源”导入或替换 ASR 模型。")
+                Spacer(Modifier.height(8.dp))
+                Text("当前 ASR 路径：", style = MaterialTheme.typography.labelSmall)
+                Text(state.asrDir?.absolutePath ?: "未导入")
+            }
+        }
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("语音包导入已迁移", fontWeight = FontWeight.SemiBold)
+                Text("请前往“语音包”页面顶部文件夹按钮导入语音包。")
+                Spacer(Modifier.height(8.dp))
+                Text("当前语音包路径：", style = MaterialTheme.typography.labelSmall)
+                Text(state.voiceDir?.absolutePath ?: "未选择")
+            }
+        }
+        Text("状态：${state.status}")
+    }
+}
+
+@Composable
+private fun rememberAvatarBitmap(file: File): android.graphics.Bitmap? {
+    val bitmap by produceState<android.graphics.Bitmap?>(
+        initialValue = null,
+        key1 = file.absolutePath,
+        key2 = file.lastModified()
+    ) {
+        value = withContext(Dispatchers.IO) {
+            if (file.exists()) BitmapFactory.decodeFile(file.absolutePath) else null
+        }
+    }
+    return bitmap
+}
+
+@Composable
+fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
+    val context = LocalContext.current
+    var detailPackPath by remember { mutableStateOf<String?>(null) }
+    var detailName by remember { mutableStateOf("") }
+    var detailRemark by remember { mutableStateOf("") }
+    var detailEditing by remember { mutableStateOf(false) }
+    var deletePack by remember { mutableStateOf<VoicePackInfo?>(null) }
+    var avatarTarget by remember { mutableStateOf<VoicePackInfo?>(null) }
+    val detailPack = detailPackPath?.let { path ->
+        state.voicePacks.firstOrNull { it.dir.absolutePath == path }
+    }
+
+    val cropLauncher = rememberLauncherForActivityResult(CropImageContract()) { result ->
+        val target = avatarTarget
+        avatarTarget = null
+        if (target == null) return@rememberLauncherForActivityResult
+        if (result.isSuccessful) {
+            val uri = result.uriContent
+            if (uri != null) {
+                viewModel.updateVoiceAvatar(target, uri)
+            } else {
+                toast(context, "裁剪失败：无输出")
+            }
+        } else {
+            toast(context, "裁剪失败")
+        }
+    }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            val options = CropImageOptions(
+                fixAspectRatio = true,
+                aspectRatioX = 1,
+                aspectRatioY = 1,
+                activityTitle = "裁剪头像",
+                cropMenuCropButtonTitle = "确认",
+                activityMenuIconColor = 0xFFFFFFFF.toInt(),
+                activityMenuTextColor = 0xFFFFFFFF.toInt(),
+                activityBackgroundColor = 0xFF121212.toInt(),
+                toolbarColor = 0xFF038387.toInt(),
+                toolbarTitleColor = 0xFFFFFFFF.toInt(),
+                toolbarBackButtonColor = 0xFFFFFFFF.toInt(),
+                toolbarTintColor = 0xFFFFFFFF.toInt(),
+                outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
+                outputCompressQuality = 100,
+                outputRequestWidth = 400,
+                outputRequestHeight = 400,
+                outputRequestSizeOptions = CropImageView.RequestSizeOptions.RESIZE_EXACT,
+                guidelines = CropImageView.Guidelines.ON
+            )
+            cropLauncher.launch(CropImageContractOptions(uri, options))
+        } else {
+            avatarTarget = null
+        }
+    }
+    LaunchedEffect(Unit) {
+        viewModel.refreshVoicePacks()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        if (state.voicePacks.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentAlignment = Alignment.TopStart
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Spacer(Modifier.height(UiTokens.PageTopBlank))
+                    Text("暂无语音包，请点击主标题栏导入按钮。")
+                    Spacer(Modifier.height(UiTokens.PageBottomBlank))
+                }
+            }
+        } else {
+            Md2StaggeredFloatIn(
+                index = 0,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                VoicePackRecyclerList(
+                    modifier = Modifier.fillMaxSize(),
+                    packs = state.voicePacks,
+                    currentVoicePath = state.voiceDir?.absolutePath,
+                    topBlankHeight = UiTokens.PageTopBlank,
+                    bottomBlankHeight = UiTokens.PageBottomBlank,
+                    onSelect = { viewModel.selectVoice(it.dir) },
+                    onTogglePin = { viewModel.toggleVoicePin(it) },
+                    onDetail = { pack ->
+                        detailPackPath = pack.dir.absolutePath
+                        detailName = pack.meta.name
+                        detailRemark = pack.meta.remark
+                        detailEditing = false
+                    },
+                    onShare = { viewModel.shareVoice(it) },
+                    onDelete = { deletePack = it },
+                    onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
+                )
+            }
+        }
+    }
+
+    if (detailPack != null) {
+        val avatarFile = remember(detailPack.dir.absolutePath, detailPack.meta.avatar) {
+            File(detailPack.dir, detailPack.meta.avatar)
+        }
+        val avatarBitmap = rememberAvatarBitmap(avatarFile)
+        AlertDialog(
+            onDismissRequest = { detailPackPath = null },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("语音包详细信息", modifier = Modifier.weight(1f))
+                    Md2IconButton(
+                        icon = if (detailEditing) "check" else "edit",
+                        contentDescription = if (detailEditing) "完成编辑" else "编辑",
+                        onClick = { detailEditing = !detailEditing }
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        if (avatarBitmap != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = avatarBitmap.asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("无头像", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            if (!detailEditing) {
+                                Text("名称：${detailPack.meta.name}", style = MaterialTheme.typography.bodyMedium)
+                                val remarkText = detailPack.meta.remark.ifBlank { "无" }
+                                Text("备注：$remarkText", style = MaterialTheme.typography.bodySmall)
+                            } else {
+                                Text("文件名：${detailPack.dir.name}", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        if (detailEditing) {
+                            Md2IconButton(
+                                icon = "image",
+                                contentDescription = "更换头像",
+                                onClick = {
+                                    avatarTarget = detailPack
+                                    imagePicker.launch("image/*")
+                                }
+                            )
+                        }
+                    }
+                    if (detailEditing) {
+                        Md2OutlinedField(
+                            value = detailName,
+                            onValueChange = { detailName = it },
+                            label = "名称"
+                        )
+                        Md2OutlinedField(
+                            value = detailRemark,
+                            onValueChange = { detailRemark = it },
+                            label = "备注"
+                        )
+                    } else {
+                        Text("文件名：${detailPack.dir.name}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                if (detailEditing) {
+                    Md2TextButton(onClick = {
+                        viewModel.updateVoiceMeta(detailPack, detailName, detailRemark)
+                        detailEditing = false
+                    }) {
+                        Text("保存")
+                    }
+                }
+            },
+            dismissButton = {
+                Md2TextButton(onClick = {
+                    if (detailEditing) {
+                        detailEditing = false
+                        detailName = detailPack.meta.name
+                        detailRemark = detailPack.meta.remark
+                    } else {
+                        detailPackPath = null
+                    }
+                }) {
+                    Text(if (detailEditing) "取消编辑" else "关闭")
+                }
+            }
+        )
+    }
+
+    if (deletePack != null) {
+        AlertDialog(
+            onDismissRequest = { deletePack = null },
+            title = { Text("删除语音包") },
+            text = { Text("确定删除该语音包吗？此操作不可撤销。") },
+            confirmButton = {
+                Md2TextButton(onClick = {
+                    val pack = deletePack
+                    if (pack != null) {
+                        viewModel.deleteVoice(pack)
+                    }
+                    deletePack = null
+                }) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                Md2TextButton(onClick = { deletePack = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun VoicePackRecyclerList(
+    modifier: Modifier = Modifier,
+    packs: List<VoicePackInfo>,
+    currentVoicePath: String?,
+    topBlankHeight: Dp,
+    bottomBlankHeight: Dp,
+    onSelect: (VoicePackInfo) -> Unit,
+    onTogglePin: (VoicePackInfo) -> Unit,
+    onDetail: (VoicePackInfo) -> Unit,
+    onShare: (VoicePackInfo) -> Unit,
+    onDelete: (VoicePackInfo) -> Unit,
+    onReorder: (List<VoicePackInfo>) -> Unit
+) {
+    val parentComposition = rememberCompositionContext()
+    val density = LocalDensity.current
+    val topBlankPx = with(density) { topBlankHeight.roundToPx() }
+    val bottomBlankPx = with(density) { bottomBlankHeight.roundToPx() }
+
+    val onSelectState = rememberUpdatedState(onSelect)
+    val onTogglePinState = rememberUpdatedState(onTogglePin)
+    val onDetailState = rememberUpdatedState(onDetail)
+    val onShareState = rememberUpdatedState(onShare)
+    val onDeleteState = rememberUpdatedState(onDelete)
+    val onReorderState = rememberUpdatedState(onReorder)
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            val recycler = RecyclerView(ctx).apply {
+                layoutManager = LinearLayoutManager(ctx)
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                clipToPadding = false
+                clipChildren = false
+            }
+
+            val adapter = VoicePackRecyclerAdapter(
+                parentComposition = parentComposition,
+                onSelect = { onSelectState.value(it) },
+                onTogglePin = { onTogglePinState.value(it) },
+                onDetail = { onDetailState.value(it) },
+                onShare = { onShareState.value(it) },
+                onDelete = { onDeleteState.value(it) }
+            )
+            adapter.topSpacerPx = topBlankPx
+            adapter.bottomSpacerPx = bottomBlankPx
+            recycler.adapter = adapter
+
+            val touchCallback = object : ItemTouchHelper.Callback() {
+                private var moved = false
+                private var activeViewHolder: RecyclerView.ViewHolder? = null
+
+                override fun isLongPressDragEnabled(): Boolean = false
+                override fun isItemViewSwipeEnabled(): Boolean = false
+
+                override fun getMovementFlags(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder
+                ): Int {
+                    if (!adapter.isDraggableAdapterPosition(viewHolder.bindingAdapterPosition)) {
+                        return makeMovementFlags(0, 0)
+                    }
+                    val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
+                    return makeMovementFlags(dragFlags, 0)
+                }
+
+                override fun onMove(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    target: RecyclerView.ViewHolder
+                ): Boolean {
+                    val from = viewHolder.bindingAdapterPosition
+                    val to = target.bindingAdapterPosition
+                    val ok = adapter.moveWithinPinnedGroupAdapterPositions(from, to)
+                    moved = moved || ok
+                    return ok
+                }
+
+                override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
+
+                override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
+                    super.onSelectedChanged(viewHolder, actionState)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
+                        if (activeViewHolder !== viewHolder) {
+                            activeViewHolder?.let { animateDragElevation(it.itemView, elevated = false) }
+                            (activeViewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
+                        }
+                        activeViewHolder = viewHolder
+                        (viewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(true)
+                        animateDragElevation(viewHolder.itemView, elevated = true)
+                    } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        activeViewHolder?.let { animateDragElevation(it.itemView, elevated = false) }
+                        (activeViewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
+                        activeViewHolder = null
+                    }
+                    // Keep drag-lock until clearView so stale state cannot overwrite moved order.
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG) {
+                        adapter.isDragging = true
+                    }
+                }
+
+                override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    super.clearView(recyclerView, viewHolder)
+                    animateDragElevation(viewHolder.itemView, elevated = false)
+                    (viewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
+                    if (activeViewHolder === viewHolder) activeViewHolder = null
+                    if (moved) {
+                        onReorderState.value(adapter.snapshot())
+                        moved = false
+                    }
+                    adapter.isDragging = false
+                }
+            }
+            val touchHelper = ItemTouchHelper(touchCallback)
+            touchHelper.attachToRecyclerView(recycler)
+            adapter.onStartDrag = { vh ->
+                touchHelper.startDrag(vh)
+            }
+            recycler
+        },
+        update = { recycler ->
+            val adapter = recycler.adapter as? VoicePackRecyclerAdapter ?: return@AndroidView
+            adapter.topSpacerPx = topBlankPx
+            adapter.bottomSpacerPx = bottomBlankPx
+            adapter.currentVoicePath = currentVoicePath
+            adapter.submitFromState(packs)
+        }
+    )
+}
+
+private class VoicePackRecyclerAdapter(
+    private val parentComposition: CompositionContext,
+    private val onSelect: (VoicePackInfo) -> Unit,
+    private val onTogglePin: (VoicePackInfo) -> Unit,
+    private val onDetail: (VoicePackInfo) -> Unit,
+    private val onShare: (VoicePackInfo) -> Unit,
+    private val onDelete: (VoicePackInfo) -> Unit
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+
+    companion object {
+        private const val VIEW_TYPE_TOP_SPACER = 0
+        private const val VIEW_TYPE_PACK = 1
+        private const val VIEW_TYPE_BOTTOM_SPACER = 2
+        private const val STABLE_ID_TOP_SPACER = Long.MIN_VALUE + 1
+        private const val STABLE_ID_BOTTOM_SPACER = Long.MIN_VALUE + 2
+    }
+
+    private val items = mutableListOf<VoicePackInfo>()
+    private val stagedAppearedIds = hashSetOf<Long>()
+    private var runStaggerOnNextBind = true
+    private var staggerReleaseScheduled = false
+    var isDragging: Boolean = false
+    var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
+
+    var currentVoicePath: String? = null
+        set(value) {
+            if (field != value) {
+                field = value
+                notifyDataSetChanged()
+            }
+        }
+    var topSpacerPx: Int = 0
+        set(value) {
+            if (field != value) {
+                field = value.coerceAtLeast(0)
+                if (itemCount > 0) notifyItemChanged(0)
+            }
+        }
+    var bottomSpacerPx: Int = 0
+        set(value) {
+            if (field != value) {
+                field = value.coerceAtLeast(0)
+                if (itemCount > 0) notifyItemChanged(itemCount - 1)
+            }
+        }
+
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long = when (getItemViewType(position)) {
+        VIEW_TYPE_TOP_SPACER -> STABLE_ID_TOP_SPACER
+        VIEW_TYPE_BOTTOM_SPACER -> STABLE_ID_BOTTOM_SPACER
+        else -> {
+            val dataIndex = position - 1
+            items[dataIndex].dir.absolutePath.hashCode().toLong()
+        }
+    }
+
+    override fun getItemViewType(position: Int): Int {
+        if (position == 0) return VIEW_TYPE_TOP_SPACER
+        if (position == itemCount - 1) return VIEW_TYPE_BOTTOM_SPACER
+        return VIEW_TYPE_PACK
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+        if (viewType == VIEW_TYPE_TOP_SPACER || viewType == VIEW_TYPE_BOTTOM_SPACER) {
+            val spacer = View(parent.context).apply {
+                layoutParams = RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0
+                )
+                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+            return SpacerViewHolder(spacer)
+        }
+        val composeView = ComposeView(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindowOrReleasedFromPool)
+            setParentCompositionContext(parentComposition)
+        }
+        return VoicePackViewHolder(composeView)
+    }
+
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        if (holder is SpacerViewHolder) {
+            val height = if (position == 0) topSpacerPx else bottomSpacerPx
+            holder.bind(height)
+            holder.itemView.translationZ = 0f
+            holder.itemView.alpha = 1f
+            holder.itemView.translationY = 0f
+            return
+        }
+        holder as VoicePackViewHolder
+        if (!isDragging) {
+            holder.itemView.translationZ = 0f
+        }
+        val itemId = getItemId(position)
+        val shouldStagger = runStaggerOnNextBind && !stagedAppearedIds.contains(itemId)
+        if (shouldStagger) {
+            stagedAppearedIds.add(itemId)
+            val dataIndex = (position - 1).coerceAtLeast(0)
+            animateVoicePackStaggerEnter(holder.itemView, dataIndex)
+            if (!staggerReleaseScheduled) {
+                staggerReleaseScheduled = true
+                holder.itemView.postDelayed(
+                    { runStaggerOnNextBind = false },
+                    560L
+                )
+            }
+        } else {
+            holder.itemView.animate().cancel()
+            holder.itemView.alpha = 1f
+            holder.itemView.translationY = 0f
+        }
+        holder.setDragged(false)
+        val dataIndex = position - 1
+        if (dataIndex !in items.indices) return
+        val pack = items[dataIndex]
+        holder.bind(
+            pack = pack,
+            isCurrent = currentVoicePath == pack.dir.absolutePath,
+            onSelect = onSelect,
+            onTogglePin = onTogglePin,
+            onDetail = onDetail,
+            onShare = onShare,
+            onDelete = onDelete,
+            onStartDrag = {
+                if (holder.bindingAdapterPosition != RecyclerView.NO_POSITION) {
+                    onStartDrag?.invoke(holder)
+                }
+            }
+        )
+    }
+
+    override fun getItemCount(): Int = if (items.isEmpty()) 0 else items.size + 2
+
+    override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+        if (holder is VoicePackViewHolder) {
+            holder.setDragged(false)
+        }
+        holder.itemView.translationZ = 0f
+        holder.itemView.alpha = 1f
+        holder.itemView.translationY = 0f
+        super.onViewRecycled(holder)
+    }
+
+    fun submitFromState(newItems: List<VoicePackInfo>) {
+        if (isDragging) return
+        if (items == newItems) return
+        val shouldRunStagger = items.isEmpty() && newItems.isNotEmpty()
+        if (shouldRunStagger) {
+            runStaggerOnNextBind = true
+            staggerReleaseScheduled = false
+            stagedAppearedIds.clear()
+        }
+        items.clear()
+        items.addAll(newItems)
+        notifyDataSetChanged()
+    }
+
+    fun snapshot(): List<VoicePackInfo> = items.toList()
+
+    fun isDraggableAdapterPosition(position: Int): Boolean {
+        if (position == RecyclerView.NO_POSITION) return false
+        return position in 1..items.size
+    }
+
+    fun moveWithinPinnedGroupAdapterPositions(fromAdapter: Int, toAdapter: Int): Boolean {
+        if (!isDraggableAdapterPosition(fromAdapter) || !isDraggableAdapterPosition(toAdapter)) {
+            return false
+        }
+        val from = fromAdapter - 1
+        val to = toAdapter - 1
+        if (from == to || from !in items.indices || to !in items.indices) return false
+        val fromPinned = items[from].meta.pinned
+        val toPinned = items[to].meta.pinned
+        if (fromPinned != toPinned) return false
+        items.move(from, to)
+        notifyItemMoved(fromAdapter, toAdapter)
+        return true
+    }
+
+    class SpacerViewHolder(
+        itemView: View
+    ) : RecyclerView.ViewHolder(itemView) {
+        fun bind(heightPx: Int) {
+            val lp = (itemView.layoutParams as? RecyclerView.LayoutParams)
+                ?: RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    heightPx
+                )
+            if (lp.height != heightPx) {
+                lp.height = heightPx
+                itemView.layoutParams = lp
+            }
+        }
+    }
+
+    class VoicePackViewHolder(
+        private val composeView: ComposeView
+    ) : RecyclerView.ViewHolder(composeView) {
+        private val draggedState = mutableStateOf(false)
+
+        fun setDragged(dragged: Boolean) {
+            draggedState.value = dragged
+        }
+
+        fun bind(
+            pack: VoicePackInfo,
+            isCurrent: Boolean,
+            onSelect: (VoicePackInfo) -> Unit,
+            onTogglePin: (VoicePackInfo) -> Unit,
+            onDetail: (VoicePackInfo) -> Unit,
+            onShare: (VoicePackInfo) -> Unit,
+            onDelete: (VoicePackInfo) -> Unit,
+            onStartDrag: () -> Unit
+        ) {
+            composeView.setContent {
+                VoicePackCardContent(
+                    pack = pack,
+                    isCurrent = isCurrent,
+                    isDragged = draggedState.value,
+                    onSelect = { onSelect(pack) },
+                    onTogglePin = { onTogglePin(pack) },
+                    onDetail = { onDetail(pack) },
+                    onShare = { onShare(pack) },
+                    onDelete = { onDelete(pack) },
+                    onStartDrag = onStartDrag
+                )
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalComposeUiApi::class)
+private fun VoicePackCardContent(
+    pack: VoicePackInfo,
+    isCurrent: Boolean,
+    isDragged: Boolean,
+    onSelect: () -> Unit,
+    onTogglePin: () -> Unit,
+    onDetail: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit,
+    onStartDrag: () -> Unit
+) {
+    val avatarFile = File(pack.dir, pack.meta.avatar)
+    val avatarBitmap = rememberAvatarBitmap(avatarFile)
+    val cardElevation by animateDpAsState(
+        targetValue = if (isDragged) 10.dp else UiTokens.CardElevation,
+        animationSpec = tween(
+            durationMillis = if (isDragged) 120 else 160,
+            easing = FastOutSlowInEasing
+        ),
+        label = "voice_pack_card_elevation"
+    )
+
+    Box(modifier = Modifier.padding(horizontal = 2.dp, vertical = 6.dp)) {
+        Card(
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = cardElevation
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (avatarBitmap != null) {
+                        androidx.compose.foundation.Image(
+                            bitmap = avatarBitmap.asImageBitmap(),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(UiTokens.Radius))
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(72.dp)
+                                .clip(RoundedCornerShape(UiTokens.Radius))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("无头像", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(pack.meta.name, fontWeight = FontWeight.SemiBold)
+                            if (pack.meta.pinned) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("置顶", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (isCurrent) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("当前", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        if (pack.meta.remark.isNotBlank()) {
+                            Text(pack.meta.remark, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Md2IconButton(
+                        icon = "drag_indicator",
+                        contentDescription = "按住拖动排序",
+                        onClick = {},
+                        modifier = Modifier.pointerInteropFilter { ev ->
+                            when (ev.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> {
+                                    onStartDrag()
+                                    true
+                                }
+                                MotionEvent.ACTION_UP,
+                                MotionEvent.ACTION_CANCEL,
+                                MotionEvent.ACTION_MOVE -> true
+                                else -> false
+                            }
+                        }
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Md2IconButton(
+                        icon = if (isCurrent) "check_circle" else "play_circle",
+                        contentDescription = if (isCurrent) "当前使用" else "使用该语音包",
+                        onClick = onSelect,
+                        enabled = !isCurrent
+                    )
+                    Md2IconButton(
+                        icon = if (pack.meta.pinned) "keep_off" else "push_pin",
+                        contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
+                        onClick = onTogglePin
+                    )
+                    Md2IconButton(
+                        icon = "info",
+                        contentDescription = "语音包详细信息",
+                        onClick = onDetail
+                    )
+                    Md2IconButton(
+                        icon = "share",
+                        contentDescription = "分享语音包",
+                        onClick = onShare
+                    )
+                    Md2IconButton(
+                        icon = "delete",
+                        contentDescription = "删除语音包",
+                        onClick = onDelete
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun MutableList<VoicePackInfo>.move(from: Int, to: Int) {
+    if (from == to || from !in indices || to !in indices) return
+    val item = removeAt(from)
+    add(to, item)
+}
+
+private fun animateDragElevation(view: View, elevated: Boolean) {
+    val targetZ = if (elevated) 12f * view.resources.displayMetrics.density else 0f
+    val duration = if (elevated) 120L else 160L
+    view.animate()
+        .cancel()
+    view.animate()
+        .translationZ(targetZ)
+        .setDuration(duration)
+        .setInterpolator(FastOutSlowInInterpolator())
+        .start()
+}
+
+private fun animateVoicePackStaggerEnter(view: View, position: Int) {
+    val density = view.resources.displayMetrics.density
+    val offsetY = 12f * density
+    val delayMs = (position.coerceIn(0, 10) * 36L)
+    view.animate().cancel()
+    view.alpha = 0f
+    view.translationY = offsetY
+    view.animate()
+        .alpha(1f)
+        .translationY(0f)
+        .setStartDelay(delayMs)
+        .setDuration(220L)
+        .setInterpolator(FastOutSlowInInterpolator())
+        .start()
+}
+
+@Composable
+private fun QuickSubtitleNavHost(
+    navController: NavHostController,
+    viewModel: MainViewModel,
+    state: UiState,
+    onToggleMic: () -> Unit,
+    fullscreenMode: Boolean
+) {
+    NavHost(
+        navController = navController,
+        startDestination = QuickSubtitleRoutes.Main,
+        modifier = Modifier.fillMaxSize(),
+        enterTransition = {
+            if (initialState.destination.route == QuickSubtitleRoutes.Main &&
+                targetState.destination.route == QuickSubtitleRoutes.Editor
+            ) {
+                fadeIn(animationSpec = tween(180))
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        exitTransition = {
+            if (initialState.destination.route == QuickSubtitleRoutes.Main &&
+                targetState.destination.route == QuickSubtitleRoutes.Editor
+            ) {
+                fadeOut(animationSpec = tween(130))
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        },
+        popEnterTransition = {
+            if (initialState.destination.route == QuickSubtitleRoutes.Editor &&
+                targetState.destination.route == QuickSubtitleRoutes.Main
+            ) {
+                fadeIn(animationSpec = tween(170))
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        popExitTransition = {
+            if (initialState.destination.route == QuickSubtitleRoutes.Editor &&
+                targetState.destination.route == QuickSubtitleRoutes.Main
+            ) {
+                fadeOut(animationSpec = tween(130))
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        }
+    ) {
+        composable(QuickSubtitleRoutes.Main) {
+            QuickSubtitleScreen(
+                viewModel = viewModel,
+                state = state,
+                onToggleMic = onToggleMic,
+                onOpenEditor = { navController.navigate(QuickSubtitleRoutes.Editor) },
+                fullscreenMode = fullscreenMode
+            )
+        }
+        composable(QuickSubtitleRoutes.Editor) {
+            QuickSubtitleEditorScreen(
+                viewModel = viewModel,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
+
+@Composable
+fun QuickSubtitleScreen(
+    viewModel: MainViewModel,
+    state: UiState,
+    onToggleMic: () -> Unit,
+    onOpenEditor: () -> Unit,
+    fullscreenMode: Boolean
+) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val focusManager = LocalFocusManager.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val groups = viewModel.quickSubtitleGroups
+    val selectedGroupIndex = viewModel.currentQuickSubtitleGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
+    val selectedGroup = groups.getOrNull(selectedGroupIndex)
+    val quickItems = selectedGroup?.items ?: emptyList()
+    val subtitleText = viewModel.quickSubtitleCurrentText
+    val subtitleSize = viewModel.quickSubtitleFontSizeSp
+    val inputText = viewModel.quickSubtitleInputText
+    val playOnSend = viewModel.quickSubtitlePlayOnSend
+    val quickInputCollapsed = viewModel.quickSubtitleInputCollapsed
+    var inputFieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = inputText,
+                selection = TextRange(inputText.length)
+            )
+        )
+    }
+    LaunchedEffect(inputText) {
+        if (inputText != inputFieldValue.text) {
+            inputFieldValue = TextFieldValue(
+                text = inputText,
+                selection = TextRange(inputText.length)
+            )
+        }
+    }
+    val hasVoice = state.voiceDir != null
+    val statusBarInsetTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val quickSubtitleTopBlankTarget =
+        if (fullscreenMode) (statusBarInsetTop + UiTokens.PageTopBlank) else UiTokens.PageTopBlank
+    val quickSubtitleTopBlank by animateDpAsState(
+        targetValue = quickSubtitleTopBlankTarget,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "quick_subtitle_top_blank"
+    )
+    val landscapeQuickPanelWidth = 220.dp
+    val landscapeQuickPanelGap = 8.dp
+    val quickSubtitleBottomBlank = if (isLandscape) {
+        UiTokens.PageBottomBlank + 6.dp
+    } else {
+        UiTokens.PageBottomBlank + 68.dp
+    }
+    val quickPanelExpanded = !quickInputCollapsed
+    val quickPanelAnimatedWidth by animateDpAsState(
+        targetValue = if (isLandscape && quickPanelExpanded) landscapeQuickPanelWidth else 0.dp,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "quick_subtitle_right_panel_width"
+    )
+    val quickPanelAnimatedAlpha by animateFloatAsState(
+        targetValue = if (isLandscape && quickPanelExpanded) 1f else 0f,
+        animationSpec = tween(160, easing = FastOutSlowInEasing),
+        label = "quick_subtitle_right_panel_alpha"
+    )
+    DisposableEffect(lifecycleOwner, focusManager) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                focusManager.clearFocus(force = true)
+                AppLogger.i("QuickSubtitleScreen.onPause clearFocus")
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+        ) {
+            Spacer(Modifier.height(quickSubtitleTopBlank))
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .heightIn(min = 260.dp),
+                    horizontalArrangement = Arrangement.spacedBy(landscapeQuickPanelGap)
+                ) {
+                    Md2StaggeredFloatIn(
+                        index = 0,
+                        enabled = false,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .padding(3.dp)
+                    ) {
+                        Card(
+                            modifier = Modifier.fillMaxSize(),
+                            shape = RoundedCornerShape(UiTokens.Radius),
+                            backgroundColor = md2CardContainerColor(),
+                            elevation = UiTokens.CardElevation
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .verticalScroll(rememberScrollState())
+                                ) {
+                                    AnimatedContent(
+                                        targetState = subtitleText,
+                                        transitionSpec = {
+                                            ContentTransform(
+                                                targetContentEnter = fadeIn(animationSpec = tween(180)) +
+                                                    slideInVertically(
+                                                        initialOffsetY = { full -> full / 6 },
+                                                        animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                                    ),
+                                                initialContentExit = fadeOut(animationSpec = tween(120)),
+                                                sizeTransform = null
+                                            )
+                                        },
+                                        label = "quick_subtitle_text_change"
+                                    ) { text ->
+                                        Text(
+                                            text = text,
+                                            style = MaterialTheme.typography.bodyLarge.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = subtitleSize.sp,
+                                                lineHeight = (subtitleSize * 1.15f).sp
+                                            )
+                                        )
+                                    }
+                                }
+                                Column(
+                                    modifier = Modifier
+                                        .width(44.dp)
+                                        .fillMaxHeight(),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    MsIcon("search", contentDescription = "字体大小")
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(top = 8.dp, bottom = 4.dp)
+                                            .weight(1f)
+                                            .fillMaxWidth(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Md2VerticalSlider(
+                                            value = subtitleSize,
+                                            onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                            valueRange = 28f..96f,
+                                            modifier = Modifier
+                                                .fillMaxHeight()
+                                                .width(28.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(quickPanelAnimatedWidth)
+                            .fillMaxHeight()
+                            .graphicsLayer { alpha = quickPanelAnimatedAlpha }
+                    ) {
+                        Md2StaggeredFloatIn(
+                            index = 1,
+                            enabled = false,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(3.dp)
+                        ) {
+                            Card(
+                                modifier = Modifier.fillMaxSize(),
+                                shape = RoundedCornerShape(UiTokens.Radius),
+                                backgroundColor = md2CardContainerColor(),
+                                elevation = UiTokens.CardElevation
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        quickItems.forEach { text ->
+                                            Card(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(72.dp)
+                                                    .clickable {
+                                                        viewModel.applyQuickSubtitleText(
+                                                            text = text,
+                                                            enqueueSpeak = hasVoice
+                                                        )
+                                                    },
+                                                shape = RoundedCornerShape(UiTokens.Radius),
+                                                backgroundColor = md2CardContainerColor(),
+                                                elevation = UiTokens.CardElevation
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                                                    contentAlignment = Alignment.CenterStart
+                                                ) {
+                                                    Text(
+                                                        text = text,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        style = MaterialTheme.typography.bodyLarge
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(56.dp)
+                                                .clickable {
+                                                    viewModel.addQuickSubtitleItem(
+                                                        groupIndex = selectedGroupIndex,
+                                                        value = subtitleText
+                                                    )
+                                                },
+                                            shape = RoundedCornerShape(UiTokens.Radius),
+                                            backgroundColor = md2CardContainerColor(),
+                                            elevation = UiTokens.CardElevation
+                                        ) {
+                                            Box(
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                MsIcon("add", contentDescription = "添加当前文本")
+                                            }
+                                        }
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .width(1.dp)
+                                            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                                    )
+                                    Column(
+                                        modifier = Modifier
+                                            .width(44.dp)
+                                            .fillMaxHeight()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxWidth()
+                                                .verticalScroll(rememberScrollState())
+                                                .padding(horizontal = 2.dp, vertical = 4.dp),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            groups.forEachIndexed { index, group ->
+                                                val selected = selectedGroupIndex == index
+                                                val tabBg =
+                                                    if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(44.dp)
+                                                        .clip(RoundedCornerShape(UiTokens.Radius))
+                                                        .background(tabBg)
+                                                        .clickable { viewModel.selectQuickSubtitleGroup(index) },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    MsIcon(group.icon, contentDescription = group.title)
+                                                }
+                                            }
+                                        }
+                                        Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(44.dp),
+                                            color = MaterialTheme.colorScheme.primary
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                IconButton(onClick = onOpenEditor) {
+                                                    MsIcon(
+                                                        "edit",
+                                                        contentDescription = "编辑快捷文本",
+                                                        tint = MaterialTheme.colorScheme.onPrimary
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Md2StaggeredFloatIn(
+                    index = 0,
+                    enabled = false,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .heightIn(min = 260.dp)
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxSize(),
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = md2CardContainerColor(),
+                        elevation = UiTokens.CardElevation
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                AnimatedContent(
+                                    targetState = subtitleText,
+                                    transitionSpec = {
+                                        ContentTransform(
+                                            targetContentEnter = fadeIn(animationSpec = tween(180)) +
+                                                slideInVertically(
+                                                    initialOffsetY = { full -> full / 6 },
+                                                    animationSpec = tween(200, easing = FastOutSlowInEasing)
+                                                ),
+                                            initialContentExit = fadeOut(animationSpec = tween(120)),
+                                            sizeTransform = null
+                                        )
+                                    },
+                                    label = "quick_subtitle_text_change"
+                                ) { text ->
+                                    Text(
+                                        text = text,
+                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = subtitleSize.sp,
+                                            lineHeight = (subtitleSize * 1.15f).sp
+                                        )
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                MsIcon("search", contentDescription = "字体大小")
+                                Slider(
+                                    value = subtitleSize,
+                                    onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                    valueRange = 28f..96f,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!isLandscape) {
+                AnimatedVisibility(
+                    visible = !quickInputCollapsed,
+                    enter = fadeIn(animationSpec = tween(140)) +
+                        expandVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+                    exit = fadeOut(animationSpec = tween(120)) +
+                        shrinkVertically(animationSpec = tween(160, easing = FastOutSlowInEasing))
+                ) {
+                    Column {
+                    Spacer(Modifier.height(8.dp))
+                    Md2StaggeredFloatIn(index = 1, enabled = false) {
+                        if (isLandscape) {
+                            Column(
+                                modifier = Modifier
+                                    .padding(horizontal = 16.dp)
+                                    .fillMaxWidth()
+                                    .heightIn(max = 220.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                quickItems.forEach { text ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(72.dp)
+                                            .clickable {
+                                                viewModel.applyQuickSubtitleText(
+                                                    text = text,
+                                                    enqueueSpeak = hasVoice
+                                                )
+                                            },
+                                        shape = RoundedCornerShape(UiTokens.Radius),
+                                        backgroundColor = md2CardContainerColor(),
+                                        elevation = UiTokens.CardElevation
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            Text(
+                                                text = text,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.bodyLarge
+                                            )
+                                        }
+                                    }
+                                }
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(56.dp)
+                                        .clickable {
+                                            viewModel.addQuickSubtitleItem(
+                                                groupIndex = selectedGroupIndex,
+                                                value = subtitleText
+                                            )
+                                        },
+                                    shape = RoundedCornerShape(UiTokens.Radius),
+                                    backgroundColor = md2CardContainerColor(),
+                                    elevation = UiTokens.CardElevation
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        MsIcon("add", contentDescription = "添加当前文本")
+                                    }
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(100.dp)
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Keep frame edges flush; reserve shadow space inside scroll content.
+                                Spacer(Modifier.width(8.dp))
+                                quickItems.forEach { text ->
+                                    Card(
+                                        modifier = Modifier
+                                            .padding(vertical = 3.dp)
+                                            .width(148.dp)
+                                            .height(94.dp)
+                                            .clickable {
+                                                viewModel.applyQuickSubtitleText(
+                                                    text = text,
+                                                    enqueueSpeak = hasVoice
+                                                )
+                                            },
+                                        shape = RoundedCornerShape(UiTokens.Radius),
+                                        backgroundColor = md2CardContainerColor(),
+                                        elevation = UiTokens.CardElevation
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            Text(
+                                                text = text,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                style = MaterialTheme.typography.bodyLarge
+                                            )
+                                        }
+                                    }
+                                }
+                                Card(
+                                    modifier = Modifier
+                                        .padding(vertical = 3.dp)
+                                        .width(86.dp)
+                                        .height(94.dp)
+                                        .clickable {
+                                            viewModel.addQuickSubtitleItem(
+                                                groupIndex = selectedGroupIndex,
+                                                value = subtitleText
+                                            )
+                                        },
+                                    shape = RoundedCornerShape(UiTokens.Radius),
+                                    backgroundColor = md2CardContainerColor(),
+                                    elevation = UiTokens.CardElevation
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        MsIcon("add", contentDescription = "添加当前文本")
+                                    }
+                                }
+                                Spacer(Modifier.width(8.dp))
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    Md2StaggeredFloatIn(
+                        index = 2,
+                        enabled = false,
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp, vertical = 3.dp)
+                            .fillMaxWidth()
+                    ) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(UiTokens.Radius),
+                            backgroundColor = md2CardContainerColor(),
+                            elevation = UiTokens.CardElevation
+                        ) {
+                            if (isLandscape) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 220.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxWidth()
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        groups.forEachIndexed { index, group ->
+                                            val selected = selectedGroupIndex == index
+                                            val tabBg = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(44.dp)
+                                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                                    .background(tabBg)
+                                                    .clickable { viewModel.selectQuickSubtitleGroup(index) }
+                                                    .padding(horizontal = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                MsIcon(group.icon, contentDescription = group.title)
+                                                Text(group.title, maxLines = 1)
+                                            }
+                                        }
+                                    }
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(44.dp),
+                                        color = MaterialTheme.colorScheme.primary
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            IconButton(onClick = onOpenEditor) {
+                                                MsIcon(
+                                                    "edit",
+                                                    contentDescription = "编辑快捷文本",
+                                                    tint = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .horizontalScroll(rememberScrollState()),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        groups.forEachIndexed { index, group ->
+                                            val selected = selectedGroupIndex == index
+                                            val tabBg = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+                                            Row(
+                                                modifier = Modifier
+                                                    .height(48.dp)
+                                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                                    .background(tabBg)
+                                                    .clickable { viewModel.selectQuickSubtitleGroup(index) }
+                                                    .padding(horizontal = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                MsIcon(group.icon, contentDescription = group.title)
+                                                Text(group.title, maxLines = 1)
+                                            }
+                                            if (index != groups.lastIndex) {
+                                                Spacer(Modifier.width(2.dp))
+                                            }
+                                        }
+                                    }
+                                    Surface(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .width(52.dp),
+                                        color = MaterialTheme.colorScheme.primary
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            IconButton(onClick = onOpenEditor) {
+                                                MsIcon(
+                                                    "edit",
+                                                    contentDescription = "编辑快捷文本",
+                                                    tint = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Reserve a tiny shadow gutter so tab card elevation won't be clipped
+                    // during expand/collapse in portrait mode.
+                    Spacer(Modifier.height(3.dp))
+                    }
+                }
+            }
+            Spacer(Modifier.height(quickSubtitleBottomBlank))
+        }
+
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .imePadding(),
+            shape = RectangleShape,
+            color = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            val sendInput = {
+                if (inputFieldValue.text.trim().isNotEmpty()) {
+                    viewModel.submitQuickSubtitleInput(
+                        playVoice = playOnSend && hasVoice
+                    )
+                    inputFieldValue = TextFieldValue("")
+                }
+            }
+            val actionButtons: @Composable () -> Unit = {
+                Md2IconButton(
+                    icon = "arrow_back",
+                    contentDescription = "光标左移",
+                    onClick = {
+                        val current = inputFieldValue.selection.start.coerceIn(0, inputFieldValue.text.length)
+                        val target = (current - 1).coerceAtLeast(0)
+                        inputFieldValue = inputFieldValue.copy(selection = TextRange(target))
+                    }
+                )
+                Md2IconButton(
+                    icon = "arrow_forward",
+                    contentDescription = "光标右移",
+                    onClick = {
+                        val current = inputFieldValue.selection.end.coerceIn(0, inputFieldValue.text.length)
+                        val target = (current + 1).coerceAtMost(inputFieldValue.text.length)
+                        inputFieldValue = inputFieldValue.copy(selection = TextRange(target))
+                    }
+                )
+                Md2IconButton(
+                    icon = if (playOnSend) "volume_up" else "volume_off",
+                    contentDescription = if (playOnSend) "发送时播放语音：开" else "发送时播放语音：关",
+                    onClick = {
+                        viewModel.updateQuickSubtitlePlayOnSend(!playOnSend)
+                    }
+                )
+                Md2IconButton(
+                    icon = if (quickInputCollapsed) "subtitles_off" else "subtitles",
+                    contentDescription = if (quickInputCollapsed) "展开快捷输入区域" else "收起快捷输入区域",
+                    onClick = {
+                        viewModel.updateQuickSubtitleInputCollapsed(!quickInputCollapsed)
+                    }
+                )
+                Md2IconButton(
+                    icon = "play_arrow",
+                    contentDescription = "朗读当前字幕",
+                    onClick = {
+                        viewModel.applyQuickSubtitleText(subtitleText, enqueueSpeak = hasVoice)
+                    }
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .navigationBarsPadding()
+                    .padding(
+                        start = 10.dp,
+                        end = 10.dp,
+                        top = 8.dp,
+                        bottom = 8.dp
+                    ),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isLandscape) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            actionButtons()
+                        }
+                        OutlinedTextField(
+                            value = inputFieldValue,
+                            onValueChange = {
+                                inputFieldValue = it
+                                viewModel.updateQuickSubtitleInputText(it.text)
+                            },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("请输入文本") },
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                autoCorrect = true,
+                                keyboardType = KeyboardType.Text,
+                                imeAction = ImeAction.Send
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onSend = { sendInput() },
+                                onDone = { sendInput() }
+                            ),
+                            trailingIcon = {
+                                if (inputFieldValue.text.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = {
+                                            inputFieldValue = TextFieldValue("")
+                                            viewModel.updateQuickSubtitleInputText("")
+                                        }
+                                    ) {
+                                        MsIcon("close", contentDescription = "清空输入")
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(UiTokens.Radius),
+                            colors = TextFieldDefaults.outlinedTextFieldColors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                focusedLabelColor = MaterialTheme.colorScheme.primary,
+                                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                cursorColor = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                        FloatingActionButton(
+                            onClick = onToggleMic,
+                            modifier = Modifier.size(48.dp),
+                            backgroundColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                            shape = CircleShape,
+                            elevation = FloatingActionButtonDefaults.elevation(
+                                defaultElevation = UiTokens.FabElevation,
+                                pressedElevation = 12.dp
+                            )
+                        ) {
+                            MsIcon(
+                                name = if (state.running) "stop" else "play_arrow",
+                                contentDescription = if (state.running) "关闭麦克风" else "开启麦克风",
+                                tint = MaterialTheme.colorScheme.onPrimary
+                            )
+                        }
+                        IconButton(
+                            onClick = sendInput,
+                            enabled = inputFieldValue.text.trim().isNotEmpty()
+                        ) {
+                            MsIcon(
+                                name = "send",
+                                contentDescription = "发送到朗读队列",
+                                tint = if (inputFieldValue.text.trim().isNotEmpty()) LocalContentColor.current else LocalContentColor.current.copy(alpha = 0.38f)
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        actionButtons()
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = inputFieldValue,
+                            onValueChange = {
+                                inputFieldValue = it
+                                viewModel.updateQuickSubtitleInputText(it.text)
+                            },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("请输入文本") },
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Sentences,
+                                autoCorrect = true,
+                                keyboardType = KeyboardType.Text,
+                                imeAction = ImeAction.Send
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onSend = { sendInput() },
+                                onDone = { sendInput() }
+                            ),
+                            trailingIcon = {
+                                if (inputFieldValue.text.isNotEmpty()) {
+                                    IconButton(
+                                        onClick = {
+                                            inputFieldValue = TextFieldValue("")
+                                            viewModel.updateQuickSubtitleInputText("")
+                                        }
+                                    ) {
+                                        MsIcon("close", contentDescription = "清空输入")
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(UiTokens.Radius),
+                            colors = TextFieldDefaults.outlinedTextFieldColors(
+                                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                focusedLabelColor = MaterialTheme.colorScheme.primary,
+                                unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                cursorColor = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                        IconButton(
+                            onClick = sendInput,
+                            enabled = inputFieldValue.text.trim().isNotEmpty()
+                        ) {
+                            MsIcon(
+                                name = "send",
+                                contentDescription = "发送到朗读队列",
+                                tint = if (inputFieldValue.text.trim().isNotEmpty()) LocalContentColor.current else LocalContentColor.current.copy(alpha = 0.38f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!isLandscape) {
+            FloatingActionButton(
+                onClick = onToggleMic,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .imePadding()
+                    .navigationBarsPadding()
+                    .padding(end = 20.dp, bottom = 80.dp),
+                backgroundColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = CircleShape,
+                elevation = FloatingActionButtonDefaults.elevation(
+                    defaultElevation = UiTokens.FabElevation,
+                    pressedElevation = 12.dp
+                )
+            ) {
+                MsIcon(
+                    name = if (state.running) "stop" else "play_arrow",
+                    contentDescription = if (state.running) "关闭麦克风" else "开启麦克风",
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Md2CardTitleText(
+    text: String,
+    modifier: Modifier = Modifier
+) {
+    Text(
+        text = text,
+        modifier = modifier,
+        fontWeight = FontWeight.Bold
+    )
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun QuickSubtitleEditorScreen(
+    viewModel: MainViewModel,
+    modifier: Modifier = Modifier
+) {
+    val groups = viewModel.quickSubtitleGroups
+    var selectedGroupIndex by remember(groups, viewModel.quickSubtitleSelectedGroupId) {
+        mutableIntStateOf(
+            viewModel.currentQuickSubtitleGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
+        )
+    }
+    val selectedGroup = groups.getOrNull(selectedGroupIndex)
+    val iconChoices = remember {
+        listOf(
+            "sentiment_satisfied",
+            "sentiment_very_satisfied",
+            "sentiment_neutral",
+            "sentiment_dissatisfied",
+            "record_voice_over",
+            "sports_esports",
+            "work",
+            "favorite",
+            "chat",
+            "emoji_people"
+        )
+    }
+    val groupNameBringIntoViewRequester = remember { BringIntoViewRequester() }
+    val bringIntoViewScope = rememberCoroutineScope()
+
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .imePadding()
+            .padding(horizontal = 16.dp),
+        contentPadding = PaddingValues(
+            top = UiTokens.PageTopBlank,
+            bottom = UiTokens.PageBottomBlank
+        ),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item(key = "groups_card") {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.CardElevation
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Md2CardTitleText("分组", modifier = Modifier.weight(1f))
+                        Md2TextButton(onClick = { viewModel.addQuickSubtitleGroup() }) {
+                            MsIcon("add", contentDescription = "新增分组")
+                            Spacer(Modifier.width(4.dp))
+                            Text("新增")
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        groups.forEachIndexed { idx, group ->
+                            val selected = idx == selectedGroupIndex
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                    .background(
+                                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                    )
+                                    .clickable {
+                                        selectedGroupIndex = idx
+                                        viewModel.selectQuickSubtitleGroup(idx)
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                MsIcon(group.icon, contentDescription = group.title)
+                                Text(group.title)
+                                Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                    if (selectedGroup != null) {
+                        Md2OutlinedField(
+                            value = selectedGroup.title,
+                            onValueChange = {
+                                viewModel.updateQuickSubtitleGroupMeta(
+                                    selectedGroupIndex,
+                                    it,
+                                    selectedGroup.icon
+                                )
+                            },
+                            label = "分组名称",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .bringIntoViewRequester(groupNameBringIntoViewRequester)
+                                .onFocusChanged { focusState ->
+                                    if (focusState.isFocused) {
+                                        bringIntoViewScope.launch {
+                                            groupNameBringIntoViewRequester.bringIntoView()
+                                        }
+                                    }
+                                }
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            iconChoices.forEach { icon ->
+                                val selected = icon == selectedGroup.icon
+                                Surface(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .clickable {
+                                            viewModel.updateQuickSubtitleGroupMeta(
+                                                selectedGroupIndex,
+                                                selectedGroup.title,
+                                                icon
+                                            )
+                                        },
+                                    color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        MsIcon(icon, contentDescription = icon)
+                                    }
+                                }
+                            }
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Md2IconButton(
+                                icon = "arrow_back",
+                                contentDescription = "分组左移",
+                                onClick = {
+                                    if (selectedGroupIndex > 0) {
+                                        viewModel.moveQuickSubtitleGroup(selectedGroupIndex, selectedGroupIndex - 1)
+                                        selectedGroupIndex -= 1
+                                    }
+                                },
+                                enabled = selectedGroupIndex > 0
+                            )
+                            Md2IconButton(
+                                icon = "arrow_forward",
+                                contentDescription = "分组右移",
+                                onClick = {
+                                    if (selectedGroupIndex < groups.lastIndex) {
+                                        viewModel.moveQuickSubtitleGroup(selectedGroupIndex, selectedGroupIndex + 1)
+                                        selectedGroupIndex += 1
+                                    }
+                                },
+                                enabled = selectedGroupIndex < groups.lastIndex
+                            )
+                            Md2IconButton(
+                                icon = "delete",
+                                contentDescription = "删除分组",
+                                onClick = {
+                                    viewModel.removeQuickSubtitleGroup(selectedGroupIndex)
+                                    selectedGroupIndex = viewModel.currentQuickSubtitleGroupIndex()
+                                },
+                                enabled = groups.size > 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (selectedGroup != null) {
+            item(key = "items_card") {
+                QuickSubtitleItemsRecyclerCard(
+                    items = selectedGroup.items,
+                    onAdd = { viewModel.addQuickSubtitleItem(selectedGroupIndex) },
+                    onItemsChanged = { reordered ->
+                        viewModel.setQuickSubtitleItems(selectedGroupIndex, reordered)
+                    },
+                    onItemTextChanged = { itemIndex, value ->
+                        viewModel.updateQuickSubtitleItem(selectedGroupIndex, itemIndex, value)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickSubtitleItemsRecyclerCard(
+    items: List<String>,
+    onAdd: () -> Unit,
+    onItemsChanged: (List<String>) -> Unit,
+    onItemTextChanged: (Int, String) -> Unit
+) {
+    var editTargetIndex by remember(items) { mutableStateOf<Int?>(null) }
+    var editText by remember { mutableStateOf("") }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Md2CardTitleText("快捷文本", modifier = Modifier.weight(1f))
+                Md2TextButton(onClick = onAdd) {
+                    MsIcon("add", contentDescription = "新增文本")
+                    Spacer(Modifier.width(4.dp))
+                    Text("新增")
+                }
+            }
+            QuickSubtitleItemsRecyclerList(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 92.dp)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                items = items,
+                onItemsChanged = onItemsChanged,
+                onEditRequested = { index, value ->
+                    editTargetIndex = index
+                    editText = value
+                }
+            )
+        }
+    }
+
+    val editingIndex = editTargetIndex
+    if (editingIndex != null && editingIndex in items.indices) {
+        AlertDialog(
+            onDismissRequest = { editTargetIndex = null },
+            title = { Text("编辑快捷文本") },
+            text = {
+                OutlinedTextField(
+                    value = editText,
+                    onValueChange = { editText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 4,
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    colors = TextFieldDefaults.outlinedTextFieldColors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                        focusedLabelColor = MaterialTheme.colorScheme.primary,
+                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        cursorColor = MaterialTheme.colorScheme.primary
+                    )
+                )
+            },
+            confirmButton = {
+                Md2TextButton(onClick = {
+                    val idx = editTargetIndex
+                    if (idx != null && idx in items.indices) {
+                        onItemTextChanged(idx, editText)
+                    }
+                    editTargetIndex = null
+                }) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                Md2TextButton(onClick = { editTargetIndex = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun QuickSubtitleItemsRecyclerList(
+    modifier: Modifier = Modifier,
+    items: List<String>,
+    onItemsChanged: (List<String>) -> Unit,
+    onEditRequested: (Int, String) -> Unit
+) {
+    val parentComposition = rememberCompositionContext()
+    val onItemsChangedState = rememberUpdatedState(onItemsChanged)
+    val onEditRequestedState = rememberUpdatedState(onEditRequested)
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            val recycler = RecyclerView(ctx).apply {
+                layoutManager = LinearLayoutManager(ctx)
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                clipToPadding = false
+                clipChildren = false
+                isNestedScrollingEnabled = false
+                itemAnimator = DefaultItemAnimator().apply {
+                    supportsChangeAnimations = false
+                    addDuration = 120L
+                    removeDuration = 120L
+                    moveDuration = 160L
+                    changeDuration = 0L
+                }
+            }
+
+            val adapter = QuickSubtitleItemRecyclerAdapter(
+                parentComposition = parentComposition,
+                onItemsChanged = { changed -> onItemsChangedState.value(changed) },
+                onEditRequested = { index, value -> onEditRequestedState.value(index, value) }
+            )
+            recycler.adapter = adapter
+
+            val touchCallback = object : ItemTouchHelper.Callback() {
+                private var activeViewHolder: RecyclerView.ViewHolder? = null
+                private var moved = false
+
+                override fun isLongPressDragEnabled(): Boolean = false
+                override fun isItemViewSwipeEnabled(): Boolean = false
+
+                override fun getMovementFlags(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder
+                ): Int {
+                    val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
+                    return makeMovementFlags(dragFlags, 0)
+                }
+
+                override fun onMove(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    target: RecyclerView.ViewHolder
+                ): Boolean {
+                    val from = viewHolder.bindingAdapterPosition
+                    val to = target.bindingAdapterPosition
+                    val ok = adapter.move(from, to)
+                    moved = moved || ok
+                    return ok
+                }
+
+                override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
+
+                override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
+                    super.onSelectedChanged(viewHolder, actionState)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
+                        if (activeViewHolder !== viewHolder) activeViewHolder = viewHolder
+                        activeViewHolder = viewHolder
+                        adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
+                    } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        activeViewHolder = null
+                        adapter.clearDraggingItem()
+                    }
+                    adapter.isDragging = actionState == ItemTouchHelper.ACTION_STATE_DRAG
+                }
+
+                override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    super.clearView(recyclerView, viewHolder)
+                    if (activeViewHolder === viewHolder) activeViewHolder = null
+                    adapter.isDragging = false
+                    adapter.clearDraggingItem()
+                    if (moved) {
+                        onItemsChangedState.value(adapter.snapshotTexts())
+                        moved = false
+                    }
+                }
+            }
+            val touchHelper = ItemTouchHelper(touchCallback)
+            touchHelper.attachToRecyclerView(recycler)
+            adapter.onStartDrag = { vh -> touchHelper.startDrag(vh) }
+            recycler
+        },
+        update = { recycler ->
+            val adapter = recycler.adapter as? QuickSubtitleItemRecyclerAdapter ?: return@AndroidView
+            adapter.submitFromState(items)
+        }
+    )
+}
+
+private data class QuickSubtitleEditableItem(
+    val id: Long,
+    var text: String
+)
+
+private class QuickSubtitleItemRecyclerAdapter(
+    private val parentComposition: CompositionContext,
+    private val onItemsChanged: (List<String>) -> Unit,
+    private val onEditRequested: (Int, String) -> Unit
+) : RecyclerView.Adapter<QuickSubtitleItemRecyclerAdapter.ItemViewHolder>() {
+
+    private val items = mutableListOf<QuickSubtitleEditableItem>()
+    private var nextId = 1L
+    var isDragging: Boolean = false
+    var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
+    private var draggingItemId: Long? = null
+
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long = items[position].id
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ItemViewHolder {
+        val composeView = ComposeView(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindowOrReleasedFromPool)
+            setParentCompositionContext(parentComposition)
+        }
+        return ItemViewHolder(composeView)
+    }
+
+    override fun getItemCount(): Int = items.size
+
+    override fun onBindViewHolder(holder: ItemViewHolder, position: Int) {
+        if (!isDragging) {
+            holder.itemView.translationZ = 0f
+        }
+        val row = items[position]
+        holder.bind(
+            itemId = row.id,
+            text = row.text,
+            isDragged = draggingItemId == row.id,
+            canDelete = items.size > 1,
+            onDelete = {
+                val idx = holder.bindingAdapterPosition
+                if (idx in items.indices && items.size > 1) {
+                    items.removeAt(idx)
+                    notifyItemRemoved(idx)
+                    onItemsChanged(snapshotTexts())
+                }
+            },
+            onEdit = {
+                val idx = holder.bindingAdapterPosition
+                if (idx in items.indices) {
+                    onEditRequested(idx, items[idx].text)
+                }
+            },
+            onStartDrag = {
+                if (holder.bindingAdapterPosition != RecyclerView.NO_POSITION) {
+                    onStartDrag?.invoke(holder)
+                }
+            }
+        )
+    }
+
+    fun submitFromState(newItems: List<String>) {
+        if (isDragging) return
+        val oldItems = items.toList()
+        val used = BooleanArray(oldItems.size)
+        val mapped = ArrayList<QuickSubtitleEditableItem>(newItems.size)
+
+        for (text in newItems) {
+            var matchedIndex = -1
+            for (i in oldItems.indices) {
+                if (!used[i] && oldItems[i].text == text) {
+                    matchedIndex = i
+                    break
+                }
+            }
+            if (matchedIndex >= 0) {
+                used[matchedIndex] = true
+                mapped += oldItems[matchedIndex].copy(text = text)
+            } else {
+                mapped += QuickSubtitleEditableItem(id = nextId++, text = text)
+            }
+        }
+
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldItems.size
+            override fun getNewListSize(): Int = mapped.size
+
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldItems[oldItemPosition].id == mapped[newItemPosition].id
+            }
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                return oldItems[oldItemPosition].text == mapped[newItemPosition].text
+            }
+        })
+
+        items.clear()
+        items.addAll(mapped)
+        if (draggingItemId != null && items.none { it.id == draggingItemId }) {
+            draggingItemId = null
+        }
+        diff.dispatchUpdatesTo(this)
+    }
+
+    fun move(from: Int, to: Int): Boolean {
+        if (from == to || from !in items.indices || to !in items.indices) return false
+        val moved = items.removeAt(from)
+        items.add(to, moved)
+        notifyItemMoved(from, to)
+        return true
+    }
+
+    fun snapshotTexts(): List<String> = items.map { it.text }
+
+    fun setDraggingPosition(position: Int) {
+        val targetId = items.getOrNull(position)?.id
+        if (draggingItemId == targetId) return
+        val oldId = draggingItemId
+        draggingItemId = targetId
+        oldId?.let { id ->
+            val idx = items.indexOfFirst { it.id == id }
+            if (idx >= 0) notifyItemChanged(idx)
+        }
+        targetId?.let { id ->
+            val idx = items.indexOfFirst { it.id == id }
+            if (idx >= 0) notifyItemChanged(idx)
+        }
+    }
+
+    fun clearDraggingItem() {
+        val oldId = draggingItemId ?: return
+        draggingItemId = null
+        val idx = items.indexOfFirst { it.id == oldId }
+        if (idx >= 0) notifyItemChanged(idx)
+    }
+
+    class ItemViewHolder(
+        private val composeView: ComposeView
+    ) : RecyclerView.ViewHolder(composeView) {
+        fun bind(
+            itemId: Long,
+            text: String,
+            isDragged: Boolean,
+            canDelete: Boolean,
+            onDelete: () -> Unit,
+            onEdit: () -> Unit,
+            onStartDrag: () -> Unit
+        ) {
+            composeView.setContent {
+                QuickSubtitleEditableRow(
+                    itemId = itemId,
+                    value = text,
+                    isDragged = isDragged,
+                    canDelete = canDelete,
+                    onDelete = onDelete,
+                    onEdit = onEdit,
+                    onStartDrag = onStartDrag
+                )
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalComposeUiApi::class)
+private fun QuickSubtitleEditableRow(
+    itemId: Long,
+    value: String,
+    isDragged: Boolean,
+    canDelete: Boolean,
+    onDelete: () -> Unit,
+    onEdit: () -> Unit,
+    onStartDrag: () -> Unit
+) {
+    val rowElevation by animateDpAsState(
+        targetValue = if (isDragged) 10.dp else 0.dp,
+        animationSpec = tween(
+            durationMillis = if (isDragged) 120 else 160,
+            easing = FastOutSlowInEasing
+        ),
+        label = "quick_subtitle_item_elevation"
+    )
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = rowElevation
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = value.ifBlank { "（空文本）" },
+                modifier = Modifier
+                    .weight(1f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Md2IconButton(
+                icon = "edit",
+                contentDescription = "编辑文本",
+                onClick = onEdit
+            )
+            Md2IconButton(
+                icon = "drag_indicator",
+                contentDescription = "拖动排序",
+                onClick = {},
+                modifier = Modifier.pointerInteropFilter { ev ->
+                    when (ev.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            onStartDrag()
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE,
+                        MotionEvent.ACTION_UP,
+                        MotionEvent.ACTION_CANCEL -> true
+                        else -> false
+                    }
+                }
+            )
+            Md2IconButton(
+                icon = "delete",
+                contentDescription = "删除文本",
+                onClick = onDelete,
+                enabled = canDelete
+            )
+        }
+    }
+}
+
+@Composable
+fun RealtimeScreen(viewModel: MainViewModel, state: UiState) {
+    val inputLevel = viewModel.realtimeInputLevel
+    val recognized = viewModel.realtimeRecognized
+    val bottomPadding = UiTokens.PageBottomBlank
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        contentPadding = PaddingValues(
+            top = UiTokens.PageTopBlank,
+            bottom = bottomPadding
+        ),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Md2StaggeredFloatIn(index = 0) {
+                Column {
+                    Text("输入音量", fontWeight = FontWeight.Bold)
+                    LinearProgressIndicator(
+                        progress = inputLevel.coerceIn(0f, 1f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, bottom = 12.dp)
+                    )
+                    Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                    Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                    Text("状态：${state.status}")
+                    Spacer(Modifier.height(8.dp))
+                    Text("识别结果", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(4.dp))
+                }
+            }
+        }
+
+        if (recognized.isEmpty()) {
+            item {
+                Text("暂无识别结果", style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            items(recognized, key = { it.id }) { item ->
+                RecognizedQueueItemCard(item)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecognizedQueueItemCard(item: RecognizedItem) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Text(item.text)
+            LinearProgressIndicator(
+                progress = item.progress.coerceIn(0f, 1f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun RunningStatusTopStrip(
+    viewModel: MainViewModel,
+    status: String,
+    onToggleCollapsed: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val inputLevel = viewModel.realtimeInputLevel
+    val playbackProgress = viewModel.realtimePlaybackProgress
+    Surface(
+        modifier = modifier,
+        shape = RectangleShape,
+        color = md2CardContainerColor(),
+        elevation = UiTokens.MenuElevation
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = status,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Md2IconButton(
+                    icon = "expand_less",
+                    contentDescription = "折叠状态条",
+                    onClick = onToggleCollapsed
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MsIcon("mic", contentDescription = "麦克风音量")
+                LinearProgressIndicator(
+                    progress = inputLevel.coerceIn(0f, 1f),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MsIcon("graphic_eq", contentDescription = "识别进度")
+                LinearProgressIndicator(
+                    progress = playbackProgress.coerceIn(0f, 1f),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RunningStripTopBarToggle(
+    micLevel: Float,
+    playbackProgress: Float,
+    expanded: Boolean,
+    contentColor: Color,
+    onToggle: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(bounded = true),
+                onClick = onToggle
+            ),
+        shape = RoundedCornerShape(4.dp),
+        color = Color.Transparent,
+        elevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                MsIcon("mic", contentDescription = "麦克风音量", tint = contentColor)
+                LinearProgressIndicator(
+                    progress = micLevel.coerceIn(0f, 1f),
+                    modifier = Modifier
+                        .width(30.dp)
+                        .height(2.dp),
+                    color = contentColor,
+                    backgroundColor = contentColor.copy(alpha = 0.24f)
+                )
+            }
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                MsIcon("graphic_eq", contentDescription = "播放进度", tint = contentColor)
+                LinearProgressIndicator(
+                    progress = playbackProgress.coerceIn(0f, 1f),
+                    modifier = Modifier
+                        .width(30.dp)
+                        .height(2.dp),
+                    color = contentColor,
+                    backgroundColor = contentColor.copy(alpha = 0.24f)
+                )
+            }
+            MsIcon(
+                name = if (expanded) "expand_less" else "expand_more",
+                contentDescription = if (expanded) "收起状态条" else "展开状态条",
+                tint = contentColor
+            )
+        }
+    }
+}
+
+@Composable
+fun DrawingBoardScreen(
+    viewModel: MainViewModel,
+    fullscreen: Boolean,
+    onToggleFullscreen: () -> Unit
+) {
+    val context = LocalContext.current
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val isDark = isSystemInDarkTheme()
+    val rotationDegrees = when (context.display?.rotation ?: Surface.ROTATION_0) {
+        Surface.ROTATION_90 -> 90f
+        Surface.ROTATION_180 -> 180f
+        Surface.ROTATION_270 -> 270f
+        else -> 0f
+    }
+    val boardOutlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
+    val boardFillColor = if (isDark) Color(0xFF2C3237) else Color(0xFFFCFDFE)
+    val currentPoints = remember { mutableStateListOf<DrawPoint>() }
+    val toolbarCollapsed = viewModel.drawingToolbarCollapsed
+    val palette = if (isDark) {
+        listOf(
+            Color(0xFF7DE8EA),
+            Color(0xFF90CAF9),
+            Color(0xFFFF9E9E),
+            Color(0xFFAEE5B3),
+            Color(0xFFFFE08A),
+            Color(0xFFECEFF1),
+            Color(0xFFD1C4E9)
+        )
+    } else {
+        listOf(
+            UiTokens.Primary,
+            Color(0xFF1E88E5),
+            Color(0xFFE53935),
+            Color(0xFF43A047),
+            Color(0xFFFFA000),
+            Color(0xFF212121),
+            Color(0xFF5E35B1)
+        )
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+    ) {
+        val contentHorizontalPadding = if (fullscreen) 0.dp else 16.dp
+        val contentVerticalPadding = if (fullscreen) 0.dp else 16.dp
+
+        val leftActionButtonSize = 36.dp
+        val leftColorDotSize = 22.dp
+        val leftItemSpacing = 8.dp
+        val fixedActionCount = 3
+        val fixedColorCount = 7
+        val fixedMaxToolbarHeight =
+            (leftActionButtonSize * fixedActionCount) +
+            (leftItemSpacing * (fixedActionCount - 1)) +
+            leftItemSpacing + // action section -> color section gap
+            (leftColorDotSize * fixedColorCount) +
+            (leftItemSpacing * (fixedColorCount - 1)) +
+            (10.dp * 2) // card inner vertical padding
+
+        val landscapeToolbarHeight = remember(maxHeight, fixedMaxToolbarHeight) {
+            val verticalSafetyPadding = 16.dp
+            val availableHeight = (maxHeight - verticalSafetyPadding * 2).coerceAtLeast(96.dp)
+            minOf(availableHeight, fixedMaxToolbarHeight)
+        }
+        val fixedMaxToolbarWidth =
+            (leftActionButtonSize * fixedActionCount) +
+            (leftItemSpacing * (fixedActionCount - 1)) +
+            10.dp + // left action row -> color row gap
+            (leftColorDotSize * fixedColorCount) +
+            (leftItemSpacing * (fixedColorCount - 1)) +
+            (10.dp * 2) // card inner horizontal padding
+        val portraitToolbarWidth = remember(maxWidth, fixedMaxToolbarWidth) {
+            val horizontalSafetyPadding = 12.dp
+            val availableWidth = (maxWidth - horizontalSafetyPadding * 2).coerceAtLeast(200.dp)
+            minOf(availableWidth, fixedMaxToolbarWidth)
+        }
+
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = contentHorizontalPadding, vertical = contentVerticalPadding)
+        ) {
+            val canvasW = constraints.maxWidth.toFloat()
+            val canvasH = constraints.maxHeight.toFloat()
+            val boardAspect = 1080f / 1920f
+            val quarterTurn = rotationDegrees == 90f || rotationDegrees == 270f
+            val fitW: Float
+            val fitH: Float
+            if (quarterTurn) {
+                fitH = minOf(canvasW, canvasH / boardAspect)
+                fitW = fitH * boardAspect
+            } else {
+                fitW = minOf(canvasW, canvasH * boardAspect)
+                fitH = fitW / boardAspect
+            }
+            val left = (canvasW - fitW) / 2f
+            val top = (canvasH - fitH) / 2f
+            val pxScale = fitW / 1080f
+            val center = Offset(canvasW / 2f, canvasH / 2f)
+            val activeWidth = if (viewModel.drawEraser) viewModel.drawEraserSize * 5f else viewModel.drawBrushSize
+
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(
+                        rotationDegrees,
+                        fitW,
+                        fitH,
+                        left,
+                        top,
+                        viewModel.drawBrushSize,
+                        viewModel.drawEraserSize,
+                        viewModel.drawColor,
+                        viewModel.drawEraser
+                    ) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val mapped = offset.rotateAround(center, rotationDegrees)
+                                if (!mapped.isInsideBoard(left, top, fitW, fitH)) return@detectDragGestures
+                                currentPoints.clear()
+                                currentPoints.add(mapped.toDrawPoint(left, top, fitW, fitH))
+                            },
+                            onDrag = { change, _ ->
+                                if (currentPoints.isNotEmpty()) {
+                                    val mapped = change.position.rotateAround(center, rotationDegrees)
+                                    currentPoints.add(mapped.toDrawPoint(left, top, fitW, fitH))
+                                    change.consume()
+                                }
+                            },
+                            onDragEnd = {
+                                if (currentPoints.size > 1) {
+                                    viewModel.appendDrawingStroke(currentPoints.toList())
+                                }
+                                currentPoints.clear()
+                            },
+                            onDragCancel = { currentPoints.clear() }
+                        )
+                    }
+            ) {
+                withTransform({
+                    rotate(degrees = -rotationDegrees, pivot = center)
+                }) {
+                    drawRoundRect(
+                        color = boardFillColor,
+                        topLeft = Offset(left, top),
+                        size = Size(fitW, fitH),
+                        cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx())
+                    )
+                    drawRoundRect(
+                        color = boardOutlineColor,
+                        topLeft = Offset(left, top),
+                        size = Size(fitW, fitH),
+                        cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx()),
+                        style = Stroke(width = 1.dp.toPx())
+                    )
+
+                    viewModel.drawStrokes.forEach { stroke ->
+                        drawStrokeOnBoard(
+                            points = stroke.points,
+                            color = if (stroke.eraser) boardFillColor else stroke.color,
+                            width = stroke.width * pxScale,
+                            left = left,
+                            top = top,
+                            widthPx = fitW,
+                            heightPx = fitH
+                        )
+                    }
+                    if (currentPoints.size > 1) {
+                        drawStrokeOnBoard(
+                            points = currentPoints,
+                            color = if (viewModel.drawEraser) boardFillColor else viewModel.drawColor,
+                            width = activeWidth * pxScale,
+                            left = left,
+                            top = top,
+                            widthPx = fitW,
+                            heightPx = fitH
+                        )
+                    }
+                }
+            }
+        }
+
+        val toolbarAnchorModifier = if (isLandscape) {
+            Modifier
+                .align(Alignment.CenterEnd)
+                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.End))
+                .padding(end = 10.dp)
+        } else {
+            Modifier
+                .align(Alignment.BottomCenter)
+                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
+                .padding(bottom = 10.dp)
+        }
+
+        DrawingToolbar(
+            modifier = toolbarAnchorModifier,
+            isLandscape = isLandscape,
+            colors = palette,
+            selectedColor = viewModel.drawColor,
+            brushSize = viewModel.drawBrushSize,
+            eraserSize = viewModel.drawEraserSize,
+            eraserEnabled = viewModel.drawEraser,
+            visible = !toolbarCollapsed,
+            fullscreen = fullscreen,
+            onToggleFullscreen = onToggleFullscreen,
+            onToggleCollapsed = { viewModel.updateDrawingToolbarCollapsed(!toolbarCollapsed) },
+            landscapeToolbarHeight = landscapeToolbarHeight,
+            portraitToolbarWidth = portraitToolbarWidth,
+            onPickColor = { viewModel.updateDrawColor(it) },
+            onBrushSize = { viewModel.updateDrawBrushSize(it) },
+            onToggleEraser = { viewModel.updateDrawEraser(it) },
+            onClear = { viewModel.clearDrawingBoard() }
+        )
+        DrawingToolbarMini(
+            modifier = toolbarAnchorModifier,
+            isLandscape = isLandscape,
+            visible = toolbarCollapsed,
+            fullscreen = fullscreen,
+            onToggleFullscreen = onToggleFullscreen,
+            onToggleCollapsed = { viewModel.updateDrawingToolbarCollapsed(!toolbarCollapsed) }
+        )
+    }
+}
+
+@Composable
+private fun DrawingToolbar(
+    modifier: Modifier = Modifier,
+    isLandscape: Boolean,
+    colors: List<Color>,
+    selectedColor: Color,
+    brushSize: Float,
+    eraserSize: Float,
+    eraserEnabled: Boolean,
+    visible: Boolean,
+    fullscreen: Boolean,
+    onToggleFullscreen: () -> Unit,
+    onToggleCollapsed: () -> Unit,
+    landscapeToolbarHeight: Dp,
+    portraitToolbarWidth: Dp,
+    onPickColor: (Color) -> Unit,
+    onBrushSize: (Float) -> Unit,
+    onToggleEraser: (Boolean) -> Unit,
+    onClear: () -> Unit
+) {
+    AnimatedVisibility(
+        modifier = modifier,
+        visible = visible,
+        enter = if (isLandscape) {
+            fadeIn(animationSpec = tween(130)) + androidx.compose.animation.slideInHorizontally(
+                initialOffsetX = { full -> full / 2 },
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            )
+        } else {
+            fadeIn(animationSpec = tween(130)) + slideInVertically(
+                initialOffsetY = { full -> full / 2 },
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            )
+        },
+        exit = if (isLandscape) {
+            fadeOut(animationSpec = tween(100)) + androidx.compose.animation.slideOutHorizontally(
+                targetOffsetX = { full -> full / 2 },
+                animationSpec = tween(140, easing = FastOutSlowInEasing)
+            )
+        } else {
+            fadeOut(animationSpec = tween(100)) + slideOutVertically(
+                targetOffsetY = { full -> full / 2 },
+                animationSpec = tween(140, easing = FastOutSlowInEasing)
+            )
+        }
+    ) {
+        Card(
+            modifier = if (isLandscape) Modifier else Modifier.width(portraitToolbarWidth),
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = 6.dp
+        ) {
+            val activeSize = if (eraserEnabled) eraserSize else brushSize
+            if (isLandscape) {
+                Row(
+                    modifier = Modifier
+                        .padding(10.dp)
+                        .height(landscapeToolbarHeight),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .width(36.dp)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Md2ToolToggle(
+                            icon = "edit",
+                            selected = !eraserEnabled,
+                            onClick = { onToggleEraser(false) },
+                            contentDescription = "画笔"
+                        )
+                        Md2ToolToggle(
+                            icon = "ink_eraser",
+                            selected = eraserEnabled,
+                            onClick = { onToggleEraser(true) },
+                            contentDescription = "橡皮擦"
+                        )
+                        Md2ToolToggle(
+                            icon = "delete_sweep",
+                            selected = false,
+                            onClick = onClear,
+                            contentDescription = "清空"
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState()),
+                            contentAlignment = Alignment.TopCenter
+                        ) {
+                            Column(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                colors.forEach { color ->
+                                    Md2ColorDot(
+                                        color = color,
+                                        selected = !eraserEnabled && selectedColor == color,
+                                        onClick = { onPickColor(color) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .width(52.dp)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                        ) {
+                            Md2VerticalSlider(
+                                value = activeSize,
+                                onValueChange = onBrushSize,
+                                valueRange = 2f..48f,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        Md2ToolToggle(
+                            icon = "chevron_right",
+                            selected = false,
+                            onClick = onToggleCollapsed,
+                            contentDescription = "折叠工具栏"
+                        )
+                        Md2ToolToggle(
+                            icon = if (fullscreen) "fullscreen_exit" else "fullscreen",
+                            selected = false,
+                            onClick = onToggleFullscreen,
+                            contentDescription = if (fullscreen) "退出全屏" else "进入全屏"
+                        )
+                    }
+                }
+            } else {
+                Column(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Md2ToolToggle(
+                                icon = "edit",
+                                selected = !eraserEnabled,
+                                onClick = { onToggleEraser(false) },
+                                contentDescription = "画笔"
+                            )
+                            Md2ToolToggle(
+                                icon = "ink_eraser",
+                                selected = eraserEnabled,
+                                onClick = { onToggleEraser(true) },
+                                contentDescription = "橡皮擦"
+                            )
+                            Md2ToolToggle(
+                                icon = "delete_sweep",
+                                selected = false,
+                                onClick = onClear,
+                                contentDescription = "清空"
+                            )
+                        }
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            colors.forEach { color ->
+                                Md2ColorDot(
+                                    color = color,
+                                    selected = !eraserEnabled && selectedColor == color,
+                                    onClick = { onPickColor(color) }
+                                )
+                            }
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Slider(
+                            value = activeSize,
+                            onValueChange = onBrushSize,
+                            valueRange = 2f..48f,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Md2ToolToggle(
+                            icon = "expand_more",
+                            selected = false,
+                            onClick = onToggleCollapsed,
+                            contentDescription = "折叠工具栏"
+                        )
+                        Md2ToolToggle(
+                            icon = if (fullscreen) "fullscreen_exit" else "fullscreen",
+                            selected = false,
+                            onClick = onToggleFullscreen,
+                            contentDescription = if (fullscreen) "退出全屏" else "进入全屏"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawingToolbarMini(
+    modifier: Modifier = Modifier,
+    isLandscape: Boolean,
+    visible: Boolean,
+    fullscreen: Boolean,
+    onToggleFullscreen: () -> Unit,
+    onToggleCollapsed: () -> Unit
+) {
+    AnimatedVisibility(
+        modifier = modifier,
+        visible = visible,
+        enter = if (isLandscape) {
+            fadeIn(animationSpec = tween(130)) + androidx.compose.animation.slideInHorizontally(
+                initialOffsetX = { full -> full / 2 },
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            )
+        } else {
+            fadeIn(animationSpec = tween(130)) + slideInVertically(
+                initialOffsetY = { full -> full / 2 },
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            )
+        },
+        exit = if (isLandscape) {
+            fadeOut(animationSpec = tween(100)) + androidx.compose.animation.slideOutHorizontally(
+                targetOffsetX = { full -> full / 2 },
+                animationSpec = tween(140, easing = FastOutSlowInEasing)
+            )
+        } else {
+            fadeOut(animationSpec = tween(100)) + slideOutVertically(
+                targetOffsetY = { full -> full / 2 },
+                animationSpec = tween(140, easing = FastOutSlowInEasing)
+            )
+        }
+    ) {
+        Card(
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = 6.dp
+        ) {
+            if (isLandscape) {
+                Column(
+                    modifier = Modifier.padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Md2ToolToggle(
+                        icon = "chevron_left",
+                        selected = false,
+                        onClick = onToggleCollapsed,
+                        contentDescription = "展开工具栏"
+                    )
+                    Md2ToolToggle(
+                        icon = if (fullscreen) "fullscreen_exit" else "fullscreen",
+                        selected = false,
+                        onClick = onToggleFullscreen,
+                        contentDescription = if (fullscreen) "退出全屏" else "进入全屏"
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.padding(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Md2ToolToggle(
+                        icon = "expand_less",
+                        selected = false,
+                        onClick = onToggleCollapsed,
+                        contentDescription = "展开工具栏"
+                    )
+                    Md2ToolToggle(
+                        icon = if (fullscreen) "fullscreen_exit" else "fullscreen",
+                        selected = false,
+                        onClick = onToggleFullscreen,
+                        contentDescription = if (fullscreen) "退出全屏" else "进入全屏"
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Md2ToolToggle(
+    icon: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    contentDescription: String
+) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+    Surface(
+        modifier = Modifier
+            .size(36.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(bounded = true),
+                onClick = onClick
+            ),
+        color = bg,
+        shape = CircleShape
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            MsIcon(icon, contentDescription = contentDescription)
+        }
+    }
+}
+
+@Composable
+private fun Md2ColorDot(
+    color: Color,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    Surface(
+        modifier = Modifier
+            .size(22.dp)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(bounded = true),
+                onClick = onClick
+            ),
+        shape = CircleShape,
+        color = color,
+        border = BorderStroke(1.5.dp, borderColor)
+    ) {}
+}
+
+@Composable
+private fun Md2VerticalSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    modifier: Modifier = Modifier
+) {
+    val min = valueRange.start
+    val max = valueRange.endInclusive
+    val range = (max - min).coerceAtLeast(0.0001f)
+    val coerced = value.coerceIn(min, max)
+    val outlineColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f)
+    val activeColor = MaterialTheme.colorScheme.primary
+
+    BoxWithConstraints(
+        modifier = modifier
+            .clip(RoundedCornerShape(26.dp))
+            .pointerInput(min, max) {
+                fun yToValue(y: Float): Float {
+                    val h = size.height.toFloat().coerceAtLeast(1f)
+                    val frac = (1f - (y / h)).coerceIn(0f, 1f)
+                    return (min + frac * range).coerceIn(min, max)
+                }
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        onValueChange(yToValue(offset.y))
+                    },
+                    onDrag = { change, _ ->
+                        onValueChange(yToValue(change.position.y))
+                        change.consume()
+                    }
+                )
+            }
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 10.dp)
+        ) {
+            val trackX = size.width / 2f
+            val startY = 0f
+            val endY = size.height
+            val fraction = ((coerced - min) / range).coerceIn(0f, 1f)
+            val thumbY = endY - (endY - startY) * fraction
+            val trackW = 4.dp.toPx()
+
+            drawLine(
+                color = outlineColor,
+                start = Offset(trackX, startY),
+                end = Offset(trackX, endY),
+                strokeWidth = trackW,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = activeColor,
+                start = Offset(trackX, endY),
+                end = Offset(trackX, thumbY),
+                strokeWidth = trackW,
+                cap = StrokeCap.Round
+            )
+            drawCircle(
+                color = activeColor,
+                radius = 9.dp.toPx(),
+                center = Offset(trackX, thumbY)
+            )
+        }
+    }
+}
+
+private fun Offset.isInsideBoard(left: Float, top: Float, width: Float, height: Float): Boolean {
+    return x >= left && x <= left + width && y >= top && y <= top + height
+}
+
+private fun Offset.rotateAround(center: Offset, degrees: Float): Offset {
+    if (degrees == 0f) return this
+    val rad = Math.toRadians(degrees.toDouble())
+    val c = cos(rad).toFloat()
+    val s = sin(rad).toFloat()
+    val dx = x - center.x
+    val dy = y - center.y
+    return Offset(
+        x = center.x + dx * c - dy * s,
+        y = center.y + dx * s + dy * c
+    )
+}
+
+private fun Offset.toDrawPoint(left: Float, top: Float, width: Float, height: Float): DrawPoint {
+    return DrawPoint(
+        x = ((x - left) / width).coerceIn(0f, 1f),
+        y = ((y - top) / height).coerceIn(0f, 1f)
+    )
+}
+
+private fun DrawPoint.toOffset(left: Float, top: Float, width: Float, height: Float): Offset {
+    return Offset(
+        x = left + x * width,
+        y = top + y * height
+    )
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStrokeOnBoard(
+    points: List<DrawPoint>,
+    color: Color,
+    width: Float,
+    left: Float,
+    top: Float,
+    widthPx: Float,
+    heightPx: Float
+) {
+    if (points.size < 2) return
+    for (i in 1 until points.size) {
+        drawLine(
+            color = color,
+            start = points[i - 1].toOffset(left, top, widthPx, heightPx),
+            end = points[i].toOffset(left, top, widthPx, heightPx),
+            strokeWidth = width,
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+@Composable
+fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
+    val context = LocalContext.current
+    val scroll = rememberScrollState()
+    val drawerModeOptions = listOf(
+        UserPrefs.DRAWER_MODE_HIDDEN to "隐藏式抽屉",
+        UserPrefs.DRAWER_MODE_PERMANENT to "常驻可折叠"
+    )
+    val inputTypeOptions = listOf(
+        AudioRoutePreference.INPUT_AUTO to "自动",
+        AudioRoutePreference.INPUT_BUILTIN_MIC to "内置麦克风/话筒",
+        AudioRoutePreference.INPUT_USB to "USB 麦克风",
+        AudioRoutePreference.INPUT_BLUETOOTH to "蓝牙麦克风",
+        AudioRoutePreference.INPUT_WIRED to "有线麦克风"
+    )
+    val outputTypeOptions = listOf(
+        AudioRoutePreference.OUTPUT_AUTO to "自动",
+        AudioRoutePreference.OUTPUT_SPEAKER to "扬声器",
+        AudioRoutePreference.OUTPUT_EARPIECE to "听筒",
+        AudioRoutePreference.OUTPUT_BLUETOOTH to "蓝牙音频",
+        AudioRoutePreference.OUTPUT_USB to "USB 音频",
+        AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
+    )
+    var drawerModeExpanded by remember { mutableStateOf(false) }
+    var inputTypeExpanded by remember { mutableStateOf(false) }
+    var outputTypeExpanded by remember { mutableStateOf(false) }
+    val asrPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.importAsr(uri) else toast(context, "未选择文件")
+    }
+    val drawingDirPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            viewModel.setDrawingSavePathFromTreeUri(uri)
+        } else {
+            toast(context, "未选择目录")
+        }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+            .verticalScroll(scroll),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Spacer(Modifier.height(UiTokens.PageTopBlank))
+
+        Md2StaggeredFloatIn(index = 0) {
+            Md2SettingsCard(title = "模型与资源") {
+                Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
+                Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
+                Md2Button(onClick = { asrPicker.launch("*/*") }) {
+                    Text("导入 ASR 模型")
+                }
+            }
+        }
+
+        Md2StaggeredFloatIn(index = 1) {
+            Md2SettingsCard(title = "设备监控") {
+                val realtimeInputLevel = viewModel.realtimeInputLevel
+                Text("输入音量", fontWeight = FontWeight.Bold)
+                LinearProgressIndicator(
+                    progress = realtimeInputLevel.coerceIn(0f, 1f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp, bottom = 8.dp)
+                )
+                Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        Md2StaggeredFloatIn(index = 2) {
+            Md2SettingsCard(title = "系统与布局") {
+                Text("横屏抽屉模式", fontWeight = FontWeight.Bold)
+                Box {
+                    Md2OutlinedButton(onClick = { drawerModeExpanded = true }) {
+                        val label = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second
+                            ?: drawerModeOptions.first().second
+                        Text(label)
+                    }
+                    DropdownMenu(
+                        expanded = drawerModeExpanded,
+                        onDismissRequest = { drawerModeExpanded = false }
+                    ) {
+                        drawerModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    drawerModeExpanded = false
+                                    viewModel.setLandscapeDrawerMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                }
+                Text("竖屏始终为隐藏式；该选项仅影响横屏布局。", style = MaterialTheme.typography.bodySmall)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.solidTopBar,
+                        onCheckedChange = { viewModel.setSolidTopBar(it) }
+                    )
+                    Text("使用纯色顶栏")
+                }
+                Text("开启后顶栏与状态栏颜色改为卡片同款自适应配色。", style = MaterialTheme.typography.bodySmall)
+
+                Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
+                Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2OutlinedButton(onClick = {
+                        drawingDirPicker.launch(null)
+                    }) {
+                        Text("选择目录")
+                    }
+                    Md2TextButton(onClick = {
+                        val def = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+                        viewModel.setDrawingSaveRelativePath(def)
+                    }) {
+                        Text("恢复默认")
+                    }
+                }
+                Text("通过系统文件管理器选择目录（建议内部存储）", style = MaterialTheme.typography.bodySmall)
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.keepAlive,
+                        onCheckedChange = { viewModel.setKeepAlive(it) }
+                    )
+                    Text("保持后台运行")
+                }
+                Text("开启后启用前台服务，锁屏/息屏也持续工作", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        Md2StaggeredFloatIn(index = 3) {
+            Md2SettingsCard(title = "识别与转换") {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Md2Switch(
+                    checked = state.asrSendToQuickSubtitle,
+                    onCheckedChange = { viewModel.setAsrSendToQuickSubtitle(it) }
+                )
+                Text("识别结果自动上屏大字幕")
+            }
+            Text("开启后：语音识别结果会自动更新便捷字幕主文本", style = MaterialTheme.typography.bodySmall)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Md2Switch(
+                    checked = state.muteWhilePlaying,
+                    onCheckedChange = { viewModel.setMuteWhilePlaying(it) }
+                )
+                Text("播放时屏蔽录音")
+            }
+            Text("开启后播放中不进行识别", style = MaterialTheme.typography.bodySmall)
+            Text("屏蔽结束延迟：${String.format("%.1f", state.muteWhilePlayingDelaySec)}s", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = state.muteWhilePlayingDelaySec,
+                onValueChange = { viewModel.setMuteWhilePlayingDelay(it) },
+                valueRange = 0f..5f
+            )
+            Text("语音识别最低音量阈值：${state.minVolumePercent}%", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = state.minVolumePercent.toFloat(),
+                onValueChange = { viewModel.setMinVolumePercent(it.toInt()) },
+                valueRange = 0f..100f
+            )
+            Text("播放音量增益：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
+            Slider(
+                value = state.playbackGainPercent.toFloat(),
+                onValueChange = { viewModel.setPlaybackGainPercent(it.toInt()) },
+                valueRange = 0f..1000f
+            )
+            Text("100% 为原始音量，>100% 为倍率增益", style = MaterialTheme.typography.bodySmall)
+            val numberReplaceOptions = listOf("不替换", "数字替换为中文字符", "数字替换为中文表达")
+            var numberReplaceExpanded by remember { mutableStateOf(false) }
+            Text("数字替换", fontWeight = FontWeight.Bold)
+            Box {
+                Md2OutlinedButton(onClick = { numberReplaceExpanded = true }) {
+                    val label = numberReplaceOptions.getOrElse(state.numberReplaceMode) { numberReplaceOptions[0] }
+                    Text(label)
+                }
+                DropdownMenu(
+                    expanded = numberReplaceExpanded,
+                    onDismissRequest = { numberReplaceExpanded = false }
+                ) {
+                    numberReplaceOptions.forEachIndexed { idx, label ->
+                        M2DropdownMenuItem(
+                            onClick = {
+                                numberReplaceExpanded = false
+                                viewModel.setNumberReplaceMode(idx)
+                            }
+                        ) { Text(label) }
+                    }
+                }
+            }
+            Text("示例：2000 → 二零零零 / 两千", style = MaterialTheme.typography.bodySmall)
+        }
+        }
+
+        Md2StaggeredFloatIn(index = 4) {
+            Md2SettingsCard(title = "回声与降噪") {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Md2Switch(
+                    checked = state.echoSuppression,
+                    onCheckedChange = { viewModel.setEchoSuppression(it) }
+                )
+                Text("回声抑制(VOICE_COMMUNICATION)")
+            }
+            Text("开启后使用通话录音源，可能有回声抑制/降噪效果", style = MaterialTheme.typography.bodySmall)
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Md2Switch(
+                    checked = state.communicationMode,
+                    onCheckedChange = { viewModel.setCommunicationMode(it) }
+                )
+                Text("通话模式降噪(MODE_IN_COMMUNICATION)")
+            }
+            Text("开启后切换系统通话模式并统一播放属性", style = MaterialTheme.typography.bodySmall)
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Md2Switch(
+                    checked = state.aec3Enabled,
+                    onCheckedChange = { viewModel.setAec3Enabled(it) }
+                )
+                Text("AEC3 软件回声消除")
+            }
+            Text("AEC3 状态：${state.aec3Status}", style = MaterialTheme.typography.bodySmall)
+            Text(state.aec3Diag, style = MaterialTheme.typography.bodySmall)
+            Text("需渲染参考音频，可能与系统AEC冲突", style = MaterialTheme.typography.bodySmall)
+        }
+        }
+
+        Md2StaggeredFloatIn(index = 5) {
+            Md2SettingsCard(title = "设备路由") {
+            Text("优先选择的音频输入设备类型", style = MaterialTheme.typography.bodySmall)
+            Box {
+                Md2OutlinedButton(onClick = { inputTypeExpanded = true }) {
+                    val label = inputTypeOptions.firstOrNull { it.first == state.preferredInputType }?.second
+                        ?: inputTypeOptions.first().second
+                    Text(label)
+                }
+                DropdownMenu(
+                    expanded = inputTypeExpanded,
+                    onDismissRequest = { inputTypeExpanded = false }
+                ) {
+                    inputTypeOptions.forEach { (value, label) ->
+                        M2DropdownMenuItem(
+                            onClick = {
+                                inputTypeExpanded = false
+                                viewModel.setPreferredInputType(value)
+                            }
+                        ) { Text(label) }
+                    }
+                }
+            }
+            Text("适配内置、USB、蓝牙、有线等输入设备", style = MaterialTheme.typography.bodySmall)
+
+            Text("优先使用的音频输出类型", style = MaterialTheme.typography.bodySmall)
+            Box {
+                Md2OutlinedButton(onClick = { outputTypeExpanded = true }) {
+                    val label = outputTypeOptions.firstOrNull { it.first == state.preferredOutputType }?.second
+                        ?: outputTypeOptions.first().second
+                    Text(label)
+                }
+                DropdownMenu(
+                    expanded = outputTypeExpanded,
+                    onDismissRequest = { outputTypeExpanded = false }
+                ) {
+                    outputTypeOptions.forEach { (value, label) ->
+                        M2DropdownMenuItem(
+                            onClick = {
+                                outputTypeExpanded = false
+                                viewModel.setPreferredOutputType(value)
+                            }
+                        ) { Text(label) }
+                    }
+                }
+            }
+            Text("适配扬声器、听筒、蓝牙、USB、有线等输出设备", style = MaterialTheme.typography.bodySmall)
+        }
+        }
+
+        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+}
+
+@Composable
+private fun Md2SettingsCard(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            content = {
+                Md2CardTitleText(title)
+                content()
+            }
+        )
+    }
+}
+
+@Composable
+fun LogScreen(
+    onTopBarActionsChange: (LogTopBarActions?) -> Unit
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var logs by remember { mutableStateOf<List<File>>(emptyList()) }
+    var selected by remember { mutableStateOf<File?>(null) }
+    var content by remember { mutableStateOf("加载中...") }
+    var expanded by remember { mutableStateOf(false) }
+    val scroll = rememberScrollState()
+    val onTopBarActionsChangeState = rememberUpdatedState(onTopBarActionsChange)
+
+    fun refreshLogs() {
+        logs = AppLogger.listLogFiles(context)
+        if (selected == null || selected !in logs) {
+            selected = logs.firstOrNull()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshLogs()
+    }
+
+    LaunchedEffect(selected) {
+        val file = selected
+        content = if (file == null) {
+            "暂无日志"
+        } else {
+            withContext(Dispatchers.IO) {
+                AppLogger.readLog(file)
+            }.ifEmpty { "日志为空" }
+        }
+    }
+
+    SideEffect {
+        onTopBarActionsChangeState.value(
+            LogTopBarActions(
+                onRefresh = { refreshLogs() },
+                onCopy = {
+                    clipboard.setText(AnnotatedString(content))
+                    toast(context, "已复制")
+                },
+                onShare = {
+                    val file = selected
+                    if (file != null) {
+                        shareLogFile(context, file)
+                    } else {
+                        toast(context, "暂无可分享日志")
+                    }
+                },
+                canCopy = content.isNotBlank(),
+                canShare = selected != null
+            )
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            onTopBarActionsChangeState.value(null)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Spacer(Modifier.height(UiTokens.PageTopBlank))
+        Md2StaggeredFloatIn(index = 0) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box {
+                    Md2OutlinedButton(onClick = { expanded = true }) {
+                        Text(selected?.name ?: "选择日志")
+                    }
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        logs.forEach { file ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    selected = file
+                                    expanded = false
+                                }
+                            ) { Text(file.name) }
+                        }
+                    }
+                }
+            }
+        }
+        Md2StaggeredFloatIn(index = 1) {
+            if (selected != null) {
+                Text("路径：${selected!!.absolutePath}", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        Divider()
+        Md2StaggeredFloatIn(
+            index = 2,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) {
+            SelectionContainer(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scroll)
+            ) {
+                Text(
+                    content,
+                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+}
+
+private fun toast(context: android.content.Context, msg: String) {
+    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+}
+
+private fun shareLogFile(context: Context, file: File) {
+    try {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "分享日志"))
+    } catch (e: Exception) {
+        toast(context, "分享失败: ${e.message}")
+    }
+}

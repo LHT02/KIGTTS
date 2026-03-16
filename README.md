@@ -47,3 +47,8 @@
 - **voicepack 规范**：导出包内含 `manifest.json` + `tts/model.onnx(.json)` + `tts/phonemizer.dict`。
 
 更多细节与扩展请见各子目录内说明。
+
+## 许可证
+- 本项目源码采用 **GNU GPL v3.0** 进行发布（见根目录 `LICENSE` 与 `COPYING`）。
+- 第三方依赖许可证清单见 `THIRD_PARTY_LICENSES.md`。
+- 发布产物会尽量附带许可证文件；若你二次分发，请同时保留许可证与版权声明。

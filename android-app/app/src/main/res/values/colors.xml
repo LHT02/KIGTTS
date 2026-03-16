@@ -1,0 +1,5 @@
+<resources>
+    <color name="ic_launcher_background">#038387</color>
+    <color name="splash_background_day">#FFFFFFFF</color>
+    <color name="splash_background_night">#1D2023</color>
+</resources>

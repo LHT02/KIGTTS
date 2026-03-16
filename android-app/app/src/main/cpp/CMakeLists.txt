@@ -39,6 +39,9 @@ ExternalProject_Add(
         -DUSE_LIBPCAUDIO=OFF
         -DUSE_KLATT=OFF
         -DUSE_SPEECHPLAYER=OFF
+        -DBUILD_TESTING=OFF
+        -DENABLE_TESTS=OFF
+        -DESPEAK_NG_BUILD_TESTS=OFF
         -DEXTRA_cmn=ON
         -DEXTRA_ru=ON
         -DCMAKE_C_FLAGS=-D_FILE_OFFSET_BITS=64

@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 object AppLogger {
     private const val TAG = "KGTTs"
+    private const val MAX_LOG_FILES = 10
     private val started = AtomicBoolean(false)
     private var logFile: File? = null
 
@@ -29,6 +30,7 @@ object AppLogger {
             }
         }
         logFile = current
+        pruneOldLogs(dir, current, MAX_LOG_FILES)
         i("logger.init path=${logFile?.absolutePath ?: "unknown"}")
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
@@ -97,6 +99,24 @@ object AppLogger {
         try {
             file.appendText(builder.toString())
         } catch (_: Exception) {
+        }
+    }
+
+    private fun pruneOldLogs(dir: File, current: File, keepCount: Int) {
+        val logs = dir.listFiles { f -> f.isFile && f.extension.lowercase() == "log" }
+            ?.sortedByDescending { it.lastModified() }
+            ?: return
+        var kept = 0
+        for (file in logs) {
+            if (file.absolutePath == current.absolutePath) {
+                kept++
+                continue
+            }
+            if (kept < keepCount) {
+                kept++
+                continue
+            }
+            runCatching { file.delete() }
         }
     }
 }

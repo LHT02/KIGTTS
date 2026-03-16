@@ -20,3 +20,7 @@ cd android-app
 ## 回声/复读
 - 采用 barge-in：播放时提高端点阈值，播放器独立线程，仍持续录音。
 - UI 提示使用耳机；若设备支持，可在后续版本接入 AEC。
+
+## 许可证
+- 本目录代码随仓库整体按 **GNU GPL v3.0** 发布（见仓库根目录 `LICENSE`）。
+- 第三方许可证见仓库根目录 `THIRD_PARTY_LICENSES.md`。

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background_day" />
+    <item
+        android:width="280dp"
+        android:height="70dp"
+        android:drawable="@drawable/logo_black"
+        android:gravity="center" />
+</layer-list>

@@ -26,3 +26,7 @@ python app.py
 
 ## 产出
 - `project_root/export/voicepack.zip`：包含 `manifest.json`、`tts/model.onnx`、`tts/model.onnx.json`、`tts/phonemizer.dict`、可选 `preview.wav`。
+
+## 许可证
+- 本目录代码随仓库整体按 **GNU GPL v3.0** 发布（见仓库根目录 `LICENSE`）。
+- 第三方许可证见仓库根目录 `THIRD_PARTY_LICENSES.md`。

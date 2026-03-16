@@ -2,6 +2,7 @@
   "name": "kgtts-trainer",
   "private": true,
   "version": "0.0.0",
+  "license": "GPL-3.0-only",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -27,6 +28,22 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "../COPYING",
+        "to": "COPYING"
+      },
+      {
+        "from": "../NOTICE",
+        "to": "NOTICE"
+      },
+      {
+        "from": "../THIRD_PARTY_LICENSES.md",
+        "to": "THIRD_PARTY_LICENSES.md"
+      },
       {
         "from": "../pc_trainer/piper_env",
         "to": "piper_env"
