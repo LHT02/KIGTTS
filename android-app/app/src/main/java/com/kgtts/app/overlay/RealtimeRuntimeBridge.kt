@@ -5,19 +5,30 @@ import java.util.concurrent.CopyOnWriteArraySet
 object RealtimeRuntimeBridge {
     const val APP_OWNER_TAG = "app"
 
+    enum class PttCommitAction {
+        SendToSubtitle,
+        SendToInput,
+        Cancel
+    }
+
     data class Snapshot(
         val running: Boolean = false,
         val latestRecognizedText: String = "",
         val inputLevel: Float = 0f,
         val playbackProgress: Float = 0f,
         val inputDeviceLabel: String = "",
-        val outputDeviceLabel: String = ""
+        val outputDeviceLabel: String = "",
+        val pushToTalkPressed: Boolean = false,
+        val pushToTalkStreamingText: String = ""
     )
 
     interface AppDelegate {
         fun startRealtime()
         fun stopRealtime()
         fun submitQuickSubtitle(target: String, text: String)
+        fun beginPushToTalkSession()
+        fun setPushToTalkPressed(pressed: Boolean)
+        fun commitPushToTalkSession(action: PttCommitAction)
     }
 
     interface Listener {

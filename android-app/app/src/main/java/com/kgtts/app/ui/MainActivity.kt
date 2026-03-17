@@ -5667,6 +5667,26 @@ fun AppScaffold(viewModel: MainViewModel) {
             override fun submitQuickSubtitle(target: String, text: String) {
                 viewModel.applyExternalQuickSubtitleRequest(target, text)
             }
+
+            override fun beginPushToTalkSession() {
+                viewModel.beginPushToTalkSession()
+            }
+
+            override fun setPushToTalkPressed(pressed: Boolean) {
+                viewModel.setPushToTalkPressed(pressed)
+            }
+
+            override fun commitPushToTalkSession(action: RealtimeRuntimeBridge.PttCommitAction) {
+                val mapped = when (action) {
+                    RealtimeRuntimeBridge.PttCommitAction.SendToSubtitle ->
+                        PttConfirmReleaseAction.SendToSubtitle
+                    RealtimeRuntimeBridge.PttCommitAction.SendToInput ->
+                        PttConfirmReleaseAction.SendToInput
+                    RealtimeRuntimeBridge.PttCommitAction.Cancel ->
+                        PttConfirmReleaseAction.Cancel
+                }
+                viewModel.commitPushToTalkSession(mapped)
+            }
         }
         RealtimeRuntimeBridge.registerAppDelegate(delegate)
         onDispose {
@@ -5681,7 +5701,9 @@ fun AppScaffold(viewModel: MainViewModel) {
                 inputLevel = topMicLevel.coerceIn(0f, 1f),
                 playbackProgress = topPlaybackProgress.coerceIn(0f, 1f),
                 inputDeviceLabel = state.inputDeviceLabel,
-                outputDeviceLabel = state.outputDeviceLabel
+                outputDeviceLabel = state.outputDeviceLabel,
+                pushToTalkPressed = state.pushToTalkPressed,
+                pushToTalkStreamingText = state.pushToTalkStreamingText
             )
         )
     }

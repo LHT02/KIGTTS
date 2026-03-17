@@ -1,6 +1,5 @@
 package com.kgtts.app.overlay
 
-import android.Manifest
 import android.animation.LayoutTransition
 import android.animation.ValueAnimator
 import android.annotation.SuppressLint
@@ -58,8 +57,6 @@ import androidx.viewpager2.widget.ViewPager2
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.kgtts.app.R
-import com.kgtts.app.audio.RealtimeController
-import com.kgtts.app.data.ModelRepository
 import com.kgtts.app.data.UserPrefs
 import com.kgtts.app.overlay.RealtimeRuntimeBridge
 import com.kgtts.app.ui.QuickCard
@@ -74,7 +71,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -93,7 +89,6 @@ class FloatingOverlayService : Service() {
     private val fabIdleDockDelayMs = 3000L
     private val fabIdleDockAlpha = 0.56f
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val repository by lazy { ModelRepository(this) }
     private val windowManager by lazy { getSystemService(WindowManager::class.java) }
     private val iconTypeface: Typeface? by lazy {
         ResourcesCompat.getFont(this, R.font.material_symbols_sharp)
@@ -101,7 +96,6 @@ class FloatingOverlayService : Service() {
 
     private var settings = UserPrefs.AppSettings()
     private var settingsJob: Job? = null
-    private var controller: RealtimeController? = null
 
     private var fabRoot: LinearLayout? = null
     private var fabParams: WindowManager.LayoutParams? = null
@@ -186,8 +180,6 @@ class FloatingOverlayService : Service() {
     private var leftActionButton: FrameLayout? = null
     private var rightActionButton: FrameLayout? = null
 
-    private var currentAsrDir: File? = null
-    private var currentVoiceDir: File? = null
     private var running = false
     private var pttPressed = false
     private var pttTemporaryStart = false
@@ -219,6 +211,9 @@ class FloatingOverlayService : Service() {
             override fun onAppRuntimeChanged() {
                 scope.launch {
                     updateFabUi()
+                    if (pttPressed && confirmOverlay?.visibility == View.VISIBLE) {
+                        updateConfirmVisuals(currentDragAction)
+                    }
                 }
             }
         }
@@ -753,14 +748,11 @@ class FloatingOverlayService : Service() {
             ACTION_REFRESH -> {
                 scope.launch {
                     settings = UserPrefs.getSettings(this@FloatingOverlayService)
-                    currentAsrDir = null
-                    currentVoiceDir = null
                     loadQuickSubtitleConfig()
                     loadOverlayShortcuts()
                     loadOverlayLauncherLayout()
                     restoreFabPositionForCurrentOrientation(allowOppositeConversion = true)
                     loadLaunchableApps()
-                    applySettingsToController(settings)
                     refreshPanelUi()
                     refreshQuickSubtitleUi()
                     updateFabUi()
@@ -778,14 +770,6 @@ class FloatingOverlayService : Service() {
         RealtimeRuntimeBridge.removeListener(runtimeBridgeListener)
         hideConfirmOverlay()
         removeWindows()
-        val activeController = controller
-        controller = null
-        runCatching {
-            runBlocking(Dispatchers.IO) {
-                activeController?.stop()
-            }
-        }
-        RealtimeOwnerGate.release(OWNER_TAG)
         scope.cancel()
         super.onDestroy()
     }
@@ -824,7 +808,6 @@ class FloatingOverlayService : Service() {
                     stopSelf()
                     return@collectLatest
                 }
-                applySettingsToController(next)
                 refreshQuickSubtitleUi()
                 refreshStatusDetailUi()
                 updateFabUi()
@@ -2172,8 +2155,9 @@ class FloatingOverlayService : Service() {
         val latestText = effectiveLatestRecognizedText()
         val inputLevel = effectiveInputLevel()
         val playbackProgress = effectivePlaybackProgress()
+        val pttPressedState = effectivePttPressedState()
         val icon = when {
-            settings.pushToTalkMode && pttPressed -> "settings_voice"
+            settings.pushToTalkMode && pttPressedState -> "settings_voice"
             settings.pushToTalkMode -> "mic"
             runningState -> "stop"
             else -> "play_arrow"
@@ -2184,7 +2168,7 @@ class FloatingOverlayService : Service() {
         bubbleTextView?.text = latestText
         bubbleRow?.visibility = View.GONE
         val hasLatestResult = latestText.isNotBlank()
-        val topMicIcon = if (settings.pushToTalkMode && pttPressed) "settings_voice" else "mic"
+        val topMicIcon = if (settings.pushToTalkMode && pttPressedState) "settings_voice" else "mic"
         panelStatusTextView?.text = latestText
         panelStatusTextView?.visibility = if (hasLatestResult) View.VISIBLE else View.INVISIBLE
         panelStatusLogoView?.visibility = if (hasLatestResult) View.GONE else View.VISIBLE
@@ -2192,7 +2176,7 @@ class FloatingOverlayService : Service() {
         panelStatusEqIconView?.text = "graphic_eq"
         panelStatusMicProgressView?.progress = (inputLevel * 1000f).roundToInt().coerceIn(0, 1000)
         panelStatusEqProgressView?.progress = (playbackProgress * 1000f).roundToInt().coerceIn(0, 1000)
-        panelStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressed) 1f else 0.68f
+        panelStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressedState) 1f else 0.68f
         panelStatusEqContainer?.alpha = if (runningState || hasLatestResult) 1f else 0.68f
         miniStatusTextView?.text = latestText
         miniStatusTextView?.visibility = if (hasLatestResult) View.VISIBLE else View.INVISIBLE
@@ -2201,13 +2185,13 @@ class FloatingOverlayService : Service() {
         miniStatusEqIconView?.text = "graphic_eq"
         miniStatusMicProgressView?.progress = (inputLevel * 1000f).roundToInt().coerceIn(0, 1000)
         miniStatusEqProgressView?.progress = (playbackProgress * 1000f).roundToInt().coerceIn(0, 1000)
-        miniStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressed) 1f else 0.68f
+        miniStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressedState) 1f else 0.68f
         miniStatusEqContainer?.alpha = if (runningState || hasLatestResult) 1f else 0.68f
         refreshStatusDetailUi()
         animateFabVisibility(!(miniVisible || panelVisible))
-        fabButton?.alpha = if (pttPressed) 0.94f else 1f
-        panelActionFab?.alpha = if (pttPressed) 0.94f else 1f
-        miniActionFab?.alpha = if (pttPressed) 0.94f else 1f
+        fabButton?.alpha = if (pttPressedState) 0.94f else 1f
+        panelActionFab?.alpha = if (pttPressedState) 0.94f else 1f
+        miniActionFab?.alpha = if (pttPressedState) 0.94f else 1f
         if (fabIdleDocked) {
             bubbleRow?.visibility = View.GONE
         }
@@ -2256,194 +2240,71 @@ class FloatingOverlayService : Service() {
             OverlayReleaseAction.SendToInput -> "松手打开快捷字幕并输入"
             OverlayReleaseAction.Cancel -> "松手取消发送"
         }
-        confirmTextView?.text = pttStreamingText.ifBlank { prompt }
+        confirmTextView?.text = effectivePttStreamingText().ifBlank { prompt }
         leftActionButton?.alpha = if (action == OverlayReleaseAction.SendToInput) 1f else 0.58f
         rightActionButton?.alpha = if (action == OverlayReleaseAction.Cancel) 1f else 0.58f
         activeConfirmFab()?.alpha = if (action == OverlayReleaseAction.SendToSubtitle) 1f else 0.84f
     }
 
-    private fun ensureController(): RealtimeController {
-        controller?.let { return it }
-        val created = RealtimeController(
-            context = this,
-            scope = scope,
-            onResult = { _, text ->
-                val normalized = text.trim()
-                if (normalized.isEmpty()) return@RealtimeController
-                if (pttPressed) appendPttFinalTranscript(normalized)
-                else {
-                    latestRecognizedText = normalized
-                    updateFabUi()
-                }
-            },
-            onStreamingResult = { text ->
-                if (!pttPressed) return@RealtimeController
-                val normalized = text.trim()
-                if (normalized.isNotEmpty()) updatePttPreviewTranscript(normalized)
-            },
-            onProgress = { current, total ->
-                overlayPlaybackProgress = if (total > 0) {
-                    (current.toFloat() / total.toFloat()).coerceIn(0f, 1f)
-                } else {
-                    0f
-                }
-                refreshStatusDetailUi()
-            },
-            onLevel = { level ->
-                overlayInputLevel = level.coerceIn(0f, 1f)
-                refreshStatusDetailUi()
-            },
-            onInputDevice = { label ->
-                overlayInputDeviceLabel = label.ifBlank { preferredInputTypeLabel(settings.preferredInputType) }
-                refreshStatusDetailUi()
-            },
-            onOutputDevice = { label ->
-                overlayOutputDeviceLabel = label.ifBlank { preferredOutputTypeLabel(settings.preferredOutputType) }
-                refreshStatusDetailUi()
-            },
-            onAec3Status = { _ -> },
-            onAec3Diag = { _ -> },
-            onSpeakerVerify = { _, _ -> },
-            onError = { message ->
-                latestRecognizedText = message
-                updateFabUi()
-            },
-            initialSuppressWhilePlaying = settings.muteWhilePlaying,
-            initialUseVoiceCommunication = settings.echoSuppression,
-            initialCommunicationMode = settings.communicationMode,
-            initialMinVolumePercent = settings.minVolumePercent,
-            initialPlaybackGainPercent = settings.playbackGainPercent,
-            initialPiperNoiseScale = settings.piperNoiseScale,
-            initialPiperLengthScale = settings.piperLengthScale,
-            initialPiperNoiseW = 0.8f,
-            initialPiperSentenceSilenceSec = settings.piperSentenceSilence,
-            initialSuppressDelaySec = settings.muteWhilePlayingDelaySec,
-            initialPreferredInputType = settings.preferredInputType,
-            initialPreferredOutputType = settings.preferredOutputType,
-            initialUseAec3 = settings.aec3Enabled,
-            initialNumberReplaceMode = settings.numberReplaceMode,
-            initialAllowSystemAecWithAec3 = true,
-            initialSpeakerVerifyEnabled = settings.speakerVerifyEnabled,
-            initialSpeakerVerifyThreshold = settings.speakerVerifyThreshold,
-            initialSpeakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv)
-                .take(3)
-                .map { it.vector }
-        )
-        controller = created
-        return created
-    }
-
-    private fun applySettingsToController(next: UserPrefs.AppSettings) {
-        controller?.setSuppressWhilePlaying(next.muteWhilePlaying)
-        controller?.setSuppressDelaySec(next.muteWhilePlayingDelaySec)
-        controller?.setMinVolumePercent(next.minVolumePercent)
-        controller?.setPlaybackGainPercent(next.playbackGainPercent)
-        controller?.setPiperNoiseScale(next.piperNoiseScale)
-        controller?.setPiperLengthScale(next.piperLengthScale)
-        controller?.setPiperNoiseW(0.8f)
-        controller?.setPiperSentenceSilenceSec(next.piperSentenceSilence)
-        controller?.setUseAec3(next.aec3Enabled)
-        controller?.setUseVoiceCommunication(next.echoSuppression)
-        controller?.setCommunicationMode(next.communicationMode)
-        controller?.setPreferredInputType(next.preferredInputType)
-        controller?.setPreferredOutputType(next.preferredOutputType)
-        controller?.setNumberReplaceMode(next.numberReplaceMode)
-        controller?.setSpeakerVerifyEnabled(next.speakerVerifyEnabled)
-        controller?.setSpeakerVerifyThreshold(next.speakerVerifyThreshold)
-        controller?.setSpeakerProfiles(
-            UserPrefs.parseSpeakerVerifyProfiles(next.speakerVerifyProfileCsv)
-                .take(3)
-                .map { it.vector }
-        )
-        controller?.setPushToTalkStreamingEnabled(next.pushToTalkMode)
-        controller?.setSuppressAsrAutoSpeak(next.pushToTalkMode && next.pushToTalkConfirmInput)
-    }
-
-    private suspend fun ensureModelPaths(): Boolean {
-        val asr = withContext(Dispatchers.IO) {
-            currentAsrDir?.takeIf { it.exists() } ?: repository.ensureBundledAsr()
+    private fun mapCommitAction(action: OverlayReleaseAction): RealtimeRuntimeBridge.PttCommitAction =
+        when (action) {
+            OverlayReleaseAction.SendToSubtitle -> RealtimeRuntimeBridge.PttCommitAction.SendToSubtitle
+            OverlayReleaseAction.SendToInput -> RealtimeRuntimeBridge.PttCommitAction.SendToInput
+            OverlayReleaseAction.Cancel -> RealtimeRuntimeBridge.PttCommitAction.Cancel
         }
-        val voice = withContext(Dispatchers.IO) {
-            val lastVoice = UserPrefs.getLastVoiceName(this@FloatingOverlayService)
-            val resolved = lastVoice?.let { repository.resolveVoicePack(it) }
-            resolved ?: repository.listVoicePacks().firstOrNull()?.dir
-        }
-        currentAsrDir = asr
-        currentVoiceDir = voice
-        return asr != null && voice != null
-    }
-
-    private fun mergePttTranscript(existing: String, incoming: String): String {
-        val a = existing.trim()
-        val b = incoming.trim()
-        if (a.isEmpty()) return b
-        if (b.isEmpty()) return a
-        if (a == b) return a
-        if (b.startsWith(a)) return b
-        if (a.startsWith(b)) return a
-        if (a.contains(b)) return a
-        if (b.contains(a)) return b
-        val overlapMax = min(a.length, b.length)
-        for (k in overlapMax downTo 1) {
-            if (a.regionMatches(a.length - k, b, 0, k, ignoreCase = false)) {
-                return (a + b.substring(k)).trim()
-            }
-        }
-        return (a + b).replace(Regex("\\s+"), "").trim()
-    }
-
-    private fun appendPttFinalTranscript(text: String) {
-        val merged = mergePttTranscript(pttSessionLastText, text)
-        pttSessionLastText = merged
-        if (merged != pttStreamingText) {
-            pttStreamingText = merged
-            updateConfirmVisuals(currentDragAction)
-        }
-    }
-
-    private fun updatePttPreviewTranscript(text: String) {
-        val preview = mergePttTranscript(pttSessionLastText, text)
-        if (preview != pttStreamingText) {
-            pttStreamingText = preview
-            updateConfirmVisuals(currentDragAction)
-        }
-    }
 
     private fun beginPttSession() {
         pttPressed = true
-        pttTemporaryStart = !running
+        pttTemporaryStart = !effectiveRunningState()
         pttSessionLastText = ""
         pttStreamingText = ""
         currentDragAction = OverlayReleaseAction.SendToSubtitle
         updateFabUi()
         if (settings.pushToTalkConfirmInput) showConfirmOverlay()
         scope.launch {
-            if (pttTemporaryStart) startListeningInternal(true)
+            val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
+            if (appDelegate == null) {
+                pttPressed = false
+                pttTemporaryStart = false
+                hideConfirmOverlay()
+                latestRecognizedText = "请先打开主界面"
+                updateFabUi()
+                return@launch
+            }
+            if (pttTemporaryStart) appDelegate.startRealtime()
+            appDelegate.beginPushToTalkSession()
+            appDelegate.setPushToTalkPressed(true)
         }
     }
 
     private fun finishPttSession(action: OverlayReleaseAction) {
-        val text = pttStreamingText.trim().ifBlank { pttSessionLastText.trim() }
+        val text = effectivePttStreamingText().trim()
         val shouldStop = pttTemporaryStart
         pttPressed = false
         pttTemporaryStart = false
         pttSessionLastText = ""
         pttStreamingText = ""
         hideConfirmOverlay()
-        if (shouldStop) scope.launch { stopListeningInternal() }
-        when (action) {
-            OverlayReleaseAction.SendToSubtitle -> {
-                if (text.isNotEmpty()) {
-                    submitQuickSubtitleText(text)
+        scope.launch {
+            val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
+            if (appDelegate != null) {
+                appDelegate.commitPushToTalkSession(mapCommitAction(action))
+                appDelegate.setPushToTalkPressed(false)
+                if (shouldStop) appDelegate.stopRealtime()
+            } else if (text.isNotEmpty()) {
+                when (action) {
+                    OverlayReleaseAction.SendToSubtitle -> {
+                        launchQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, text)
+                    }
+                    OverlayReleaseAction.SendToInput -> {
+                        launchQuickSubtitle(OverlayBridge.TARGET_INPUT, text)
+                    }
+                    OverlayReleaseAction.Cancel -> Unit
                 }
             }
-            OverlayReleaseAction.SendToInput -> {
-                if (text.isNotEmpty()) {
-                    latestRecognizedText = text
-                    launchQuickSubtitle(OverlayBridge.TARGET_INPUT, text)
-                }
-            }
-            OverlayReleaseAction.Cancel -> Unit
+        }
+        if (action == OverlayReleaseAction.SendToInput && text.isNotEmpty()) {
+            launchQuickSubtitle(OverlayBridge.TARGET_OPEN, "")
         }
         updateFabUi()
     }
@@ -2459,76 +2320,39 @@ class FloatingOverlayService : Service() {
         val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
         if (appDelegate != null) {
             appDelegate.submitQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, normalized)
-        } else if (quickSubtitlePlayOnSend) {
-            speakQuickSubtitle(normalized)
+        } else {
+            launchQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, normalized)
         }
     }
 
     private suspend fun startListeningInternal(showFailureInBubble: Boolean): Boolean {
-        if (running) return true
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            latestRecognizedText = "请先授权麦克风"
-            updateFabUi()
-            return false
-        }
-        if (!RealtimeOwnerGate.acquire(OWNER_TAG)) {
-            latestRecognizedText = "麦克风已被软件主界面占用"
-            updateFabUi()
-            return false
-        }
-        if (!ensureModelPaths()) {
-            latestRecognizedText = "请先在软件中准备 ASR 模型和音色包"
-            updateFabUi()
-            RealtimeOwnerGate.release(OWNER_TAG)
-            return false
-        }
-        val asr = currentAsrDir ?: return false
-        val voice = currentVoiceDir ?: return false
-        val activeController = ensureController()
-        applySettingsToController(settings)
-        val started = withContext(Dispatchers.IO) {
-            if (!activeController.loadAsr(asr)) return@withContext false
-            if (!activeController.loadTts(voice)) return@withContext false
-            activeController.startMic()
-        }
-        if (!started) {
-            RealtimeOwnerGate.release(OWNER_TAG)
+        if (effectiveRunningState()) return true
+        val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
+        if (appDelegate == null) {
             if (showFailureInBubble) {
-                latestRecognizedText = "悬浮窗启动失败"
+                latestRecognizedText = "请先打开主界面"
                 updateFabUi()
             }
             return false
         }
+        appDelegate.startRealtime()
         running = true
         updateFabUi()
         return true
     }
 
     private suspend fun stopListeningInternal() {
-        if (running) {
-            controller?.let { active ->
-                withContext(Dispatchers.IO) { active.stopMic() }
-            }
+        val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
+        if (appDelegate != null) {
+            appDelegate.stopRealtime()
         }
         running = false
-        RealtimeOwnerGate.release(OWNER_TAG)
         updateFabUi()
     }
 
     private fun toggleContinuousMode() {
         scope.launch {
-            val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
-            val owner = RealtimeOwnerGate.currentOwner()
-            if (running && owner == OWNER_TAG) {
-                stopListeningInternal()
-            } else if (appDelegate != null) {
-                if (owner == RealtimeRuntimeBridge.APP_OWNER_TAG && RealtimeRuntimeBridge.currentSnapshot().running) {
-                    appDelegate.stopRealtime()
-                } else {
-                    appDelegate.startRealtime()
-                }
-                updateFabUi()
-            } else if (running) {
+            if (effectiveRunningState()) {
                 stopListeningInternal()
             } else {
                 startListeningInternal(true)
@@ -5721,21 +5545,6 @@ class FloatingOverlayService : Service() {
         scrollPanelToPage(targetIndex, animate = true)
     }
 
-    private fun speakQuickSubtitle(text: String) {
-        val normalized = text.trim()
-        if (normalized.isEmpty()) return
-        scope.launch {
-            if (!ensureModelPaths()) return@launch
-            val voice = currentVoiceDir ?: return@launch
-            val activeController = ensureController()
-            applySettingsToController(settings)
-            withContext(Dispatchers.IO) {
-                activeController.loadTts(voice)
-                activeController.enqueueSpeakText(normalized)
-            }
-        }
-    }
-
     private fun defaultQuickSubtitleGroups(): List<QuickSubtitleGroupConfig> = listOf(
         QuickSubtitleGroupConfig(
             id = 1L,
@@ -6059,8 +5868,7 @@ class FloatingOverlayService : Service() {
         View(this).apply { layoutParams = ViewGroup.LayoutParams(width, height) }
 
     private fun usesAppRealtimeBridge(): Boolean =
-        RealtimeOwnerGate.currentOwner() == RealtimeRuntimeBridge.APP_OWNER_TAG &&
-            RealtimeRuntimeBridge.currentAppDelegate() != null
+        RealtimeRuntimeBridge.currentAppDelegate() != null
 
     private fun effectiveRunningState(): Boolean =
         if (usesAppRealtimeBridge()) {
@@ -6074,6 +5882,20 @@ class FloatingOverlayService : Service() {
             RealtimeRuntimeBridge.currentSnapshot().latestRecognizedText.ifBlank { latestRecognizedText }
         } else {
             latestRecognizedText
+        }
+
+    private fun effectivePttStreamingText(): String =
+        if (usesAppRealtimeBridge()) {
+            RealtimeRuntimeBridge.currentSnapshot().pushToTalkStreamingText.ifBlank { pttStreamingText }
+        } else {
+            pttStreamingText
+        }
+
+    private fun effectivePttPressedState(): Boolean =
+        if (usesAppRealtimeBridge()) {
+            pttPressed || RealtimeRuntimeBridge.currentSnapshot().pushToTalkPressed
+        } else {
+            pttPressed
         }
 
     private fun effectiveInputLevel(): Float =
