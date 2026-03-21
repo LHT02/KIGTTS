@@ -345,6 +345,8 @@ data class UiState(
     val solidTopBar: Boolean = true,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val quickCardAutoSaveOnExit: Boolean = false,
+    val useBuiltinFileManager: Boolean = false,
+    val useBuiltinGallery: Boolean = false,
     val asrSendToQuickSubtitle: Boolean = true,
     val pushToTalkMode: Boolean = false,
     val pushToTalkConfirmInputMode: Boolean = false,
@@ -692,6 +694,8 @@ class MainViewModel(
             solidTopBar = settings.solidTopBar,
             drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
             quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
+            useBuiltinFileManager = settings.useBuiltinFileManager,
+            useBuiltinGallery = settings.useBuiltinGallery,
             asrSendToQuickSubtitle = settings.asrSendToQuickSubtitle,
             pushToTalkMode = settings.pushToTalkMode,
             pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
@@ -2103,6 +2107,20 @@ class MainViewModel(
         }
     }
 
+    fun setUseBuiltinFileManager(enabled: Boolean) {
+        uiState = uiState.copy(useBuiltinFileManager = enabled)
+        viewModelScope.launch {
+            UserPrefs.setUseBuiltinFileManager(appContext, enabled)
+        }
+    }
+
+    fun setUseBuiltinGallery(enabled: Boolean) {
+        uiState = uiState.copy(useBuiltinGallery = enabled)
+        viewModelScope.launch {
+            UserPrefs.setUseBuiltinGallery(appContext, enabled)
+        }
+    }
+
     fun setDrawingSavePathFromTreeUri(uri: android.net.Uri) {
         val resolved = drawingRelativePathFromTreeUri(uri)
         if (resolved == null) {
@@ -2955,6 +2973,7 @@ private fun QuickCardMainScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.52f))
                     .padding(horizontal = 18.dp, vertical = 24.dp)
                     .clickable(
                         indication = null,
@@ -3480,35 +3499,70 @@ private fun QuickCardScannerScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.9f))
+            .background(Color.Black)
     ) {
         AndroidView(
             factory = { previewView },
             modifier = Modifier.fillMaxSize()
         )
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
+        val finderSize = 260.dp
+        val outerMaskColor = Color.Black.copy(alpha = 0.62f)
+
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val sideMaskWidth = ((maxWidth - finderSize) / 2f).coerceAtLeast(0.dp)
+            val verticalMaskHeight = ((maxHeight - finderSize) / 2f).coerceAtLeast(0.dp)
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(verticalMaskHeight)
+                    .background(outerMaskColor)
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(verticalMaskHeight)
+                    .background(outerMaskColor)
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .width(sideMaskWidth)
+                    .height(finderSize)
+                    .background(outerMaskColor)
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(sideMaskWidth)
+                    .height(finderSize)
+                    .background(outerMaskColor)
+            )
+
             Text(
                 text = if (cameraReady) "将二维码置于取景框内自动识别" else "正在打开相机...",
                 color = Color.White,
                 style = MaterialTheme.typography.subtitle1,
-                modifier = Modifier.align(Alignment.CenterStart)
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .offset(y = -(finderSize / 2f) - 24.dp)
+                    .padding(horizontal = 16.dp)
             )
-        }
 
-        Box(
-            modifier = Modifier
-                .size(260.dp)
-                .align(Alignment.Center)
-        ) {
-            QrScannerFinderFrame(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.White
-            )
+            Box(
+                modifier = Modifier
+                    .size(finderSize)
+                    .align(Alignment.Center)
+            ) {
+                QrScannerFinderFrame(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color.White
+                )
+            }
         }
     }
 }
@@ -3522,10 +3576,17 @@ private fun QrScannerFinderFrame(
         val w = size.width
         val h = size.height
         val cornerRatio = 0.22f
-        val cornerW = w * cornerRatio
-        val cornerH = h * cornerRatio
         val thick = size.minDimension * 0.018f
         val thin = thick * 0.42f
+        val halfThick = thick / 2f
+        val left = halfThick
+        val right = (w - halfThick).coerceAtLeast(left)
+        val top = halfThick
+        val bottom = (h - halfThick).coerceAtLeast(top)
+        val innerW = (right - left).coerceAtLeast(0f)
+        val innerH = (bottom - top).coerceAtLeast(0f)
+        val cornerW = innerW * cornerRatio
+        val cornerH = innerH * cornerRatio
 
         fun hSeg(x1: Float, x2: Float, y: Float, stroke: Float) {
             drawLine(
@@ -3533,7 +3594,7 @@ private fun QrScannerFinderFrame(
                 start = Offset(x1, y),
                 end = Offset(x2, y),
                 strokeWidth = stroke,
-                cap = StrokeCap.Butt
+                cap = StrokeCap.Square
             )
         }
 
@@ -3543,25 +3604,25 @@ private fun QrScannerFinderFrame(
                 start = Offset(x, y1),
                 end = Offset(x, y2),
                 strokeWidth = stroke,
-                cap = StrokeCap.Butt
+                cap = StrokeCap.Square
             )
         }
 
-        hSeg(0f, cornerW, 0f, thick)
-        hSeg(cornerW, w - cornerW, 0f, thin)
-        hSeg(w - cornerW, w, 0f, thick)
+        hSeg(left, left + cornerW, top, thick)
+        hSeg(left + cornerW, right - cornerW, top, thin)
+        hSeg(right - cornerW, right, top, thick)
 
-        hSeg(0f, cornerW, h, thick)
-        hSeg(cornerW, w - cornerW, h, thin)
-        hSeg(w - cornerW, w, h, thick)
+        hSeg(left, left + cornerW, bottom, thick)
+        hSeg(left + cornerW, right - cornerW, bottom, thin)
+        hSeg(right - cornerW, right, bottom, thick)
 
-        vSeg(0f, 0f, cornerH, thick)
-        vSeg(0f, cornerH, h - cornerH, thin)
-        vSeg(0f, h - cornerH, h, thick)
+        vSeg(left, top, top + cornerH, thick)
+        vSeg(left, top + cornerH, bottom - cornerH, thin)
+        vSeg(left, bottom - cornerH, bottom, thick)
 
-        vSeg(w, 0f, cornerH, thick)
-        vSeg(w, cornerH, h - cornerH, thin)
-        vSeg(w, h - cornerH, h, thick)
+        vSeg(right, top, top + cornerH, thick)
+        vSeg(right, top + cornerH, bottom - cornerH, thin)
+        vSeg(right, bottom - cornerH, bottom, thick)
     }
 }
 
@@ -3626,9 +3687,26 @@ private fun QuickCardWebViewScreen(
 ) {
     var loading by remember(url) { mutableStateOf(true) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
-
+    val onTopBarActionsChangeState = rememberUpdatedState(onTopBarActionsChange)
+    val publishWebActions: () -> Unit = remember {
+        {
+            val webView = webViewRef.value
+            val canBack = webView?.canGoBack() == true
+            val canForward = webView?.canGoForward() == true
+            onTopBarActionsChangeState.value(
+                QuickCardTopBarActions(
+                    onWebReload = { webViewRef.value?.reload() },
+                    onWebBack = if (canBack) ({ webViewRef.value?.goBack() }) else null,
+                    onWebForward = if (canForward) ({ webViewRef.value?.goForward() }) else null,
+                    canWebReload = webView != null,
+                    canWebBack = canBack,
+                    canWebForward = canForward
+                )
+            )
+        }
+    }
     LaunchedEffect(Unit) {
-        onTopBarActionsChange(null)
+        publishWebActions()
     }
 
     DisposableEffect(Unit) {
@@ -3640,6 +3718,7 @@ private fun QuickCardWebViewScreen(
                 }
             }
             webViewRef.value = null
+            onTopBarActionsChangeState.value(null)
         }
     }
 
@@ -3663,13 +3742,16 @@ private fun QuickCardWebViewScreen(
 
                         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                             loading = true
+                            publishWebActions()
                         }
 
                         override fun onPageFinished(view: WebView?, url: String?) {
                             loading = false
+                            publishWebActions()
                         }
                     }
                     loadUrl(url)
+                    publishWebActions()
                 }
             },
             update = { webView ->
@@ -4492,6 +4574,7 @@ private fun QuickCardEditorScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
+    var showBuiltinGalleryPicker by remember { mutableStateOf(false) }
     var themeHexInput by rememberSaveable { mutableStateOf("#038387") }
     var themeHue by rememberSaveable { mutableFloatStateOf(180f) }
     var themeSat by rememberSaveable { mutableFloatStateOf(1f) }
@@ -4527,8 +4610,7 @@ private fun QuickCardEditorScreen(
             toast(context, "裁剪失败")
         }
     }
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    fun launchQuickCardCrop(uri: Uri) {
         val options = CropImageOptions(
             fixAspectRatio = true,
             aspectRatioX = if (cropLandscape) 5 else 3,
@@ -4546,6 +4628,10 @@ private fun QuickCardEditorScreen(
             outputCompressQuality = 100
         )
         cropLauncher.launch(CropImageContractOptions(uri, options))
+    }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        launchQuickCardCrop(uri)
     }
 
     fun requestExitEditor() {
@@ -4725,7 +4811,11 @@ private fun QuickCardEditorScreen(
                     onClear = { viewModel.clearQuickCardDraftImage(landscape = false) },
                     onPick = {
                         cropLandscape = false
-                        imagePicker.launch("image/*")
+                        if (uiState.useBuiltinGallery) {
+                            showBuiltinGalleryPicker = true
+                        } else {
+                            imagePicker.launch("image/*")
+                        }
                     }
                 )
                 QuickCardImagePathRow(
@@ -4734,7 +4824,11 @@ private fun QuickCardEditorScreen(
                     onClear = { viewModel.clearQuickCardDraftImage(landscape = true) },
                     onPick = {
                         cropLandscape = true
-                        imagePicker.launch("image/*")
+                        if (uiState.useBuiltinGallery) {
+                            showBuiltinGalleryPicker = true
+                        } else {
+                            imagePicker.launch("image/*")
+                        }
                     }
                 )
             }
@@ -4778,6 +4872,17 @@ private fun QuickCardEditorScreen(
             },
             dismissButton = {
                 Md2TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
+            }
+        )
+    }
+
+    if (showBuiltinGalleryPicker) {
+        BuiltinGalleryPickerDialog(
+            title = "选择图片",
+            onDismiss = { showBuiltinGalleryPicker = false },
+            onPicked = { uri ->
+                showBuiltinGalleryPicker = false
+                launchQuickCardCrop(uri)
             }
         )
     }
@@ -5169,10 +5274,16 @@ data class QuickCardTopBarActions(
     val onCopy: (() -> Unit)? = null,
     val onDelete: (() -> Unit)? = null,
     val onConfirm: (() -> Unit)? = null,
+    val onWebReload: (() -> Unit)? = null,
+    val onWebBack: (() -> Unit)? = null,
+    val onWebForward: (() -> Unit)? = null,
     val onBackRequest: (() -> Unit)? = null,
     val canCopy: Boolean = false,
     val canDelete: Boolean = false,
-    val canConfirm: Boolean = false
+    val canConfirm: Boolean = false,
+    val canWebReload: Boolean = false,
+    val canWebBack: Boolean = false,
+    val canWebForward: Boolean = false
 )
 
 private object QuickSubtitleRoutes {
@@ -5927,6 +6038,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     val voicePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.importVoice(uri) else toast(context, "未选择文件")
     }
+    var showBuiltinVoicePicker by remember { mutableStateOf(false) }
 
     val onToggleRun = {
         if (state.running) {
@@ -5935,7 +6047,10 @@ fun AppScaffold(viewModel: MainViewModel) {
             permLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
+    var pttConfirmOwnedByMainPanel by remember { mutableStateOf(false) }
+
     val onPushToTalkPressStart = {
+        pttConfirmOwnedByMainPanel = true
         viewModel.setPushToTalkPressed(true)
         viewModel.beginPushToTalkSession()
         if (!state.running) {
@@ -5953,9 +6068,26 @@ fun AppScaffold(viewModel: MainViewModel) {
     val onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit = { releaseAction ->
         viewModel.commitPushToTalkSession(releaseAction)
         viewModel.setPushToTalkPressed(false)
+        pttConfirmOwnedByMainPanel = false
         if (state.running) {
             viewModel.stop()
         }
+    }
+    LaunchedEffect(state.pushToTalkPressed) {
+        if (!state.pushToTalkPressed) {
+            pttConfirmOwnedByMainPanel = false
+        }
+    }
+    if (showBuiltinVoicePicker) {
+        BuiltinFilePickerDialog(
+            title = "选择语音包文件",
+            allowedExtensions = setOf("zip"),
+            onDismiss = { showBuiltinVoicePicker = false },
+            onPicked = { uri ->
+                showBuiltinVoicePicker = false
+                viewModel.importVoice(uri)
+            }
+        )
     }
     var realtimePttDragTarget by remember { mutableStateOf(PttConfirmDragTarget.DefaultSend) }
     val realtimeConfirmOverlayEnabled = false
@@ -6350,6 +6482,33 @@ fun AppScaffold(viewModel: MainViewModel) {
                                         M2DropdownMenuItem(
                                             onClick = {
                                                 quickCardWebMenuExpanded = false
+                                                quickCardActions?.onWebReload?.invoke()
+                                            },
+                                            enabled = quickCardActions?.canWebReload == true
+                                        ) {
+                                            Text("刷新")
+                                        }
+                                        M2DropdownMenuItem(
+                                            onClick = {
+                                                quickCardWebMenuExpanded = false
+                                                quickCardActions?.onWebBack?.invoke()
+                                            },
+                                            enabled = quickCardActions?.canWebBack == true
+                                        ) {
+                                            Text("返回上一页")
+                                        }
+                                        M2DropdownMenuItem(
+                                            onClick = {
+                                                quickCardWebMenuExpanded = false
+                                                quickCardActions?.onWebForward?.invoke()
+                                            },
+                                            enabled = quickCardActions?.canWebForward == true
+                                        ) {
+                                            Text("返回下一页")
+                                        }
+                                        M2DropdownMenuItem(
+                                            onClick = {
+                                                quickCardWebMenuExpanded = false
                                                 if (quickCardWebUrl.isBlank()) {
                                                     toast(context, "链接为空")
                                                 } else {
@@ -6399,7 +6558,13 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 horizontalArrangement = Arrangement.End
                             ) {
                                 IconButton(
-                                    onClick = { voicePicker.launch("*/*") },
+                                    onClick = {
+                                        if (state.useBuiltinFileManager) {
+                                            showBuiltinVoicePicker = true
+                                        } else {
+                                            voicePicker.launch("*/*")
+                                        }
+                                    },
                                     enabled = showVoicePackActions
                                 ) {
                                     MsIcon("folder_open", contentDescription = "导入语音包")
@@ -6503,6 +6668,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                         onToggleMic = onToggleRun,
                         onPushToTalkPressStart = onPushToTalkPressStart,
                         onPushToTalkPressEnd = onPushToTalkPressEnd,
+                        pttConfirmOwnedByMainPanel = pttConfirmOwnedByMainPanel,
                         onOpenHistory = {
                             quickSubtitleNavController.navigate(QuickSubtitleRoutes.History) {
                                 launchSingleTop = true
@@ -7060,6 +7226,7 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
     var detailEditing by remember { mutableStateOf(false) }
     var deletePack by remember { mutableStateOf<VoicePackInfo?>(null) }
     var avatarTarget by remember { mutableStateOf<VoicePackInfo?>(null) }
+    var showBuiltinAvatarGallery by remember { mutableStateOf(false) }
     val detailPack = detailPackPath?.let { path ->
         state.voicePacks.firstOrNull { it.dir.absolutePath == path }
     }
@@ -7079,29 +7246,32 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
             toast(context, "裁剪失败")
         }
     }
+    fun launchAvatarCrop(uri: Uri) {
+        val options = CropImageOptions(
+            fixAspectRatio = true,
+            aspectRatioX = 1,
+            aspectRatioY = 1,
+            activityTitle = "裁剪头像",
+            cropMenuCropButtonTitle = "确认",
+            activityMenuIconColor = 0xFFFFFFFF.toInt(),
+            activityMenuTextColor = 0xFFFFFFFF.toInt(),
+            activityBackgroundColor = 0xFF121212.toInt(),
+            toolbarColor = 0xFF038387.toInt(),
+            toolbarTitleColor = 0xFFFFFFFF.toInt(),
+            toolbarBackButtonColor = 0xFFFFFFFF.toInt(),
+            toolbarTintColor = 0xFFFFFFFF.toInt(),
+            outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
+            outputCompressQuality = 100,
+            outputRequestWidth = 400,
+            outputRequestHeight = 400,
+            outputRequestSizeOptions = CropImageView.RequestSizeOptions.RESIZE_EXACT,
+            guidelines = CropImageView.Guidelines.ON
+        )
+        cropLauncher.launch(CropImageContractOptions(uri, options))
+    }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
-            val options = CropImageOptions(
-                fixAspectRatio = true,
-                aspectRatioX = 1,
-                aspectRatioY = 1,
-                activityTitle = "裁剪头像",
-                cropMenuCropButtonTitle = "确认",
-                activityMenuIconColor = 0xFFFFFFFF.toInt(),
-                activityMenuTextColor = 0xFFFFFFFF.toInt(),
-                activityBackgroundColor = 0xFF121212.toInt(),
-                toolbarColor = 0xFF038387.toInt(),
-                toolbarTitleColor = 0xFFFFFFFF.toInt(),
-                toolbarBackButtonColor = 0xFFFFFFFF.toInt(),
-                toolbarTintColor = 0xFFFFFFFF.toInt(),
-                outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
-                outputCompressQuality = 100,
-                outputRequestWidth = 400,
-                outputRequestHeight = 400,
-                outputRequestSizeOptions = CropImageView.RequestSizeOptions.RESIZE_EXACT,
-                guidelines = CropImageView.Guidelines.ON
-            )
-            cropLauncher.launch(CropImageContractOptions(uri, options))
+            launchAvatarCrop(uri)
         } else {
             avatarTarget = null
         }
@@ -7215,7 +7385,11 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                                 contentDescription = "更换头像",
                                 onClick = {
                                     avatarTarget = detailPack
-                                    imagePicker.launch("image/*")
+                                    if (state.useBuiltinGallery) {
+                                        showBuiltinAvatarGallery = true
+                                    } else {
+                                        imagePicker.launch("image/*")
+                                    }
                                 }
                             )
                         }
@@ -7282,6 +7456,20 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                 Md2TextButton(onClick = { deletePack = null }) {
                     Text("取消")
                 }
+            }
+        )
+    }
+
+    if (showBuiltinAvatarGallery) {
+        BuiltinGalleryPickerDialog(
+            title = "选择头像",
+            onDismiss = {
+                showBuiltinAvatarGallery = false
+                avatarTarget = null
+            },
+            onPicked = { uri ->
+                showBuiltinAvatarGallery = false
+                launchAvatarCrop(uri)
             }
         )
     }
@@ -7857,6 +8045,7 @@ private fun QuickSubtitleNavHost(
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
+    pttConfirmOwnedByMainPanel: Boolean,
     onOpenHistory: () -> Unit,
     fullscreenMode: Boolean
 ) {
@@ -7924,6 +8113,7 @@ private fun QuickSubtitleNavHost(
                 onToggleMic = onToggleMic,
                 onPushToTalkPressStart = onPushToTalkPressStart,
                 onPushToTalkPressEnd = onPushToTalkPressEnd,
+                pttConfirmOwnedByMainPanel = pttConfirmOwnedByMainPanel,
                 onOpenHistory = onOpenHistory,
                 onOpenEditor = { navController.navigate(QuickSubtitleRoutes.Editor) },
                 fullscreenMode = fullscreenMode
@@ -8296,6 +8486,7 @@ fun QuickSubtitleScreen(
     onToggleMic: () -> Unit,
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
+    pttConfirmOwnedByMainPanel: Boolean,
     onOpenHistory: () -> Unit,
     onOpenEditor: () -> Unit,
     fullscreenMode: Boolean
@@ -8391,7 +8582,8 @@ fun QuickSubtitleScreen(
     val showPttConfirmOverlay =
         state.pushToTalkMode &&
         state.pushToTalkConfirmInputMode &&
-        state.pushToTalkPressed
+        state.pushToTalkPressed &&
+        pttConfirmOwnedByMainPanel
     val useFloatingFabPortrait = !isLandscape
     val useFloatingFabLandscapeOverlay =
         isLandscape &&
@@ -9503,6 +9695,7 @@ fun QuickSubtitleScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.52f))
                         .combinedClickable(
                             onClick = { viewModel.closeQuickSubtitlePreview() },
                             onLongClick = copySubtitleText
@@ -11946,6 +12139,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     var speakerEnrollMessage by remember { mutableStateOf("") }
     var speakerEnrollRetryDialog by remember { mutableStateOf(false) }
     var speakerEnrollOpenedByToggle by remember { mutableStateOf(false) }
+    var showBuiltinAsrPicker by remember { mutableStateOf(false) }
     val speakerEnrollTexts = remember {
         listOf(
             "清晨的风吹过脸颊，我大步沿着河边走。",
@@ -12081,7 +12275,13 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
             Md2SettingsCard(title = "模型与资源") {
                 Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
                 Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
-                Md2Button(onClick = { asrPicker.launch("*/*") }) {
+                Md2Button(onClick = {
+                    if (state.useBuiltinFileManager) {
+                        showBuiltinAsrPicker = true
+                    } else {
+                        asrPicker.launch("*/*")
+                    }
+                }) {
                     Text("导入 ASR 模型")
                 }
             }
@@ -12171,6 +12371,30 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                     Text("退出名片编辑时自动保存")
                 }
                 Text("关闭时将弹窗询问“是否保存名片”", style = MaterialTheme.typography.bodySmall)
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.useBuiltinFileManager,
+                        onCheckedChange = { viewModel.setUseBuiltinFileManager(it) }
+                    )
+                    Text("使用内建文件管理器")
+                }
+                Text("关闭时使用系统文件选择器。", style = MaterialTheme.typography.bodySmall)
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.useBuiltinGallery,
+                        onCheckedChange = { viewModel.setUseBuiltinGallery(it) }
+                    )
+                    Text("使用内建图库")
+                }
+                Text("关闭时使用系统图库选择器。", style = MaterialTheme.typography.bodySmall)
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -12498,6 +12722,18 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         }
 
         Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+
+    if (showBuiltinAsrPicker) {
+        BuiltinFilePickerDialog(
+            title = "选择 ASR 模型文件",
+            allowedExtensions = setOf("zip"),
+            onDismiss = { showBuiltinAsrPicker = false },
+            onPicked = { uri ->
+                showBuiltinAsrPicker = false
+                viewModel.importAsr(uri)
+            }
+        )
     }
 
     if (showSpeakerEnrollDialog) {

@@ -44,6 +44,8 @@ object UserPrefs {
     private val KEY_SOLID_TOP_BAR = booleanPreferencesKey("solid_top_bar")
     private val KEY_DRAWING_SAVE_RELATIVE_PATH = stringPreferencesKey("drawing_save_relative_path")
     private val KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT = booleanPreferencesKey("quick_card_auto_save_on_exit")
+    private val KEY_USE_BUILTIN_FILE_MANAGER = booleanPreferencesKey("use_builtin_file_manager")
+    private val KEY_USE_BUILTIN_GALLERY = booleanPreferencesKey("use_builtin_gallery")
     private val KEY_ASR_SEND_TO_QUICK_SUBTITLE = booleanPreferencesKey("asr_send_to_quick_subtitle")
     private val KEY_PUSH_TO_TALK_MODE = booleanPreferencesKey("push_to_talk_mode")
     private val KEY_PUSH_TO_TALK_CONFIRM_INPUT = booleanPreferencesKey("push_to_talk_confirm_input")
@@ -83,6 +85,8 @@ object UserPrefs {
         val solidTopBar: Boolean = true,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val quickCardAutoSaveOnExit: Boolean = false,
+        val useBuiltinFileManager: Boolean = false,
+        val useBuiltinGallery: Boolean = false,
         val asrSendToQuickSubtitle: Boolean = true,
         val pushToTalkMode: Boolean = false,
         val pushToTalkConfirmInput: Boolean = false,
@@ -141,6 +145,8 @@ object UserPrefs {
             drawingSaveRelativePath = (this[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             quickCardAutoSaveOnExit = this[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
+            useBuiltinFileManager = this[KEY_USE_BUILTIN_FILE_MANAGER] ?: false,
+            useBuiltinGallery = this[KEY_USE_BUILTIN_GALLERY] ?: false,
             asrSendToQuickSubtitle = this[KEY_ASR_SEND_TO_QUICK_SUBTITLE] ?: true,
             pushToTalkMode = this[KEY_PUSH_TO_TALK_MODE] ?: false,
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
@@ -272,6 +278,18 @@ object UserPrefs {
     suspend fun setQuickCardAutoSaveOnExit(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] = enabled
+        }
+    }
+
+    suspend fun setUseBuiltinFileManager(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_USE_BUILTIN_FILE_MANAGER] = enabled
+        }
+    }
+
+    suspend fun setUseBuiltinGallery(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_USE_BUILTIN_GALLERY] = enabled
         }
     }
 
