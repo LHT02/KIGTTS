@@ -1,0 +1,37 @@
+name: kgtts_app
+description: "KIGTTS - Real-time ASR/TTS voice conversion app"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_bloc: ^9.1.0
+  go_router: ^15.1.0
+  get_it: ^8.0.3
+  injectable: ^2.5.0
+  freezed_annotation: ^2.4.4
+  json_annotation: ^4.9.0
+  shared_preferences: ^2.5.0
+  path_provider: ^2.1.5
+  file_picker: ^9.2.0
+  equatable: ^2.0.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  build_runner: ^2.4.14
+  freezed: ^2.5.8
+  json_serializable: ^6.9.4
+  injectable_generator: ^2.7.0
+
+flutter:
+  uses-material-design: true
+  fonts:
+    - family: MaterialSymbolsSharp
+      fonts:
+        - asset: assets/fonts/material_symbols_sharp.ttf
