@@ -3,6 +3,7 @@ package com.kgtts.app.ui
 import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Activity
+import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
@@ -839,6 +840,18 @@ class MainViewModel(
         saveQuickSubtitleConfig()
     }
 
+    fun submitQuickSubtitlePreset(text: String, hasVoice: Boolean = true) {
+        val message = text.trim()
+        if (message.isEmpty()) return
+        quickSubtitleCurrentText = message
+        if (quickSubtitlePlayOnSend && hasVoice) {
+            speakText(message)
+        } else {
+            uiState = uiState.copy(status = "已更新字幕文本")
+        }
+        saveQuickSubtitleConfig()
+    }
+
     fun updateQuickSubtitleInputText(text: String) {
         quickSubtitleInputText = text
     }
@@ -1594,13 +1607,18 @@ class MainViewModel(
 
     fun importVoice(uri: android.net.Uri) {
         viewModelScope.launch {
-            val dir = withContext(Dispatchers.IO) { repo.importVoice(uri, appContext.contentResolver) }
-            UserPrefs.setLastVoiceName(appContext, dir.name)
-            uiState = uiState.copy(voiceDir = dir, status = "音色包导入完成")
-            preloadTts(dir)
-            refreshVoicePacks()
-            if (uiState.floatingOverlayEnabled) {
-                FloatingOverlayService.refresh(appContext)
+            try {
+                val dir = withContext(Dispatchers.IO) { repo.importVoice(uri, appContext.contentResolver) }
+                UserPrefs.setLastVoiceName(appContext, dir.name)
+                uiState = uiState.copy(voiceDir = dir, status = "音色包导入完成")
+                preloadTts(dir)
+                refreshVoicePacks()
+                if (uiState.floatingOverlayEnabled) {
+                    FloatingOverlayService.refresh(appContext)
+                }
+            } catch (e: Exception) {
+                uiState = uiState.copy(status = e.message ?: "音色包导入失败")
+                AppLogger.e("importVoice failed", e)
             }
         }
     }
@@ -1700,7 +1718,7 @@ class MainViewModel(
     fun shareVoice(pack: VoicePackInfo) {
         viewModelScope.launch(Dispatchers.IO) {
             val shareDir = File(appContext.cacheDir, "share")
-            val fileName = "${pack.dir.name}.zip"
+            val fileName = "${repo.sanitizeVoicePackShareName(pack.meta.name, pack.dir.name)}.kigvpk"
             val outZip = File(shareDir, fileName)
             repo.zipVoicePack(pack.dir, outZip)
             withContext(Dispatchers.Main) {
@@ -1710,7 +1728,7 @@ class MainViewModel(
                     outZip
                 )
                 val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/zip"
+                    type = "application/x-kigtts-voicepack"
                     putExtra(Intent.EXTRA_STREAM, uri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
@@ -5320,6 +5338,7 @@ class MainActivity : ComponentActivity() {
     private var lastDecorFitsSystemWindows: Boolean = false
     private var pendingBackgroundReturnFix: Boolean = false
     private var delayedResumeFixRunnable: Runnable? = null
+    private var lastHandledExternalVoicePackIntentKey: String? = null
 
     private val viewModel: MainViewModel by viewModels {
         val repo = ModelRepository(this@MainActivity)
@@ -5438,12 +5457,57 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleLaunchIntent(intent: Intent?) {
-        if (intent?.action != OverlayBridge.ACTION_OPEN_QUICK_SUBTITLE) return
-        val requestId = intent.getLongExtra(OverlayBridge.EXTRA_REQUEST_ID, Long.MIN_VALUE)
-        if (requestId == Long.MIN_VALUE) return
-        val target = intent.getStringExtra(OverlayBridge.EXTRA_TARGET) ?: OverlayBridge.TARGET_SUBTITLE
-        val text = intent.getStringExtra(OverlayBridge.EXTRA_TEXT).orEmpty()
-        viewModel.handleQuickSubtitleLaunchRequest(requestId, target, text)
+        when (intent?.action) {
+            OverlayBridge.ACTION_OPEN_QUICK_SUBTITLE -> {
+                val requestId = intent.getLongExtra(OverlayBridge.EXTRA_REQUEST_ID, Long.MIN_VALUE)
+                if (requestId == Long.MIN_VALUE) return
+                val target = intent.getStringExtra(OverlayBridge.EXTRA_TARGET) ?: OverlayBridge.TARGET_SUBTITLE
+                val text = intent.getStringExtra(OverlayBridge.EXTRA_TEXT).orEmpty()
+                viewModel.handleQuickSubtitleLaunchRequest(requestId, target, text)
+            }
+
+            Intent.ACTION_VIEW,
+            Intent.ACTION_SEND -> {
+                val uri = when (intent.action) {
+                    Intent.ACTION_VIEW -> intent.data
+                    Intent.ACTION_SEND -> @Suppress("DEPRECATION") (intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri)
+                    else -> null
+                } ?: return
+                if (!shouldHandleVoicePackIntent(intent, uri)) return
+                val key = "${intent.action}|$uri|${resolveExternalFileName(uri).orEmpty()}"
+                if (lastHandledExternalVoicePackIntentKey == key) return
+                lastHandledExternalVoicePackIntentKey = key
+                viewModel.importVoice(uri)
+                setIntent(Intent())
+            }
+        }
+    }
+
+    private fun shouldHandleVoicePackIntent(intent: Intent, uri: Uri): Boolean {
+        val name = resolveExternalFileName(uri)?.lowercase().orEmpty()
+        val mime = intent.type?.lowercase().orEmpty()
+        return when (intent.action) {
+            Intent.ACTION_VIEW ->
+                name.endsWith(".kigvpk") || mime == "application/x-kigtts-voicepack"
+            Intent.ACTION_SEND ->
+                name.endsWith(".kigvpk") || name.endsWith(".zip") || mime == "application/x-kigtts-voicepack"
+            else -> false
+        }
+    }
+
+    private fun resolveExternalFileName(uri: Uri): String? {
+        if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (index >= 0) {
+                            return cursor.getString(index)
+                        }
+                    }
+                }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')
     }
 
     private fun syncFloatingOverlayState() {
@@ -5640,6 +5704,283 @@ private fun Md2OutlinedField(
 }
 
 @Composable
+private fun Md2AnimatedOptionMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var rendered by remember { mutableStateOf(expanded) }
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            rendered = true
+        } else if (rendered) {
+            delay(180L)
+            rendered = false
+        }
+    }
+    DropdownMenu(
+        expanded = rendered,
+        onDismissRequest = onDismissRequest,
+        modifier = modifier
+    ) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)) +
+                slideInVertically(
+                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+                    initialOffsetY = { -it / 5 }
+                ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 160, easing = LinearEasing)) +
+                slideOutVertically(
+                    animationSpec = tween(durationMillis = 160, easing = LinearEasing),
+                    targetOffsetY = { -it / 7 }
+                )
+        ) {
+            Column(content = content)
+        }
+    }
+}
+
+@Composable
+private fun Md2SettingSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    supportingText: String? = null
+) {
+    val contentAlpha = if (enabled) 1f else 0.56f
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .clickable(
+                enabled = enabled,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(bounded = true)
+            ) { onCheckedChange(!checked) }
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+            )
+            Md2Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                enabled = enabled
+            )
+        }
+        if (!supportingText.isNullOrBlank()) {
+            Text(
+                text = supportingText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha)
+            )
+        }
+    }
+}
+
+@Composable
+private fun Md2SettingDropdownRow(
+    title: String,
+    value: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    supportingText: String? = null,
+    menuContent: @Composable ColumnScope.() -> Unit
+) {
+    val contentAlpha = if (enabled) 1f else 0.56f
+    Box(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(
+                    enabled = enabled,
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = rememberRipple(bounded = true)
+                ) { onExpandedChange(true) }
+                .padding(horizontal = 2.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                MsIcon(
+                    name = if (expanded) "expand_less" else "expand_more",
+                    contentDescription = title,
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+                )
+            }
+            if (!supportingText.isNullOrBlank()) {
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha)
+                )
+            }
+        }
+        Md2AnimatedOptionMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+            modifier = Modifier.fillMaxWidth(0.96f)
+        ) {
+            menuContent()
+        }
+    }
+}
+
+private enum class SettingsCategory(val title: String, val icon: String) {
+    Resources("资源", "inventory_2"),
+    Recognition("识别", "graphic_eq"),
+    Audio("音频", "volume_up"),
+    System("系统", "tune")
+}
+
+@Composable
+private fun SettingsTabsCard(
+    selectedCategory: SettingsCategory,
+    compact: Boolean,
+    onSelect: (SettingsCategory) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        if (compact) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                SettingsCategory.entries.forEach { category ->
+                    SettingsTabButton(
+                        category = category,
+                        selected = selectedCategory == category,
+                        compact = true,
+                        onClick = { onSelect(category) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                SettingsCategory.entries.forEach { category ->
+                    SettingsTabButton(
+                        category = category,
+                        selected = selectedCategory == category,
+                        compact = false,
+                        onClick = { onSelect(category) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsTabButton(
+    category: SettingsCategory,
+    selected: Boolean,
+    compact: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val containerColor =
+        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent
+    val contentColor =
+        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(4.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(bounded = true),
+                onClick = onClick
+            ),
+        color = containerColor,
+        shape = RoundedCornerShape(4.dp)
+    ) {
+        if (compact) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                MsIcon(
+                    name = category.icon,
+                    contentDescription = category.title,
+                    tint = contentColor
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                MsIcon(
+                    name = category.icon,
+                    contentDescription = category.title,
+                    tint = contentColor
+                )
+                Text(
+                    text = category.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = contentColor
+                )
+            }
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalComposeUiApi::class)
 fun AppScaffold(viewModel: MainViewModel) {
     val pageQuickSubtitle = 0
@@ -5762,10 +6103,10 @@ fun AppScaffold(viewModel: MainViewModel) {
     val topPlaybackProgress = viewModel.realtimePlaybackProgress
     val drawerItems = listOf(
         DrawerItem(pageQuickSubtitle, "便捷字幕", "subtitles"),
-        DrawerItem(pageOverlay, "悬浮窗", "open_in_new"),
         DrawerItem(pageQuickCard, "快捷名片", "id_card"),
-        DrawerItem(pageVoicePack, "语音包", "record_voice_over"),
         DrawerItem(pageDrawing, "画板", "draw"),
+        DrawerItem(pageOverlay, "悬浮窗", "open_in_new"),
+        DrawerItem(pageVoicePack, "语音包", "record_voice_over"),
         DrawerItem(pageSettings, "设置", "tune")
     )
     val pendingQuickSubtitleLaunchRequest = viewModel.pendingQuickSubtitleLaunchRequest
@@ -6086,7 +6427,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     if (showBuiltinVoicePicker) {
         BuiltinFilePickerDialog(
             title = "选择语音包文件",
-            allowedExtensions = setOf("zip"),
+            allowedExtensions = setOf("zip", "kigvpk"),
             onDismiss = { showBuiltinVoicePicker = false },
             onPicked = { uri ->
                 showBuiltinVoicePicker = false
@@ -6480,7 +6821,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                     ) {
                                         MsIcon("more_vert", contentDescription = "更多")
                                     }
-                                    DropdownMenu(
+                                    Md2AnimatedOptionMenu(
                                         expanded = showQuickCardWebActions && quickCardWebMenuExpanded,
                                         onDismissRequest = { quickCardWebMenuExpanded = false }
                                     ) {
@@ -8908,11 +9249,11 @@ fun QuickSubtitleScreen(
                                                     Card(
                                                         modifier = Modifier
                                                             .fillMaxWidth()
-                                                            .height(72.dp)
-                                                            .clickable {
-                                                                viewModel.applyQuickSubtitleText(
+                                                .height(72.dp)
+                                                .clickable {
+                                                                viewModel.submitQuickSubtitlePreset(
                                                                     text = text,
-                                                                    enqueueSpeak = hasVoice
+                                                                    hasVoice = hasVoice
                                                                 )
                                                             },
                                                         shape = RoundedCornerShape(UiTokens.Radius),
@@ -9135,9 +9476,9 @@ fun QuickSubtitleScreen(
                                             .fillMaxWidth()
                                             .height(72.dp)
                                             .clickable {
-                                                viewModel.applyQuickSubtitleText(
+                                                viewModel.submitQuickSubtitlePreset(
                                                     text = text,
-                                                    enqueueSpeak = hasVoice
+                                                    hasVoice = hasVoice
                                                 )
                                             },
                                         shape = RoundedCornerShape(UiTokens.Radius),
@@ -9220,9 +9561,9 @@ fun QuickSubtitleScreen(
                                                 .width(148.dp)
                                                 .height(94.dp)
                                                 .clickable {
-                                                    viewModel.applyQuickSubtitleText(
+                                                    viewModel.submitQuickSubtitlePreset(
                                                         text = text,
-                                                        enqueueSpeak = hasVoice
+                                                        hasVoice = hasVoice
                                                     )
                                                 },
                                             shape = RoundedCornerShape(UiTokens.Radius),
@@ -10885,7 +11226,7 @@ fun FloatingOverlayScreen(
                         onClick = { inputTypeExpanded = true },
                         expanded = inputTypeExpanded
                     )
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = inputTypeExpanded,
                         onDismissRequest = { inputTypeExpanded = false }
                     ) {
@@ -10910,7 +11251,7 @@ fun FloatingOverlayScreen(
                         onClick = { outputTypeExpanded = true },
                         expanded = outputTypeExpanded
                     )
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = outputTypeExpanded,
                         onDismissRequest = { outputTypeExpanded = false }
                     ) {
@@ -11086,7 +11427,7 @@ private fun RunningStatusTopStrip(
                             contentDescription = "选择首选输入设备"
                         )
                     }
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = inputExpanded,
                         onDismissRequest = { inputExpanded = false }
                     ) {
@@ -11130,7 +11471,7 @@ private fun RunningStatusTopStrip(
                             contentDescription = "选择首选输出设备"
                         )
                     }
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = outputExpanded,
                         onDismissRequest = { outputExpanded = false }
                     ) {
@@ -12267,205 +12608,177 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         }
         speakerEnrollOpenedByToggle = false
     }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(scroll),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
+    var selectedCategoryName by rememberSaveable { mutableStateOf(SettingsCategory.Resources.name) }
+    val selectedCategory = remember(selectedCategoryName) { SettingsCategory.valueOf(selectedCategoryName) }
+    val numberReplaceOptions = remember { listOf("不替换", "数字替换为中文字符", "数字替换为中文表达") }
+    var numberReplaceExpanded by remember { mutableStateOf(false) }
 
-        Md2StaggeredFloatIn(index = 0) {
-            Md2SettingsCard(title = "模型与资源") {
-                Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
-                Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
-                Md2Button(onClick = {
-                    if (state.useBuiltinFileManager) {
-                        showBuiltinAsrPicker = true
-                    } else {
-                        asrPicker.launch("*/*")
+    LaunchedEffect(selectedCategory) {
+        scroll.animateScrollTo(0)
+    }
+
+    @Composable
+    fun ResourceSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "模型与资源") {
+                    Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
+                    Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
+                    Md2Button(onClick = {
+                        if (state.useBuiltinFileManager) {
+                            showBuiltinAsrPicker = true
+                        } else {
+                            asrPicker.launch("*/*")
+                        }
+                    }) {
+                        Text("导入 ASR 模型")
                     }
-                }) {
-                    Text("导入 ASR 模型")
                 }
             }
         }
+    }
 
-        Md2StaggeredFloatIn(index = 1) {
-            Md2SettingsCard(title = "设备监控") {
-                val realtimeInputLevel = viewModel.realtimeInputLevel
-                Text("输入音量", fontWeight = FontWeight.Bold)
-                LinearProgressIndicator(
-                    progress = realtimeInputLevel.coerceIn(0f, 1f),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 8.dp)
-                )
-                Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
-                Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        Md2StaggeredFloatIn(index = 2) {
-            Md2SettingsCard(title = "系统与布局") {
-                Text("横屏抽屉模式", fontWeight = FontWeight.Bold)
-                Box {
-                    val label = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second
-                        ?: drawerModeOptions.first().second
-                    Md2DropdownButton(
-                        label = label,
-                        onClick = { drawerModeExpanded = true },
-                        expanded = drawerModeExpanded
+    @Composable
+    fun RecognitionSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "识别与转换") {
+                    Md2SettingSwitchRow(
+                        title = "识别结果自动上屏大字幕",
+                        checked = state.asrSendToQuickSubtitle,
+                        onCheckedChange = { viewModel.setAsrSendToQuickSubtitle(it) },
+                        supportingText = "开启后：语音识别结果会自动更新便捷字幕主文本"
                     )
-                    DropdownMenu(
-                        expanded = drawerModeExpanded,
-                        onDismissRequest = { drawerModeExpanded = false }
+                    Md2SettingSwitchRow(
+                        title = "按住说话模式",
+                        checked = state.pushToTalkMode,
+                        onCheckedChange = { viewModel.setPushToTalkMode(it) },
+                        supportingText = "开启后：实时页 FAB 改为麦克风，按下开始收音，松开停止收音。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "按下输入文本确认",
+                        checked = state.pushToTalkConfirmInputMode,
+                        enabled = state.pushToTalkMode,
+                        onCheckedChange = { viewModel.setPushToTalkConfirmInputMode(it) },
+                        supportingText = "开启后：按住说话时识别文本先显示在悬浮条中，松手可上屏；上滑可改为输入到文本框或取消发送。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "播放时屏蔽录音",
+                        checked = state.muteWhilePlaying,
+                        onCheckedChange = { viewModel.setMuteWhilePlaying(it) },
+                        supportingText = "开启后播放中不进行识别"
+                    )
+                    Text(
+                        "屏蔽结束延迟：${String.format("%.1f", state.muteWhilePlayingDelaySec)}s",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Slider(
+                        value = state.muteWhilePlayingDelaySec,
+                        onValueChange = { viewModel.setMuteWhilePlayingDelay(it) },
+                        valueRange = 0f..5f
+                    )
+                    Text(
+                        "语音识别最低音量阈值：${state.minVolumePercent}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Slider(
+                        value = state.minVolumePercent.toFloat(),
+                        onValueChange = { viewModel.setMinVolumePercent(it.toInt()) },
+                        valueRange = 0f..100f
+                    )
+                    Md2SettingDropdownRow(
+                        title = "数字替换",
+                        value = numberReplaceOptions.getOrElse(state.numberReplaceMode) { numberReplaceOptions[0] },
+                        expanded = numberReplaceExpanded,
+                        onExpandedChange = { numberReplaceExpanded = it },
+                        supportingText = "示例：2000 → 二零零零 / 两千"
                     ) {
-                        drawerModeOptions.forEach { (value, label) ->
+                        numberReplaceOptions.forEachIndexed { idx, label ->
                             M2DropdownMenuItem(
                                 onClick = {
-                                    drawerModeExpanded = false
-                                    viewModel.setLandscapeDrawerMode(value)
+                                    numberReplaceExpanded = false
+                                    viewModel.setNumberReplaceMode(idx)
                                 }
                             ) { Text(label) }
                         }
                     }
                 }
-                Text("竖屏始终为隐藏式；该选项仅影响横屏布局。", style = MaterialTheme.typography.bodySmall)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.solidTopBar,
-                        onCheckedChange = { viewModel.setSolidTopBar(it) }
-                    )
-                    Text("使用纯色顶栏")
-                }
-                Text("开启后顶栏与状态栏颜色改为卡片同款自适应配色。", style = MaterialTheme.typography.bodySmall)
+            }
 
-                Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
-                Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2OutlinedButton(onClick = {
-                        drawingDirPicker.launch(null)
-                    }) {
-                        Text("选择目录")
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "说话人验证") {
+                    Md2SettingSwitchRow(
+                        title = "说话人验证",
+                        checked = state.speakerVerifyEnabled,
+                        onCheckedChange = { enabled ->
+                            if (!enabled) {
+                                viewModel.setSpeakerVerifyEnabled(false)
+                            } else if (state.speakerProfileReady) {
+                                viewModel.setSpeakerVerifyEnabled(true)
+                            } else {
+                                speakerEnrollSamples.clear()
+                                speakerEnrollStep = 0
+                                speakerEnrollCountingDown = false
+                                speakerEnrollCountdown = 3
+                                speakerEnrollReading = false
+                                speakerEnrollProgress = 0f
+                                speakerEnrollLevel = 0f
+                                speakerEnrollRemainingSec = 4f
+                                speakerEnrollSuccess = false
+                                speakerEnrollMessage = "请按页面引导完成注册。"
+                                speakerEnrollRetryDialog = false
+                                speakerEnrollOpenedByToggle = true
+                                showSpeakerEnrollDialog = true
+                            }
+                        },
+                        supportingText = "注册：${state.speakerProfiles.size}/3"
+                    )
+                    state.speakerProfiles.forEachIndexed { idx, profile ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(4.dp),
+                            backgroundColor = md2CardContainerColor(),
+                            elevation = 0.dp
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${idx + 1}. ${profile.name}",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Md2IconButton(
+                                    icon = "delete",
+                                    contentDescription = "删除说话人",
+                                    onClick = { viewModel.removeSpeakerProfileAt(idx) }
+                                )
+                            }
+                        }
                     }
-                    Md2TextButton(onClick = {
-                        val def = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
-                        viewModel.setDrawingSaveRelativePath(def)
-                    }) {
-                        Text("恢复默认")
+                    Text(
+                        "验证阈值：${String.format("%.2f", state.speakerVerifyThreshold)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Slider(
+                        value = state.speakerVerifyThreshold,
+                        onValueChange = { viewModel.setSpeakerVerifyThreshold(it) },
+                        valueRange = 0.4f..0.95f
+                    )
+                    if (state.speakerLastSimilarity >= 0f) {
+                        Text(
+                            "最近相似度：${String.format("%.2f", state.speakerLastSimilarity)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
-                }
-                Text("通过系统文件管理器选择目录（建议内部存储）", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.quickCardAutoSaveOnExit,
-                        onCheckedChange = { viewModel.setQuickCardAutoSaveOnExit(it) }
-                    )
-                    Text("退出名片编辑时自动保存")
-                }
-                Text("关闭时将弹窗询问“是否保存名片”", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.useBuiltinFileManager,
-                        onCheckedChange = { viewModel.setUseBuiltinFileManager(it) }
-                    )
-                    Text("使用内建文件管理器")
-                }
-                Text("关闭时使用系统文件选择器。", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.useBuiltinGallery,
-                        onCheckedChange = { viewModel.setUseBuiltinGallery(it) }
-                    )
-                    Text("使用内建图库")
-                }
-                Text("关闭时使用系统图库选择器。", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.keepAlive,
-                        onCheckedChange = { viewModel.setKeepAlive(it) }
-                    )
-                    Text("保持后台运行")
-                }
-                Text("开启后启用前台服务，锁屏/息屏也持续工作", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        Md2StaggeredFloatIn(index = 3) {
-            Md2SettingsCard(title = "识别与转换") {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.asrSendToQuickSubtitle,
-                    onCheckedChange = { viewModel.setAsrSendToQuickSubtitle(it) }
-                )
-                Text("识别结果自动上屏大字幕")
-            }
-            Text("开启后：语音识别结果会自动更新便捷字幕主文本", style = MaterialTheme.typography.bodySmall)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.pushToTalkMode,
-                    onCheckedChange = { viewModel.setPushToTalkMode(it) }
-                )
-                Text("按住说话模式")
-            }
-            Text("开启后：实时页 FAB 改为麦克风，按下开始收音，松开停止收音。", style = MaterialTheme.typography.bodySmall)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.pushToTalkConfirmInputMode,
-                    enabled = state.pushToTalkMode,
-                    onCheckedChange = { viewModel.setPushToTalkConfirmInputMode(it) }
-                )
-                Text("按下输入文本确认")
-            }
-            Text(
-                "开启后：按住说话时识别文本先显示在悬浮条中，松手可上屏；上滑可改为输入到文本框或取消发送。",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.speakerVerifyEnabled,
-                    onCheckedChange = { enabled ->
-                        if (!enabled) {
-                            viewModel.setSpeakerVerifyEnabled(false)
-                        } else if (state.speakerProfileReady) {
-                            viewModel.setSpeakerVerifyEnabled(true)
-                        } else {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Md2OutlinedButton(onClick = {
                             speakerEnrollSamples.clear()
                             speakerEnrollStep = 0
                             speakerEnrollCountingDown = false
@@ -12477,256 +12790,322 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             speakerEnrollSuccess = false
                             speakerEnrollMessage = "请按页面引导完成注册。"
                             speakerEnrollRetryDialog = false
-                            speakerEnrollOpenedByToggle = true
+                            speakerEnrollOpenedByToggle = false
                             showSpeakerEnrollDialog = true
+                        }, enabled = viewModel.canAddSpeakerProfile()) {
+                            Text("注册说话人")
+                        }
+                        Md2TextButton(onClick = { viewModel.clearSpeakerProfile() }) {
+                            Text("清除注册")
                         }
                     }
-                )
-                Text("说话人验证")
+                }
             }
-            Text(
-                "说话人注册：${state.speakerProfiles.size}/3",
-                style = MaterialTheme.typography.bodySmall
-            )
-            state.speakerProfiles.forEachIndexed { idx, profile ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(4.dp),
-                    backgroundColor = md2CardContainerColor(),
-                    elevation = 0.dp
-                ) {
-                    Row(
+        }
+    }
+
+    @Composable
+    fun AudioSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "设备监控") {
+                    val realtimeInputLevel = viewModel.realtimeInputLevel
+                    Text("输入音量", fontWeight = FontWeight.Bold)
+                    LinearProgressIndicator(
+                        progress = realtimeInputLevel.coerceIn(0f, 1f),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(top = 4.dp, bottom = 8.dp)
+                    )
+                    Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                    Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "播放与合成") {
+                    Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.playbackGainPercent.toFloat(),
+                        onValueChange = { viewModel.setPlaybackGainPercent(it.toInt()) },
+                        valueRange = 0f..1000f
+                    )
+                    Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
+                    Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.piperNoiseScale,
+                        onValueChange = { viewModel.setPiperNoiseScale(it) },
+                        valueRange = 0f..2f
+                    )
+                    Text("语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.piperLengthScale,
+                        onValueChange = { viewModel.setPiperLengthScale(it) },
+                        valueRange = 0.1f..5f
+                    )
+                    Text("句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.piperSentenceSilence,
+                        onValueChange = { viewModel.setPiperSentenceSilence(it) },
+                        valueRange = 0f..2f
+                    )
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 2) {
+                Md2SettingsCard(title = "回声与降噪") {
+                    Md2SettingSwitchRow(
+                        title = "回声抑制(VOICE_COMMUNICATION)",
+                        checked = state.echoSuppression,
+                        onCheckedChange = { viewModel.setEchoSuppression(it) },
+                        supportingText = "开启后使用通话录音源，可能有回声抑制/降噪效果"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "通话模式降噪(MODE_IN_COMMUNICATION)",
+                        checked = state.communicationMode,
+                        onCheckedChange = { viewModel.setCommunicationMode(it) },
+                        supportingText = "开启后切换系统通话模式并统一播放属性"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "AEC3 软件回声消除",
+                        checked = state.aec3Enabled,
+                        onCheckedChange = { viewModel.setAec3Enabled(it) },
+                        supportingText = "需渲染参考音频，可能与系统AEC冲突"
+                    )
+                    Text("AEC3 状态：${state.aec3Status}", style = MaterialTheme.typography.bodySmall)
+                    Text(state.aec3Diag, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 3) {
+                Md2SettingsCard(title = "设备路由") {
+                    Md2SettingDropdownRow(
+                        title = "优先选择的音频输入设备类型",
+                        value = inputTypeOptions.firstOrNull { it.first == state.preferredInputType }?.second
+                            ?: inputTypeOptions.first().second,
+                        expanded = inputTypeExpanded,
+                        onExpandedChange = { inputTypeExpanded = it },
+                        supportingText = "适配内置、USB、蓝牙、有线等输入设备"
                     ) {
-                        Text(
-                            text = "${idx + 1}. ${profile.name}",
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall
+                        inputTypeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    inputTypeExpanded = false
+                                    viewModel.setPreferredInputType(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Md2SettingDropdownRow(
+                        title = "优先使用的音频输出类型",
+                        value = outputTypeOptions.firstOrNull { it.first == state.preferredOutputType }?.second
+                            ?: outputTypeOptions.first().second,
+                        expanded = outputTypeExpanded,
+                        onExpandedChange = { outputTypeExpanded = it },
+                        supportingText = "适配扬声器、听筒、蓝牙、USB、有线等输出设备"
+                    ) {
+                        outputTypeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    outputTypeExpanded = false
+                                    viewModel.setPreferredOutputType(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun SystemSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "系统与布局") {
+                    Md2SettingDropdownRow(
+                        title = "横屏抽屉模式",
+                        value = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second
+                            ?: drawerModeOptions.first().second,
+                        expanded = drawerModeExpanded,
+                        onExpandedChange = { drawerModeExpanded = it },
+                        supportingText = "竖屏始终为隐藏式；该选项仅影响横屏布局。"
+                    ) {
+                        drawerModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    drawerModeExpanded = false
+                                    viewModel.setLandscapeDrawerMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Md2SettingSwitchRow(
+                        title = "使用纯色顶栏",
+                        checked = state.solidTopBar,
+                        onCheckedChange = { viewModel.setSolidTopBar(it) },
+                        supportingText = "开启后顶栏与状态栏颜色改为卡片同款自适应配色。"
+                    )
+                    Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
+                    Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2OutlinedButton(onClick = { drawingDirPicker.launch(null) }) {
+                            Text("选择目录")
+                        }
+                        Md2TextButton(onClick = {
+                            val def = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+                            viewModel.setDrawingSaveRelativePath(def)
+                        }) {
+                            Text("恢复默认")
+                        }
+                    }
+                    Text("通过系统文件管理器选择目录（建议内部存储）", style = MaterialTheme.typography.bodySmall)
+                    Md2SettingSwitchRow(
+                        title = "退出名片编辑时自动保存",
+                        checked = state.quickCardAutoSaveOnExit,
+                        onCheckedChange = { viewModel.setQuickCardAutoSaveOnExit(it) },
+                        supportingText = "关闭时将弹窗询问“是否保存名片”"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "使用内建文件管理器",
+                        checked = state.useBuiltinFileManager,
+                        onCheckedChange = { viewModel.setUseBuiltinFileManager(it) },
+                        supportingText = "关闭时使用系统文件选择器。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "使用内建图库",
+                        checked = state.useBuiltinGallery,
+                        onCheckedChange = { viewModel.setUseBuiltinGallery(it) },
+                        supportingText = "关闭时使用系统图库选择器。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "保持后台运行",
+                        checked = state.keepAlive,
+                        onCheckedChange = { viewModel.setKeepAlive(it) },
+                        supportingText = "开启后启用前台服务，锁屏/息屏也持续工作"
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun SettingsCategoryContent(category: SettingsCategory) {
+        when (category) {
+            SettingsCategory.Resources -> ResourceSettingsContent()
+            SettingsCategory.Recognition -> RecognitionSettingsContent()
+            SettingsCategory.Audio -> AudioSettingsContent()
+            SettingsCategory.System -> SystemSettingsContent()
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val compactTabs = maxWidth < 600.dp
+        val wideLayout = maxWidth >= 1100.dp
+        val horizontalInset = if (wideLayout) 24.dp else 16.dp
+
+        if (compactTabs) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = horizontalInset)
+                    .verticalScroll(scroll),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Spacer(Modifier.height(UiTokens.PageTopBlank))
+                SettingsTabsCard(
+                    selectedCategory = selectedCategory,
+                    compact = true,
+                    onSelect = { selectedCategoryName = it.name }
+                )
+                AnimatedContent(
+                    targetState = selectedCategory,
+                    transitionSpec = {
+                        val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                        ContentTransform(
+                            targetContentEnter = fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)) +
+                                slideInHorizontally(
+                                    animationSpec = tween(220, easing = FastOutSlowInEasing),
+                                    initialOffsetX = { direction * (it / 8) }
+                                ),
+                            initialContentExit = fadeOut(animationSpec = tween(180, easing = LinearEasing)) +
+                                slideOutHorizontally(
+                                    animationSpec = tween(180, easing = LinearEasing),
+                                    targetOffsetX = { -direction * (it / 10) }
+                                ),
+                            sizeTransform = null
                         )
-                        Md2IconButton(
-                            icon = "delete",
-                            contentDescription = "删除说话人",
-                            onClick = { viewModel.removeSpeakerProfileAt(idx) }
-                        )
-                    }
+                    },
+                    label = "settings_tabs_content_compact"
+                ) { category ->
+                    SettingsCategoryContent(category)
                 }
+                Spacer(Modifier.height(UiTokens.PageBottomBlank))
             }
-            Text(
-                "验证阈值：${String.format("%.2f", state.speakerVerifyThreshold)}",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Slider(
-                value = state.speakerVerifyThreshold,
-                onValueChange = { viewModel.setSpeakerVerifyThreshold(it) },
-                valueRange = 0.4f..0.95f
-            )
-            if (state.speakerLastSimilarity >= 0f) {
-                Text(
-                    "最近相似度：${String.format("%.2f", state.speakerLastSimilarity)}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+        } else {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = horizontalInset),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Md2OutlinedButton(onClick = {
-                    speakerEnrollSamples.clear()
-                    speakerEnrollStep = 0
-                    speakerEnrollCountingDown = false
-                    speakerEnrollCountdown = 3
-                    speakerEnrollReading = false
-                    speakerEnrollProgress = 0f
-                    speakerEnrollLevel = 0f
-                    speakerEnrollRemainingSec = 4f
-                    speakerEnrollSuccess = false
-                    speakerEnrollMessage = "请按页面引导完成注册。"
-                    speakerEnrollRetryDialog = false
-                    speakerEnrollOpenedByToggle = false
-                    showSpeakerEnrollDialog = true
-                }, enabled = viewModel.canAddSpeakerProfile()) {
-                    Text("注册说话人")
-                }
-                Md2TextButton(onClick = { viewModel.clearSpeakerProfile() }) {
-                    Text("清除注册")
-                }
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.muteWhilePlaying,
-                    onCheckedChange = { viewModel.setMuteWhilePlaying(it) }
-                )
-                Text("播放时屏蔽录音")
-            }
-            Text("开启后播放中不进行识别", style = MaterialTheme.typography.bodySmall)
-            Text("屏蔽结束延迟：${String.format("%.1f", state.muteWhilePlayingDelaySec)}s", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.muteWhilePlayingDelaySec,
-                onValueChange = { viewModel.setMuteWhilePlayingDelay(it) },
-                valueRange = 0f..5f
-            )
-            Text("语音识别最低音量阈值：${state.minVolumePercent}%", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.minVolumePercent.toFloat(),
-                onValueChange = { viewModel.setMinVolumePercent(it.toInt()) },
-                valueRange = 0f..100f
-            )
-            Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.playbackGainPercent.toFloat(),
-                onValueChange = { viewModel.setPlaybackGainPercent(it.toInt()) },
-                valueRange = 0f..1000f
-            )
-            Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
-            Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.piperNoiseScale,
-                onValueChange = { viewModel.setPiperNoiseScale(it) },
-                valueRange = 0f..2f
-            )
-            Text("语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.piperLengthScale,
-                onValueChange = { viewModel.setPiperLengthScale(it) },
-                valueRange = 0.1f..5f
-            )
-            Text("句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.piperSentenceSilence,
-                onValueChange = { viewModel.setPiperSentenceSilence(it) },
-                valueRange = 0f..2f
-            )
-            val numberReplaceOptions = listOf("不替换", "数字替换为中文字符", "数字替换为中文表达")
-            var numberReplaceExpanded by remember { mutableStateOf(false) }
-            Text("数字替换", fontWeight = FontWeight.Bold)
-            Box {
-                val label = numberReplaceOptions.getOrElse(state.numberReplaceMode) { numberReplaceOptions[0] }
-                Md2DropdownButton(
-                    label = label,
-                    onClick = { numberReplaceExpanded = true },
-                    expanded = numberReplaceExpanded
-                )
-                DropdownMenu(
-                    expanded = numberReplaceExpanded,
-                    onDismissRequest = { numberReplaceExpanded = false }
+                Column(
+                    modifier = Modifier
+                        .width(if (wideLayout) 184.dp else 168.dp)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    numberReplaceOptions.forEachIndexed { idx, label ->
-                        M2DropdownMenuItem(
-                            onClick = {
-                                numberReplaceExpanded = false
-                                viewModel.setNumberReplaceMode(idx)
-                            }
-                        ) { Text(label) }
-                    }
+                    Spacer(Modifier.height(UiTokens.PageTopBlank))
+                    SettingsTabsCard(
+                        selectedCategory = selectedCategory,
+                        compact = false,
+                        onSelect = { selectedCategoryName = it.name }
+                    )
                 }
-            }
-            Text("示例：2000 → 二零零零 / 两千", style = MaterialTheme.typography.bodySmall)
-        }
-        }
-
-        Md2StaggeredFloatIn(index = 4) {
-            Md2SettingsCard(title = "回声与降噪") {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.echoSuppression,
-                    onCheckedChange = { viewModel.setEchoSuppression(it) }
-                )
-                Text("回声抑制(VOICE_COMMUNICATION)")
-            }
-            Text("开启后使用通话录音源，可能有回声抑制/降噪效果", style = MaterialTheme.typography.bodySmall)
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.communicationMode,
-                    onCheckedChange = { viewModel.setCommunicationMode(it) }
-                )
-                Text("通话模式降噪(MODE_IN_COMMUNICATION)")
-            }
-            Text("开启后切换系统通话模式并统一播放属性", style = MaterialTheme.typography.bodySmall)
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.aec3Enabled,
-                    onCheckedChange = { viewModel.setAec3Enabled(it) }
-                )
-                Text("AEC3 软件回声消除")
-            }
-            Text("AEC3 状态：${state.aec3Status}", style = MaterialTheme.typography.bodySmall)
-            Text(state.aec3Diag, style = MaterialTheme.typography.bodySmall)
-            Text("需渲染参考音频，可能与系统AEC冲突", style = MaterialTheme.typography.bodySmall)
-        }
-        }
-
-        Md2StaggeredFloatIn(index = 5) {
-            Md2SettingsCard(title = "设备路由") {
-            Text("优先选择的音频输入设备类型", style = MaterialTheme.typography.bodySmall)
-            Box {
-                val label = inputTypeOptions.firstOrNull { it.first == state.preferredInputType }?.second
-                    ?: inputTypeOptions.first().second
-                Md2DropdownButton(
-                    label = label,
-                    onClick = { inputTypeExpanded = true },
-                    expanded = inputTypeExpanded
-                )
-                DropdownMenu(
-                    expanded = inputTypeExpanded,
-                    onDismissRequest = { inputTypeExpanded = false }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
                 ) {
-                    inputTypeOptions.forEach { (value, label) ->
-                        M2DropdownMenuItem(
-                            onClick = {
-                                inputTypeExpanded = false
-                                viewModel.setPreferredInputType(value)
-                            }
-                        ) { Text(label) }
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth()
+                            .widthIn(max = if (wideLayout) 860.dp else Dp.Unspecified)
+                            .verticalScroll(scroll),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Spacer(Modifier.height(UiTokens.PageTopBlank))
+                        AnimatedContent(
+                            targetState = selectedCategory,
+                            transitionSpec = {
+                                val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                                ContentTransform(
+                                    targetContentEnter = fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)) +
+                                        slideInHorizontally(
+                                            animationSpec = tween(220, easing = FastOutSlowInEasing),
+                                            initialOffsetX = { direction * (it / 10) }
+                                        ),
+                                    initialContentExit = fadeOut(animationSpec = tween(180, easing = LinearEasing)) +
+                                        slideOutHorizontally(
+                                            animationSpec = tween(180, easing = LinearEasing),
+                                            targetOffsetX = { -direction * (it / 12) }
+                                        ),
+                                    sizeTransform = null
+                                )
+                            },
+                            label = "settings_tabs_content_rail"
+                        ) { category ->
+                            SettingsCategoryContent(category)
+                        }
+                        Spacer(Modifier.height(UiTokens.PageBottomBlank))
                     }
                 }
             }
-            Text("适配内置、USB、蓝牙、有线等输入设备", style = MaterialTheme.typography.bodySmall)
-
-            Text("优先使用的音频输出类型", style = MaterialTheme.typography.bodySmall)
-            Box {
-                val label = outputTypeOptions.firstOrNull { it.first == state.preferredOutputType }?.second
-                    ?: outputTypeOptions.first().second
-                Md2DropdownButton(
-                    label = label,
-                    onClick = { outputTypeExpanded = true },
-                    expanded = outputTypeExpanded
-                )
-                DropdownMenu(
-                    expanded = outputTypeExpanded,
-                    onDismissRequest = { outputTypeExpanded = false }
-                ) {
-                    outputTypeOptions.forEach { (value, label) ->
-                        M2DropdownMenuItem(
-                            onClick = {
-                                outputTypeExpanded = false
-                                viewModel.setPreferredOutputType(value)
-                            }
-                        ) { Text(label) }
-                    }
-                }
-            }
-            Text("适配扬声器、听筒、蓝牙、USB、有线等输出设备", style = MaterialTheme.typography.bodySmall)
         }
-        }
-
-        Spacer(Modifier.height(UiTokens.PageBottomBlank))
     }
 
     if (showBuiltinAsrPicker) {
@@ -12994,7 +13373,7 @@ fun LogScreen(
                         onClick = { expanded = true },
                         expanded = expanded
                     )
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    Md2AnimatedOptionMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                         logs.forEach { file ->
                             M2DropdownMenuItem(
                                 onClick = {

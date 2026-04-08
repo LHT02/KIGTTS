@@ -31,6 +31,14 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.MaterialTheme
@@ -40,6 +48,7 @@ import androidx.compose.material.OutlinedButton
 import androidx.compose.material.TextButton
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -52,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -73,6 +83,43 @@ data class BuiltinGalleryItem(
     val bucketName: String,
     val dateMs: Long
 )
+
+@Composable
+private fun BuiltinAnimatedDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var renderMenu by remember { mutableStateOf(expanded) }
+    if (expanded && !renderMenu) renderMenu = true
+    LaunchedEffect(expanded) {
+        if (!expanded) {
+            kotlinx.coroutines.delay(180L)
+            renderMenu = false
+        }
+    }
+    if (!renderMenu) return
+    DropdownMenu(
+        expanded = true,
+        onDismissRequest = onDismissRequest
+    ) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(animationSpec = tween(160, easing = FastOutSlowInEasing)) +
+                slideInVertically(
+                    initialOffsetY = { it / 6 },
+                    animationSpec = tween(180, easing = FastOutSlowInEasing)
+                ),
+            exit = fadeOut(animationSpec = tween(140, easing = LinearEasing)) +
+                slideOutVertically(
+                    targetOffsetY = { it / 8 },
+                    animationSpec = tween(140, easing = LinearEasing)
+                )
+        ) {
+            Column(content = content)
+        }
+    }
+}
 
 @Composable
 fun BuiltinFilePickerDialog(
@@ -133,7 +180,7 @@ fun BuiltinFilePickerDialog(
 
                 Box {
                     OutlinedButton(onClick = { sortExpanded = true }) { Text(sortOption.label) }
-                    DropdownMenu(
+                    BuiltinAnimatedDropdownMenu(
                         expanded = sortExpanded,
                         onDismissRequest = { sortExpanded = false }
                     ) {
@@ -293,7 +340,7 @@ fun BuiltinGalleryPickerDialog(
                     OutlinedButton(onClick = { albumExpanded = true }) {
                         Text(albums[selectedAlbumId] ?: "全部相册")
                     }
-                    DropdownMenu(
+                    BuiltinAnimatedDropdownMenu(
                         expanded = albumExpanded,
                         onDismissRequest = { albumExpanded = false }
                     ) {
