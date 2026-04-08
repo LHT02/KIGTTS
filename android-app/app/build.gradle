@@ -80,6 +80,9 @@ android {
             pickFirsts += ["lib/**/libonnxruntime.so"]
         }
     }
+    aaptOptions {
+        noCompress "zip"
+    }
     externalNativeBuild {
         cmake {
             path "src/main/cpp/CMakeLists.txt"

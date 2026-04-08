@@ -1,0 +1,3 @@
+List of devices attached
+10AE5T2AR20043B	unauthorized
+

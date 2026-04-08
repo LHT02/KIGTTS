@@ -1,0 +1,15 @@
+flutter : CMake Error at flutter/generated_plugins.cmake:15 (add_subdirectory):
+所在位置 行:1 字符: 27
++ ... lutter_app; flutter build windows --debug 2> d:\KIGTTS\_build_err.txt ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (CMake Error at ..._subdirectory)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  add_subdirectory given source
+  "flutter/ephemeral/.plugin_symlinks/permission_handler_windows/windows"
+  which is not an existing directory.
+Call Stack (most recent call first):
+  CMakeLists.txt:58 (include)
+
+
+Unable to generate build files

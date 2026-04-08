@@ -1563,10 +1563,15 @@ class MainViewModel(
         viewModelScope.launch {
             val lastName = UserPrefs.getLastVoiceName(appContext)
             val lastDir = lastName?.let { repo.resolveVoicePack(it) }
-            uiState = uiState.copy(
-                voiceDir = lastDir ?: uiState.voiceDir,
-                status = if (lastDir != null) "已加载上次音色包" else uiState.status
-            )
+            if (lastDir != null) {
+                uiState = uiState.copy(voiceDir = lastDir, status = "已加载上次音色包")
+            } else {
+                val bundledDir = withContext(Dispatchers.IO) { repo.ensureBundledVoice() }
+                uiState = uiState.copy(
+                    voiceDir = bundledDir ?: uiState.voiceDir,
+                    status = if (bundledDir != null) "已加载内置音色包" else uiState.status
+                )
+            }
             preloadTts(lastDir)
             refreshVoicePacks()
         }
