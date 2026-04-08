@@ -150,3 +150,69 @@ target_link_libraries(
 )
 
 target_compile_options(aec3_jni PRIVATE -fexceptions)
+
+add_library(
+    rnnoise_jni
+    SHARED
+    rnnoise_jni.cpp
+    third_party/rnnoise/src/denoise.c
+    third_party/rnnoise/src/kiss_fft.c
+    third_party/rnnoise/src/pitch.c
+    third_party/rnnoise/src/celt_lpc.c
+    third_party/rnnoise/src/rnn.c
+    third_party/rnnoise/src/rnn_data.c
+)
+
+target_include_directories(
+    rnnoise_jni PRIVATE
+    third_party/rnnoise/include
+    third_party/rnnoise/src
+)
+
+target_compile_definitions(
+    rnnoise_jni PRIVATE
+    RNNOISE_BUILD
+)
+
+target_link_libraries(
+    rnnoise_jni
+    log
+)
+
+target_compile_options(rnnoise_jni PRIVATE -fexceptions)
+
+add_library(
+    speex_jni
+    SHARED
+    speex_jni.cpp
+    third_party/speex/libspeexdsp/fftwrap.c
+    third_party/speex/libspeexdsp/filterbank.c
+    third_party/speex/libspeexdsp/mdf.c
+    third_party/speex/libspeexdsp/preprocess.c
+    third_party/speex/libspeexdsp/smallft.c
+)
+
+target_include_directories(
+    speex_jni PRIVATE
+    third_party/speex/include
+    third_party/speex/libspeexdsp
+)
+
+target_compile_definitions(
+    speex_jni PRIVATE
+    FLOATING_POINT
+    USE_SMALLFT
+    EXPORT=
+)
+
+target_link_libraries(
+    speex_jni
+    log
+)
+
+target_compile_options(
+    speex_jni PRIVATE
+    -fexceptions
+    -std=gnu89
+    -Wno-error=implicit-function-declaration
+)

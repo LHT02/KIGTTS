@@ -12,6 +12,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.BitmapFactory
+import android.media.MediaRecorder
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -176,6 +177,9 @@ import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
 import com.canhub.cropper.CropImageView
 import com.kgtts.app.audio.AudioRoutePreference
+import com.kgtts.app.audio.AudioDenoiserMode
+import com.kgtts.app.audio.AudioLoopbackTester
+import com.kgtts.app.audio.AudioTestConfig
 import com.kgtts.app.audio.RealtimeController
 import com.kgtts.app.audio.SpeakerEnrollResult
 import com.kgtts.app.data.ModelRepository
@@ -332,6 +336,7 @@ data class UiState(
     val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
     val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
     val aec3Enabled: Boolean = false,
+    val denoiserMode: Int = AudioDenoiserMode.OFF,
     val aec3Status: String = "未启用",
     val aec3Diag: String = "AEC3 诊断：未启用",
     val minVolumePercent: Int = 0,
@@ -361,6 +366,11 @@ data class UiState(
     val speakerProfiles: List<SpeakerProfileUiItem> = emptyList(),
     val speakerLastSimilarity: Float = -1f,
     val inputLevel: Float = 0f,
+    val audioTestRecording: Boolean = false,
+    val audioTestPlaying: Boolean = false,
+    val audioTestHasClip: Boolean = false,
+    val audioTestLevel: Float = 0f,
+    val audioTestStatus: String = "未录制测试音频",
     val inputDeviceLabel: String = "未知",
     val outputDeviceLabel: String = "未知"
 )
@@ -513,6 +523,17 @@ class MainViewModel(
         private set
 
     private var controller: RealtimeController? = null
+    private val audioTest = AudioLoopbackTester(appContext, viewModelScope) { snapshot ->
+        viewModelScope.launch(Dispatchers.Main) {
+            uiState = uiState.copy(
+                audioTestRecording = snapshot.recording,
+                audioTestPlaying = snapshot.playing,
+                audioTestHasClip = snapshot.hasClip,
+                audioTestLevel = snapshot.level,
+                audioTestStatus = snapshot.status
+            )
+        }
+    }
     private var restartJob: Job? = null
     private var settingsObserveJob: Job? = null
     private val lastProgressUpdateAtMs = mutableMapOf<Long, Long>()
@@ -681,6 +702,7 @@ class MainViewModel(
             preferredInputType = settings.preferredInputType,
             preferredOutputType = settings.preferredOutputType,
             aec3Enabled = settings.aec3Enabled,
+            denoiserMode = settings.denoiserMode,
             aec3Status = nextAec3Status,
             aec3Diag = nextAec3Diag,
             minVolumePercent = settings.minVolumePercent,
@@ -1521,6 +1543,7 @@ class MainViewModel(
             initialPreferredInputType = uiState.preferredInputType,
             initialPreferredOutputType = uiState.preferredOutputType,
             initialUseAec3 = uiState.aec3Enabled,
+            initialDenoiserMode = uiState.denoiserMode,
             initialNumberReplaceMode = uiState.numberReplaceMode,
             initialAllowSystemAecWithAec3 = true,
             initialSpeakerVerifyEnabled = uiState.speakerVerifyEnabled,
@@ -2378,6 +2401,58 @@ class MainViewModel(
         }
     }
 
+    fun setDenoiserMode(mode: Int) {
+        val normalized = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
+        uiState = uiState.copy(denoiserMode = normalized)
+        controller?.setDenoiserMode(normalized)
+        viewModelScope.launch {
+            UserPrefs.setDenoiserMode(appContext, normalized)
+        }
+    }
+
+    private fun currentAudioTestConfig(): AudioTestConfig {
+        return AudioTestConfig(
+            audioSource = if (uiState.echoSuppression) {
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            } else {
+                MediaRecorder.AudioSource.MIC
+            },
+            preferredInputType = uiState.preferredInputType,
+            preferredOutputType = uiState.preferredOutputType,
+            useCommunicationMode = uiState.communicationMode
+        )
+    }
+
+    fun startAudioTestRecording() {
+        if (uiState.running || controller?.isMicActive() == true || RealtimeOwnerGate.currentOwner() != null) {
+            uiState = uiState.copy(audioTestStatus = "请先停止语音转换再测试录音")
+            return
+        }
+        val started = audioTest.startRecording(currentAudioTestConfig())
+        if (!started) {
+            uiState = uiState.copy(audioTestStatus = "音频测试：无法开始录制")
+        }
+    }
+
+    fun stopAudioTestRecording() {
+        audioTest.stopRecording()
+    }
+
+    fun startAudioTestPlayback() {
+        val started = audioTest.play(currentAudioTestConfig())
+        if (!started) {
+            uiState = uiState.copy(audioTestStatus = "音频测试：请先录制一段测试音频")
+        }
+    }
+
+    fun stopAudioTestPlayback() {
+        audioTest.stopPlayback()
+    }
+
+    fun clearAudioTest() {
+        audioTest.clear()
+    }
+
     fun speakText(text: String) {
         val message = text.trim()
         if (message.isEmpty()) return
@@ -2478,6 +2553,7 @@ class MainViewModel(
     override fun onCleared() {
         val activeController = controller
         controller = null
+        audioTest.release()
         settingsObserveJob?.cancel()
         settingsObserveJob = null
         if (activeController != null) {
@@ -2505,6 +2581,7 @@ class MainViewModel(
         controller?.setCommunicationMode(settings.communicationMode)
         controller?.setPreferredInputType(settings.preferredInputType)
         controller?.setPreferredOutputType(settings.preferredOutputType)
+        controller?.setDenoiserMode(settings.denoiserMode)
         controller?.setNumberReplaceMode(settings.numberReplaceMode)
         controller?.setAllowSystemAecWithAec3(true)
         controller?.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
@@ -12470,9 +12547,15 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         AudioRoutePreference.OUTPUT_USB to "USB 音频",
         AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
     )
+    val denoiserModeOptions = listOf(
+        AudioDenoiserMode.OFF to "关闭",
+        AudioDenoiserMode.RNNOISE to "RNNoise 噪声抑制",
+        AudioDenoiserMode.SPEEX to "Speex 噪声抑制"
+    )
     var drawerModeExpanded by remember { mutableStateOf(false) }
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
+    var denoiserModeExpanded by remember { mutableStateOf(false) }
     var showSpeakerEnrollDialog by remember { mutableStateOf(false) }
     var speakerEnrollStep by remember { mutableIntStateOf(0) } // 0准备 1句1 2句2 3句3 4结果
     var speakerEnrollCountingDown by remember { mutableStateOf(false) }
@@ -12872,6 +12955,23 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         onCheckedChange = { viewModel.setAec3Enabled(it) },
                         supportingText = "需渲染参考音频，可能与系统AEC冲突"
                     )
+                    Md2SettingDropdownRow(
+                        title = "软件噪声抑制",
+                        value = denoiserModeOptions.firstOrNull { it.first == state.denoiserMode }?.second
+                            ?: denoiserModeOptions.first().second,
+                        expanded = denoiserModeExpanded,
+                        onExpandedChange = { denoiserModeExpanded = it },
+                        supportingText = "关闭时不做软件降噪；RNNoise 更偏语音场景，Speex 更偏传统预处理。"
+                    ) {
+                        denoiserModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    denoiserModeExpanded = false
+                                    viewModel.setDenoiserMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
                     Text("AEC3 状态：${state.aec3Status}", style = MaterialTheme.typography.bodySmall)
                     Text(state.aec3Diag, style = MaterialTheme.typography.bodySmall)
                 }
@@ -12913,6 +13013,72 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             ) { Text(label) }
                         }
                     }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 4) {
+                Md2SettingsCard(title = "音频测试") {
+                    Text("当前状态：${state.audioTestStatus}", style = MaterialTheme.typography.bodySmall)
+                    LinearProgressIndicator(
+                        progress = state.audioTestLevel.coerceIn(0f, 1f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp, bottom = 10.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (state.audioTestRecording) {
+                            Md2Button(
+                                onClick = { viewModel.stopAudioTestRecording() },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("停止录音")
+                            }
+                        } else {
+                            Md2Button(
+                                onClick = { viewModel.startAudioTestRecording() },
+                                modifier = Modifier.weight(1f),
+                                enabled = !state.audioTestPlaying
+                            ) {
+                                Text("开始录音")
+                            }
+                        }
+                        if (state.audioTestPlaying) {
+                            Md2OutlinedButton(
+                                onClick = { viewModel.stopAudioTestPlayback() },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("停止回放")
+                            }
+                        } else {
+                            Md2OutlinedButton(
+                                onClick = { viewModel.startAudioTestPlayback() },
+                                modifier = Modifier.weight(1f),
+                                enabled = state.audioTestHasClip && !state.audioTestRecording
+                            ) {
+                                Text("回放测试")
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Md2TextButton(
+                            onClick = { viewModel.clearAudioTest() },
+                            enabled = state.audioTestHasClip && !state.audioTestRecording && !state.audioTestPlaying
+                        ) {
+                            Text("清空录音")
+                        }
+                    }
+                    Text(
+                        "用于测试当前麦克风收音和本地回放，不会进入识别或朗读队列。测试前请先停止主语音链路。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
         }
