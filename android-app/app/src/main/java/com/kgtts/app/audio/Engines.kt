@@ -1217,6 +1217,10 @@ class RealtimeController(
 
     fun setPreferredInputType(type: Int) {
         preferredInputType = type
+        recorder?.let { rec ->
+            applyInputRoutePreference(rec)
+            reportInputDevice(rec)
+        }
     }
 
     fun setPreferredOutputType(type: Int) {

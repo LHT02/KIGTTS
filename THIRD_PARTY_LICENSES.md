@@ -1,56 +1,49 @@
 # Third-Party Licenses
 
-This repository bundles or depends on multiple third-party components.
-This document lists the main runtime/build-time components that are included in the project tree or release artifacts.
+This repository includes or depends on multiple third-party components.
 
 ## 1) Piper (training/inference toolchain)
-- Upstream: https://github.com/rhasspy/piper
-- License: MIT
-- Local paths:
-  - `pc_trainer/third_party/piper/LICENSE.md`
-  - `pc_trainer/piper_env/Lib/site-packages/piper_train-1.0.0.dist-info/METADATA`
+- Local vendored snapshot source: https://github.com/rhasspy/piper
+- Active upstream location: https://github.com/OHF-Voice/piper1-gpl
+- Local license file: `pc_trainer/third_party/piper/LICENSE.md` (MIT for vendored snapshot)
 
-## 2) piper-phonemize (Android native dependency subtree)
-- Upstream: https://github.com/rhasspy/piper-phonemize
-- License: MIT
-- Local path:
-  - `android-app/app/src/main/cpp/piper-phonemize/LICENSE.md`
+## 2) piper-phonemize (Android native subtree)
+- Source: https://github.com/rhasspy/piper-phonemize
+- Local license file: `android-app/app/src/main/cpp/piper-phonemize/LICENSE.md` (MIT)
 
-## 3) eSpeak NG (phonemization runtime/tooling)
-- Upstream: https://github.com/espeak-ng/espeak-ng
-- License: GPL v3 or later (per upstream README)
+## 3) eSpeak NG
+- Source: https://github.com/espeak-ng/espeak-ng
+- Upstream license family: GPL v3+
 - Local bundled artifacts include:
   - `pc_trainer/tools/espeak-ng/**`
   - `pc_trainer/resources_pack/tools/espeak-ng/**`
   - `android-app/app/src/main/jniLibs/arm64-v8a/libespeak-ng.so`
   - `android-app/app/src/main/assets/espeak-ng-data.zip`
 
-## 4) sherpa-onnx (offline ASR runtime)
-- Upstream: https://github.com/k2-fsa/sherpa-onnx
-- License: see packaged license file
-- Local paths:
-  - `pc_trainer/piper_env/Lib/site-packages/sherpa_onnx-1.10.46.dist-info/LICENSE`
-  - `android-app/app/libs/sherpa-onnx-*.aar` (license in upstream/package docs)
+## 4) sherpa-onnx
+- Source: https://github.com/k2-fsa/sherpa-onnx
+- Android AAR path: `android-app/app/libs/sherpa-onnx-*.aar`
+- Python dist-info license path:
+  - `pc_trainer/piper_env/Lib/site-packages/sherpa_onnx-*.dist-info/LICENSE`
 
 ## 5) ONNX Runtime
-- Upstream: https://github.com/microsoft/onnxruntime
+- Source: https://github.com/microsoft/onnxruntime
 - License: MIT
-- Local paths:
+- Local license paths:
   - `pc_trainer/piper_env/Lib/site-packages/onnxruntime/LICENSE`
   - `pc_trainer/resources_pack/piper_env/Lib/site-packages/onnxruntime/LICENSE`
 
-## 6) Python runtime dependencies
-`pc_trainer/piper_env` and `pc_trainer/resources_pack/piper_env` contain many Python packages with their own licenses.
-Representative license files are under:
+## 6) Python dependency tree
+`pc_trainer/piper_env` and `pc_trainer/resources_pack/piper_env` include many Python packages with their own licenses.
+
+Representative locations:
 - `*/site-packages/*dist-info/licenses/*`
 - `*/site-packages/*dist-info/LICENSE*`
 
-When redistributing binaries, keep these license files intact.
-
 ---
 
-If you find a missing third-party entry, open an issue/PR and include:
-- component name and version
+If a third-party component is missing in this list, please add:
+- component name/version
 - upstream URL
 - license type
-- path to local license file
+- local license file path
