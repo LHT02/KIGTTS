@@ -386,13 +386,14 @@ class FloatingOverlayService : Service() {
                     maxLines = 3
                     ellipsize = TextUtils.TruncateAt.END
                     includeFontPadding = false
+                    setLineSpacing(0f, 1f)
                     gravity = Gravity.START or Gravity.CENTER_VERTICAL
                     textAlignment = View.TEXT_ALIGNMENT_VIEW_START
                 }
             val root =
                 FrameLayout(parent.context).apply {
                     layoutParams = RecyclerView.LayoutParams(dp(112), dp(104))
-                    setPadding(dp(14), dp(14), dp(14), dp(14))
+                    setPadding(dp(14), dp(8), dp(14), dp(20))
                     minimumWidth = dp(112)
                     minimumHeight = dp(104)
                     clipChildren = true
@@ -405,7 +406,7 @@ class FloatingOverlayService : Service() {
                         FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT,
-                            Gravity.START or Gravity.CENTER_VERTICAL
+                            Gravity.START
                         )
                     )
                 }
