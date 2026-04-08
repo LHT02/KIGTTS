@@ -32,6 +32,7 @@ class DeviceDropdown extends StatelessWidget {
           value: items.containsKey(value) ? value : items.keys.first,
           underline: const SizedBox.shrink(),
           isDense: true,
+          menuMaxHeight: 200,
           items: items.entries
               .map(
                 (e) => DropdownMenuItem<int>(

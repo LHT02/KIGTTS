@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/theme/app_dimensions.dart';
-import '../../../injection.dart';
 import '../../cubits/settings/settings_cubit.dart';
 import '../../cubits/settings/settings_state.dart';
 import '../../widgets/staggered_card.dart';
@@ -17,10 +16,8 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider(
-      create: (_) => getIt<SettingsCubit>()..initialize(),
-      child: const _SettingsView(),
-    );
+    // SettingsCubit is provided globally in app.dart
+    return const _SettingsView();
   }
 }
 

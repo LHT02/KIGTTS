@@ -80,7 +80,7 @@ Future<void> configureDependencies() async {
       realtimeRepository: getIt(),
     ),
   );
-  getIt.registerFactory(
+  getIt.registerLazySingleton(
     () => SettingsCubit(
       settingsRepository: getIt(),
       realtimeRepository: getIt(),

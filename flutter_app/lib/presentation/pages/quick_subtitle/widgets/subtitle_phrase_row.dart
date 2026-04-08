@@ -24,7 +24,7 @@ class SubtitlePhraseRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final cubit = context.read<QuickSubtitleCubit>();
     return SizedBox(
-      height: 120,
+      height: 88,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -66,7 +66,7 @@ class _PhraseCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SizedBox(
-      width: 140,
+      width: 120,
       child: Card(
         elevation: isSelected ? 4 : AppDimensions.elevationCard,
         color: isSelected

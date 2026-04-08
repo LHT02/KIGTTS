@@ -4,6 +4,7 @@ import 'core/router/app_router.dart';
 import 'core/theme/app_theme.dart';
 import 'injection.dart';
 import 'presentation/cubits/realtime/realtime_cubit.dart';
+import 'presentation/cubits/settings/settings_cubit.dart';
 
 /// Root application widget.
 class KgttsApp extends StatelessWidget {
@@ -11,8 +12,15 @@ class KgttsApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider<RealtimeCubit>(
-      create: (_) => getIt<RealtimeCubit>()..initialize(),
+    return MultiBlocProvider(
+      providers: [
+        BlocProvider<RealtimeCubit>(
+          create: (_) => getIt<RealtimeCubit>()..initialize(),
+        ),
+        BlocProvider<SettingsCubit>(
+          create: (_) => getIt<SettingsCubit>()..initialize(),
+        ),
+      ],
       child: MaterialApp.router(
         title: 'KIGTTS',
         debugShowCheckedModeBanner: false,

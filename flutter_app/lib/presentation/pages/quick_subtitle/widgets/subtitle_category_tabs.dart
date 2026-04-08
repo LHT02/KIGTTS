@@ -21,7 +21,7 @@ class SubtitleCategoryTabs extends StatelessWidget {
     final cubit = context.read<QuickSubtitleCubit>();
 
     return SizedBox(
-      height: 40,
+      height: 36,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 8),

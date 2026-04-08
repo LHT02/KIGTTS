@@ -20,6 +20,7 @@ class OverlayControlPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // SettingsCubit is provided globally in app.dart
     return BlocProvider(
       create: (_) => OverlayCubit(
         overlayRepository: getIt<OverlayRepository>(),
@@ -37,7 +38,7 @@ class _OverlayControlView extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.only(
         top: AppDimensions.pageTopBlank,
-        bottom: AppDimensions.spacingLg,
+        bottom: AppDimensions.pageBottomBlank,
       ),
       children: const [
         // Card 1: 悬浮窗状态
