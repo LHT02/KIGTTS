@@ -8,6 +8,8 @@ part 'realtime_state.freezed.dart';
 abstract class RealtimeState with _$RealtimeState {
   const factory RealtimeState({
     @Default(false) bool running,
+    @Default(false) bool recording,              // PTT recording state
+    @Default(true) bool pttMode,                 // Push-to-talk mode flag
     @Default('待命') String status,
     @Default([]) List<RecognizedItem> recognized,
     @Default(0.0) double inputLevel,

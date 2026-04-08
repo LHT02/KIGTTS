@@ -10,6 +10,11 @@ endif()
 
 file(READ "${CMAKELISTS}" CONTENTS)
 
+# Ensure CMP0057 (IN_LIST operator) is set to NEW for NDK 27+ compatibility.
+string(REGEX REPLACE "(cmake_minimum_required\\([^)]*\\))"
+    "\\1\ncmake_policy(SET CMP0057 NEW)"
+    CONTENTS "${CONTENTS}")
+
 # Drop -m64 (invalid for Android toolchains).
 string(REPLACE "add_compile_options(-Wall -fPIC -Wno-deprecated -m64 -fexceptions)"
                "add_compile_options(-Wall -fPIC -Wno-deprecated -fexceptions)"

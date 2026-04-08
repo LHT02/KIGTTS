@@ -33,18 +33,34 @@ class RealtimeCubit extends Cubit<RealtimeState> {
   Future<void> initialize() async {
     emit(state.copyWith(loading: true, status: '初始化中...'));
     try {
-      // Ensure bundled ASR is extracted
-      final asrDir = await _modelRepo.ensureBundledAsr();
+      // Ensure bundled ASR is extracted (may be null if no bundled asset)
+      String? asrDir;
+      try {
+        asrDir = await _modelRepo.ensureBundledAsr();
+      } catch (_) {
+        // sosv-int8.zip may not exist — that's OK, user can import later
+      }
+
+      // Ensure bundled voice pack (firefly) is extracted
+      try {
+        await _modelRepo.ensureBundledVoice();
+      } catch (_) {
+        // Extraction may fail on some devices
+      }
 
       // Get last used voice pack
       final lastVoiceName = await _modelRepo.getLastVoiceName();
       String? voiceDir;
+      final packs = await _modelRepo.listVoicePacks();
       if (lastVoiceName != null) {
-        final packs = await _modelRepo.listVoicePacks();
         final match = packs.where((p) => p.dirName == lastVoiceName);
         if (match.isNotEmpty) {
           voiceDir = match.first.dirPath;
         }
+      }
+      // Fall back to first available voice pack (e.g. bundled firefly)
+      if (voiceDir == null && packs.isNotEmpty) {
+        voiceDir = packs.first.dirPath;
       }
 
       // Push current settings to native
@@ -185,6 +201,40 @@ class RealtimeCubit extends Cubit<RealtimeState> {
     }
   }
 
+  /// Start PTT (Push-to-Talk) recording.
+  /// Updates UI to show recording state and calls repo.
+  Future<void> startPTT() async {
+    if (state.recording) return;
+    
+    try {
+      emit(state.copyWith(recording: true, status: '录音中...'));
+      await _realtimeRepo.beginPttSession();
+    } catch (e) {
+      emit(state.copyWith(
+        recording: false,
+        error: e.toString(),
+        status: '录音错误',
+      ));
+    }
+  }
+
+  /// Stop PTT (Push-to-Talk) recording.
+  /// Updates UI and triggers TTS playback of recorded text.
+  Future<void> stopPTT() async {
+    if (!state.recording) return;
+    
+    try {
+      emit(state.copyWith(recording: false, status: '停止录音...'));
+      await _realtimeRepo.commitPttSession('speak');
+      emit(state.copyWith(status: '已停止录音'));
+    } catch (e) {
+      emit(state.copyWith(
+        error: e.toString(),
+        status: '停止录音错误',
+      ));
+    }
+  }
+
   /// Enqueue text for TTS playback.
   Future<void> enqueueTts(String text) async {
     try {
@@ -223,6 +273,25 @@ class RealtimeCubit extends Cubit<RealtimeState> {
   Future<void> setPttPressed(bool pressed) async {
     emit(state.copyWith(pttPressed: pressed));
     await _realtimeRepo.setPttPressed(pressed);
+  }
+
+  /// Toggle Push-to-Talk mode on/off.
+  void setPttMode(bool enabled) {
+    emit(state.copyWith(pttMode: enabled));
+  }
+
+  /// Set preferred input device type and persist.
+  Future<void> setPreferredInputType(int typeValue) async {
+    try {
+      await _settingsRepo.updateSetting('preferred_input_type', typeValue);
+    } catch (_) {}
+  }
+
+  /// Set preferred output device type and persist.
+  Future<void> setPreferredOutputType(int typeValue) async {
+    try {
+      await _settingsRepo.updateSetting('preferred_output_type', typeValue);
+    } catch (_) {}
   }
 
   /// Clear error message.

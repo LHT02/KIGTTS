@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_dimensions.dart';
 import '../../../domain/entities/quick_card.dart';
 import '../../../domain/repositories/settings_repository.dart';
 import '../../../injection.dart';
 import '../../cubits/quick_card/quick_card_cubit.dart';
 import '../../cubits/quick_card/quick_card_state.dart';
+import 'widgets/card_display.dart';
+import 'widgets/page_dots.dart';
 
 /// Quick card page with image/QR/text cards (P1).
 class QuickCardPage extends StatelessWidget {
@@ -30,24 +31,26 @@ class _QuickCardView extends StatelessWidget {
   Widget build(BuildContext context) {
     return BlocBuilder<QuickCardCubit, QuickCardState>(
       builder: (context, state) {
-        if (state.cards.isEmpty) {
-          return _EmptyCardState(onAdd: () => _addCard(context));
+        if (state.loading) {
+          return const Center(child: CircularProgressIndicator());
         }
-        return Stack(
+        if (state.cards.isEmpty) {
+          return QuickCardEmptyState(onAdd: () => _showAddMenu(context));
+        }
+        return Column(
           children: [
-            PageView.builder(
-              itemCount: state.cards.length,
-              onPageChanged: (i) =>
-                  context.read<QuickCardCubit>().selectCard(i),
-              itemBuilder: (_, i) => _CardView(card: state.cards[i]),
+            _TopActions(onAdd: () => _showAddMenu(context)),
+            Expanded(
+              child: _CardPageView(
+                cards: state.cards,
+                selectedIndex: state.selectedIndex,
+              ),
             ),
-            Positioned(
-              right: 16,
-              bottom: 16,
-              child: FloatingActionButton(
-                heroTag: 'quickCardFab',
-                onPressed: () => _addCard(context),
-                child: const Icon(Icons.add),
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppDimensions.spacingLg),
+              child: PageDots(
+                count: state.cards.length,
+                current: state.selectedIndex,
               ),
             ),
           ],
@@ -56,7 +59,7 @@ class _QuickCardView extends StatelessWidget {
     );
   }
 
-  void _addCard(BuildContext context) {
+  void _showAddMenu(BuildContext context) {
     final cubit = context.read<QuickCardCubit>();
     showModalBottomSheet(
       context: context,
@@ -109,34 +112,32 @@ class _QuickCardView extends StatelessWidget {
   }
 }
 
-class _EmptyCardState extends StatelessWidget {
-  const _EmptyCardState({required this.onAdd});
+class _TopActions extends StatelessWidget {
+  const _TopActions({required this.onAdd});
   final VoidCallback onAdd;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppDimensions.spacingLg,
+        vertical: AppDimensions.spacingSm,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          Icon(
-            Icons.contact_page,
-            size: 64,
-            color: theme.colorScheme.outline.withValues(alpha: 0.3),
-          ),
-          const SizedBox(height: AppDimensions.spacingMd),
-          Text(
-            '暂无名片卡',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: theme.colorScheme.outline,
-            ),
-          ),
-          const SizedBox(height: AppDimensions.spacingLg),
-          FilledButton.icon(
+          TextButton.icon(
             onPressed: onAdd,
-            icon: const Icon(Icons.add),
-            label: const Text('添加卡片'),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('新建'),
+          ),
+          const SizedBox(width: AppDimensions.spacingSm),
+          TextButton.icon(
+            onPressed: () {
+              // TODO: implement QR scan
+            },
+            icon: const Icon(Icons.qr_code_scanner, size: 18),
+            label: const Text('扫描'),
           ),
         ],
       ),
@@ -144,53 +145,124 @@ class _EmptyCardState extends StatelessWidget {
   }
 }
 
-class _CardView extends StatelessWidget {
-  const _CardView({required this.card});
-  final QuickCard card;
+class _CardPageView extends StatefulWidget {
+  const _CardPageView({
+    required this.cards,
+    required this.selectedIndex,
+  });
+
+  final List<QuickCard> cards;
+  final int selectedIndex;
+
+  @override
+  State<_CardPageView> createState() => _CardPageViewState();
+}
+
+class _CardPageViewState extends State<_CardPageView> {
+  late PageController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = PageController(initialPage: widget.selectedIndex);
+  }
+
+  @override
+  void didUpdateWidget(_CardPageView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cards.length != widget.cards.length) {
+      final target = (widget.cards.length - 1).clamp(0, widget.cards.length);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_controller.hasClients && target < widget.cards.length) {
+          _controller.animateToPage(
+            target,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+          );
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.all(AppDimensions.spacingLg),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(AppDimensions.spacingXl),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(card.title, style: theme.textTheme.titleLarge),
-              const SizedBox(height: AppDimensions.spacingLg),
-              Expanded(child: Center(child: _buildContent(theme))),
-            ],
-          ),
-        ),
-      ),
+    return PageView.builder(
+      controller: _controller,
+      itemCount: widget.cards.length,
+      onPageChanged: (i) => context.read<QuickCardCubit>().selectCard(i),
+      itemBuilder: (_, i) {
+        final card = widget.cards[i];
+        return CardDisplay(
+          card: card,
+          onEdit: () => _editCard(context, card),
+        );
+      },
     );
   }
 
-  Widget _buildContent(ThemeData theme) {
-    return switch (card.type) {
-      QuickCardType.text => Text(
-          card.content,
-          style: theme.textTheme.headlineMedium,
-          textAlign: TextAlign.center,
-        ),
-      QuickCardType.qr => Column(
+  void _editCard(BuildContext context, QuickCard card) {
+    final cubit = context.read<QuickCardCubit>();
+    final titleCtrl = TextEditingController(text: card.title);
+    final contentCtrl = TextEditingController(text: card.content);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('编辑卡片'),
+        content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.qr_code_2, size: 120, color: AppColors.primary),
-            const SizedBox(height: 8),
-            Text(card.content, style: theme.textTheme.bodySmall),
+            TextField(
+              controller: titleCtrl,
+              decoration: const InputDecoration(
+                labelText: '标题',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: AppDimensions.spacingSm),
+            TextField(
+              controller: contentCtrl,
+              decoration: const InputDecoration(
+                labelText: '内容',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 3,
+            ),
           ],
         ),
-      QuickCardType.image => card.imagePath != null
-          ? Image.asset(card.imagePath!, fit: BoxFit.contain)
-          : Icon(
-              Icons.image,
-              size: 120,
-              color: theme.colorScheme.outline.withValues(alpha: 0.3),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              cubit.updateCard(card.copyWith(
+                title: titleCtrl.text,
+                content: contentCtrl.text,
+              ));
+              Navigator.pop(ctx);
+            },
+            child: const Text('保存'),
+          ),
+          TextButton(
+            onPressed: () {
+              cubit.removeCard(card.id);
+              Navigator.pop(ctx);
+            },
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(ctx).colorScheme.error,
             ),
-    };
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
   }
 }
+

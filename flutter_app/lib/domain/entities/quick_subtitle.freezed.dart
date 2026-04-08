@@ -214,6 +214,7 @@ QuickSubtitleGroup _$QuickSubtitleGroupFromJson(Map<String, dynamic> json) {
 mixin _$QuickSubtitleGroup {
   String get id => throw _privateConstructorUsedError;
   String get name => throw _privateConstructorUsedError;
+  String get icon => throw _privateConstructorUsedError;
   List<QuickSubtitleItem> get items => throw _privateConstructorUsedError;
 
   /// Serializes this QuickSubtitleGroup to a JSON map.
@@ -233,7 +234,12 @@ abstract class $QuickSubtitleGroupCopyWith<$Res> {
     $Res Function(QuickSubtitleGroup) then,
   ) = _$QuickSubtitleGroupCopyWithImpl<$Res, QuickSubtitleGroup>;
   @useResult
-  $Res call({String id, String name, List<QuickSubtitleItem> items});
+  $Res call({
+    String id,
+    String name,
+    String icon,
+    List<QuickSubtitleItem> items,
+  });
 }
 
 /// @nodoc
@@ -250,7 +256,12 @@ class _$QuickSubtitleGroupCopyWithImpl<$Res, $Val extends QuickSubtitleGroup>
   /// with the given fields replaced by the non-null parameter values.
   @pragma('vm:prefer-inline')
   @override
-  $Res call({Object? id = null, Object? name = null, Object? items = null}) {
+  $Res call({
+    Object? id = null,
+    Object? name = null,
+    Object? icon = null,
+    Object? items = null,
+  }) {
     return _then(
       _value.copyWith(
             id: null == id
@@ -260,6 +271,10 @@ class _$QuickSubtitleGroupCopyWithImpl<$Res, $Val extends QuickSubtitleGroup>
             name: null == name
                 ? _value.name
                 : name // ignore: cast_nullable_to_non_nullable
+                      as String,
+            icon: null == icon
+                ? _value.icon
+                : icon // ignore: cast_nullable_to_non_nullable
                       as String,
             items: null == items
                 ? _value.items
@@ -280,7 +295,12 @@ abstract class _$$QuickSubtitleGroupImplCopyWith<$Res>
   ) = __$$QuickSubtitleGroupImplCopyWithImpl<$Res>;
   @override
   @useResult
-  $Res call({String id, String name, List<QuickSubtitleItem> items});
+  $Res call({
+    String id,
+    String name,
+    String icon,
+    List<QuickSubtitleItem> items,
+  });
 }
 
 /// @nodoc
@@ -296,7 +316,12 @@ class __$$QuickSubtitleGroupImplCopyWithImpl<$Res>
   /// with the given fields replaced by the non-null parameter values.
   @pragma('vm:prefer-inline')
   @override
-  $Res call({Object? id = null, Object? name = null, Object? items = null}) {
+  $Res call({
+    Object? id = null,
+    Object? name = null,
+    Object? icon = null,
+    Object? items = null,
+  }) {
     return _then(
       _$QuickSubtitleGroupImpl(
         id: null == id
@@ -306,6 +331,10 @@ class __$$QuickSubtitleGroupImplCopyWithImpl<$Res>
         name: null == name
             ? _value.name
             : name // ignore: cast_nullable_to_non_nullable
+                  as String,
+        icon: null == icon
+            ? _value.icon
+            : icon // ignore: cast_nullable_to_non_nullable
                   as String,
         items: null == items
             ? _value._items
@@ -322,6 +351,7 @@ class _$QuickSubtitleGroupImpl implements _QuickSubtitleGroup {
   const _$QuickSubtitleGroupImpl({
     required this.id,
     required this.name,
+    this.icon = '',
     final List<QuickSubtitleItem> items = const [],
   }) : _items = items;
 
@@ -332,6 +362,9 @@ class _$QuickSubtitleGroupImpl implements _QuickSubtitleGroup {
   final String id;
   @override
   final String name;
+  @override
+  @JsonKey()
+  final String icon;
   final List<QuickSubtitleItem> _items;
   @override
   @JsonKey()
@@ -343,7 +376,7 @@ class _$QuickSubtitleGroupImpl implements _QuickSubtitleGroup {
 
   @override
   String toString() {
-    return 'QuickSubtitleGroup(id: $id, name: $name, items: $items)';
+    return 'QuickSubtitleGroup(id: $id, name: $name, icon: $icon, items: $items)';
   }
 
   @override
@@ -353,6 +386,7 @@ class _$QuickSubtitleGroupImpl implements _QuickSubtitleGroup {
             other is _$QuickSubtitleGroupImpl &&
             (identical(other.id, id) || other.id == id) &&
             (identical(other.name, name) || other.name == name) &&
+            (identical(other.icon, icon) || other.icon == icon) &&
             const DeepCollectionEquality().equals(other._items, _items));
   }
 
@@ -362,6 +396,7 @@ class _$QuickSubtitleGroupImpl implements _QuickSubtitleGroup {
     runtimeType,
     id,
     name,
+    icon,
     const DeepCollectionEquality().hash(_items),
   );
 
@@ -386,6 +421,7 @@ abstract class _QuickSubtitleGroup implements QuickSubtitleGroup {
   const factory _QuickSubtitleGroup({
     required final String id,
     required final String name,
+    final String icon,
     final List<QuickSubtitleItem> items,
   }) = _$QuickSubtitleGroupImpl;
 
@@ -396,6 +432,8 @@ abstract class _QuickSubtitleGroup implements QuickSubtitleGroup {
   String get id;
   @override
   String get name;
+  @override
+  String get icon;
   @override
   List<QuickSubtitleItem> get items;
 
@@ -564,9 +602,9 @@ class __$$QuickSubtitleConfigImplCopyWithImpl<$Res>
 class _$QuickSubtitleConfigImpl implements _QuickSubtitleConfig {
   const _$QuickSubtitleConfigImpl({
     final List<QuickSubtitleGroup> groups = const [],
-    this.fontSize = 28.0,
+    this.fontSize = 48.0,
     this.bold = false,
-    this.centered = true,
+    this.centered = false,
     this.playOnSend = true,
   }) : _groups = groups;
 

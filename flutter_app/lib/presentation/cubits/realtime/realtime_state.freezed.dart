@@ -18,6 +18,10 @@ final _privateConstructorUsedError = UnsupportedError(
 /// @nodoc
 mixin _$RealtimeState {
   bool get running => throw _privateConstructorUsedError;
+  bool get recording =>
+      throw _privateConstructorUsedError; // PTT recording state
+  bool get pttMode =>
+      throw _privateConstructorUsedError; // Push-to-talk mode flag
   String get status => throw _privateConstructorUsedError;
   List<RecognizedItem> get recognized => throw _privateConstructorUsedError;
   double get inputLevel => throw _privateConstructorUsedError;
@@ -50,6 +54,8 @@ abstract class $RealtimeStateCopyWith<$Res> {
   @useResult
   $Res call({
     bool running,
+    bool recording,
+    bool pttMode,
     String status,
     List<RecognizedItem> recognized,
     double inputLevel,
@@ -84,6 +90,8 @@ class _$RealtimeStateCopyWithImpl<$Res, $Val extends RealtimeState>
   @override
   $Res call({
     Object? running = null,
+    Object? recording = null,
+    Object? pttMode = null,
     Object? status = null,
     Object? recognized = null,
     Object? inputLevel = null,
@@ -105,6 +113,14 @@ class _$RealtimeStateCopyWithImpl<$Res, $Val extends RealtimeState>
             running: null == running
                 ? _value.running
                 : running // ignore: cast_nullable_to_non_nullable
+                      as bool,
+            recording: null == recording
+                ? _value.recording
+                : recording // ignore: cast_nullable_to_non_nullable
+                      as bool,
+            pttMode: null == pttMode
+                ? _value.pttMode
+                : pttMode // ignore: cast_nullable_to_non_nullable
                       as bool,
             status: null == status
                 ? _value.status
@@ -183,6 +199,8 @@ abstract class _$$RealtimeStateImplCopyWith<$Res>
   @useResult
   $Res call({
     bool running,
+    bool recording,
+    bool pttMode,
     String status,
     List<RecognizedItem> recognized,
     double inputLevel,
@@ -216,6 +234,8 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
   @override
   $Res call({
     Object? running = null,
+    Object? recording = null,
+    Object? pttMode = null,
     Object? status = null,
     Object? recognized = null,
     Object? inputLevel = null,
@@ -237,6 +257,14 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
         running: null == running
             ? _value.running
             : running // ignore: cast_nullable_to_non_nullable
+                  as bool,
+        recording: null == recording
+            ? _value.recording
+            : recording // ignore: cast_nullable_to_non_nullable
+                  as bool,
+        pttMode: null == pttMode
+            ? _value.pttMode
+            : pttMode // ignore: cast_nullable_to_non_nullable
                   as bool,
         status: null == status
             ? _value.status
@@ -308,6 +336,8 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
 class _$RealtimeStateImpl implements _RealtimeState {
   const _$RealtimeStateImpl({
     this.running = false,
+    this.recording = false,
+    this.pttMode = true,
     this.status = '待命',
     final List<RecognizedItem> recognized = const [],
     this.inputLevel = 0.0,
@@ -328,6 +358,14 @@ class _$RealtimeStateImpl implements _RealtimeState {
   @override
   @JsonKey()
   final bool running;
+  @override
+  @JsonKey()
+  final bool recording;
+  // PTT recording state
+  @override
+  @JsonKey()
+  final bool pttMode;
+  // Push-to-talk mode flag
   @override
   @JsonKey()
   final String status;
@@ -379,7 +417,7 @@ class _$RealtimeStateImpl implements _RealtimeState {
 
   @override
   String toString() {
-    return 'RealtimeState(running: $running, status: $status, recognized: $recognized, inputLevel: $inputLevel, playbackProgress: $playbackProgress, playingId: $playingId, inputDeviceLabel: $inputDeviceLabel, outputDeviceLabel: $outputDeviceLabel, aec3Status: $aec3Status, pttPressed: $pttPressed, pttStreamingText: $pttStreamingText, speakerLastSimilarity: $speakerLastSimilarity, loading: $loading, error: $error, currentAsrDir: $currentAsrDir, currentVoiceDir: $currentVoiceDir)';
+    return 'RealtimeState(running: $running, recording: $recording, pttMode: $pttMode, status: $status, recognized: $recognized, inputLevel: $inputLevel, playbackProgress: $playbackProgress, playingId: $playingId, inputDeviceLabel: $inputDeviceLabel, outputDeviceLabel: $outputDeviceLabel, aec3Status: $aec3Status, pttPressed: $pttPressed, pttStreamingText: $pttStreamingText, speakerLastSimilarity: $speakerLastSimilarity, loading: $loading, error: $error, currentAsrDir: $currentAsrDir, currentVoiceDir: $currentVoiceDir)';
   }
 
   @override
@@ -388,6 +426,9 @@ class _$RealtimeStateImpl implements _RealtimeState {
         (other.runtimeType == runtimeType &&
             other is _$RealtimeStateImpl &&
             (identical(other.running, running) || other.running == running) &&
+            (identical(other.recording, recording) ||
+                other.recording == recording) &&
+            (identical(other.pttMode, pttMode) || other.pttMode == pttMode) &&
             (identical(other.status, status) || other.status == status) &&
             const DeepCollectionEquality().equals(
               other._recognized,
@@ -423,6 +464,8 @@ class _$RealtimeStateImpl implements _RealtimeState {
   int get hashCode => Object.hash(
     runtimeType,
     running,
+    recording,
+    pttMode,
     status,
     const DeepCollectionEquality().hash(_recognized),
     inputLevel,
@@ -452,6 +495,8 @@ class _$RealtimeStateImpl implements _RealtimeState {
 abstract class _RealtimeState implements RealtimeState {
   const factory _RealtimeState({
     final bool running,
+    final bool recording,
+    final bool pttMode,
     final String status,
     final List<RecognizedItem> recognized,
     final double inputLevel,
@@ -471,6 +516,10 @@ abstract class _RealtimeState implements RealtimeState {
 
   @override
   bool get running;
+  @override
+  bool get recording; // PTT recording state
+  @override
+  bool get pttMode; // Push-to-talk mode flag
   @override
   String get status;
   @override

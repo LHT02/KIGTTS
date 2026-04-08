@@ -30,6 +30,9 @@ abstract class ModelRepository {
   /// Ensure the bundled ASR model is extracted. Returns its directory path.
   Future<String?> ensureBundledAsr();
 
+  /// Ensure the bundled voice pack is extracted. Returns its directory path.
+  Future<String?> ensureBundledVoice();
+
   /// Get the last selected voice pack name.
   Future<String?> getLastVoiceName();
 

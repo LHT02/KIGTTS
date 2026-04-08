@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "com.kgtts.kgtts_app"
     compileSdk = 36
-    ndkVersion = "26.1.10909125"
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -28,6 +28,7 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags("-std=c++17")
+                abiFilters("arm64-v8a")
             }
         }
         ndk {
@@ -38,6 +39,7 @@ android {
     externalNativeBuild {
         cmake {
             path("src/main/cpp/CMakeLists.txt")
+            version = "3.31.6"
         }
     }
 
@@ -54,6 +56,10 @@ android {
         jniLibs {
             pickFirsts += listOf("lib/**/libonnxruntime.so")
         }
+    }
+
+    aaptOptions {
+        noCompress += listOf("zip")
     }
 }
 

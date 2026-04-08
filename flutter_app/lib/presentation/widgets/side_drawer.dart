@@ -4,138 +4,108 @@ import '../../core/router/app_router.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_dimensions.dart';
 
-/// Side navigation drawer with expand/collapse support.
-/// Portrait: collapsed (72dp mini), Landscape: expanded (216dp).
-class SideDrawer extends StatelessWidget {
-  const SideDrawer({
+/// Reusable drawer panel content used in both portrait Drawer
+/// and landscape rail/expanded overlay.
+class DrawerPanel extends StatelessWidget {
+  const DrawerPanel({
     super.key,
     required this.expanded,
-    required this.onToggle,
+    required this.currentPath,
+    this.onItemTap,
   });
 
   final bool expanded;
-  final VoidCallback onToggle;
+  final String currentPath;
+  final VoidCallback? onItemTap;
 
   @override
   Widget build(BuildContext context) {
-    final currentPath = GoRouterState.of(context).uri.toString();
-    final width = expanded
-        ? AppDimensions.drawerWidthExpanded
-        : AppDimensions.drawerWidthCollapsed;
+    final theme = Theme.of(context);
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeInOut,
-      width: width,
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(
-          right: BorderSide(
-            color: Theme.of(context).dividerTheme.color ??
-                Theme.of(context)
-                    .colorScheme
-                    .outline
-                    .withValues(alpha: 0.2),
-          ),
-        ),
-      ),
-      child: Column(
-        children: [
-          const SizedBox(height: AppDimensions.spacingLg),
-          _DrawerHeader(expanded: expanded, onToggle: onToggle),
-          const SizedBox(height: AppDimensions.spacingSm),
-          Expanded(
-            child: ListView(
-              padding: EdgeInsets.zero,
-              children: [
-                _DrawerItem(
-                  icon: Icons.graphic_eq,
-                  label: '实时转换',
-                  path: AppRoutes.realtime,
-                  currentPath: currentPath,
-                  expanded: expanded,
+    return Container(
+      color: theme.colorScheme.surface,
+      child: SafeArea(
+        right: false,
+        child: Column(
+          children: [
+            // Header
+            if (expanded)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppDimensions.spacingLg,
+                  vertical: AppDimensions.spacingMd,
                 ),
-                _DrawerItem(
-                  icon: Icons.subtitles,
-                  label: '便捷字幕',
-                  path: AppRoutes.subtitle,
-                  currentPath: currentPath,
-                  expanded: expanded,
-                ),
-                _DrawerItem(
-                  icon: Icons.open_in_new,
-                  label: '悬浮窗',
-                  path: AppRoutes.overlay,
-                  currentPath: currentPath,
-                  expanded: expanded,
-                ),
-                _DrawerItem(
-                  icon: Icons.contact_page,
-                  label: '快捷名片',
-                  path: AppRoutes.cards,
-                  currentPath: currentPath,
-                  expanded: expanded,
-                ),
-                _DrawerItem(
-                  icon: Icons.record_voice_over,
-                  label: '语音包',
-                  path: AppRoutes.voicepacks,
-                  currentPath: currentPath,
-                  expanded: expanded,
-                ),
-                _DrawerItem(
-                  icon: Icons.brush,
-                  label: '画板',
-                  path: AppRoutes.drawing,
-                  currentPath: currentPath,
-                  expanded: expanded,
-                ),
-                _DrawerItem(
-                  icon: Icons.settings,
-                  label: '设置',
-                  path: AppRoutes.settings,
-                  currentPath: currentPath,
-                  expanded: expanded,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DrawerHeader extends StatelessWidget {
-  const _DrawerHeader({required this.expanded, required this.onToggle});
-
-  final bool expanded;
-  final VoidCallback onToggle;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppDimensions.spacingSm,
-      ),
-      child: Row(
-        children: [
-          IconButton(
-            icon: Icon(expanded ? Icons.menu_open : Icons.menu),
-            onPressed: onToggle,
-            tooltip: expanded ? '折叠' : '展开',
-          ),
-          if (expanded) ...[
-            const SizedBox(width: AppDimensions.spacingSm),
-            Text(
-              'KIGTTS',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.primary,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'KIGTTS',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.primary,
+                    ),
                   ),
+                ),
+              )
+            else
+              const SizedBox(height: AppDimensions.spacingLg),
+            // Menu items
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  _DrawerItem(
+                    icon: Icons.subtitles_sharp,
+                    label: '便捷字幕',
+                    path: AppRoutes.home,
+                    currentPath: currentPath,
+                    expanded: expanded,
+                    onItemTap: onItemTap,
+                  ),
+                  _DrawerItem(
+                    icon: Icons.picture_in_picture_alt_sharp,
+                    label: '悬浮窗',
+                    path: AppRoutes.overlay,
+                    currentPath: currentPath,
+                    expanded: expanded,
+                    onItemTap: onItemTap,
+                  ),
+                  _DrawerItem(
+                    icon: Icons.contact_page_sharp,
+                    label: '快捷名片',
+                    path: AppRoutes.cards,
+                    currentPath: currentPath,
+                    expanded: expanded,
+                    onItemTap: onItemTap,
+                  ),
+                  _DrawerItem(
+                    icon: Icons.record_voice_over_sharp,
+                    label: '语音包',
+                    path: AppRoutes.voicepacks,
+                    currentPath: currentPath,
+                    expanded: expanded,
+                    onItemTap: onItemTap,
+                  ),
+                  _DrawerItem(
+                    icon: Icons.brush_sharp,
+                    label: '画板',
+                    path: AppRoutes.drawing,
+                    currentPath: currentPath,
+                    expanded: expanded,
+                    onItemTap: onItemTap,
+                  ),
+                  _DrawerItem(
+                    icon: Icons.tune_sharp,
+                    label: '设置',
+                    path: AppRoutes.settings,
+                    currentPath: currentPath,
+                    expanded: expanded,
+                    onItemTap: onItemTap,
+                  ),
+                ],
+              ),
             ),
           ],
-        ],
+        ),
       ),
     );
   }
@@ -148,6 +118,7 @@ class _DrawerItem extends StatelessWidget {
     required this.path,
     required this.currentPath,
     required this.expanded,
+    this.onItemTap,
   });
 
   final IconData icon;
@@ -155,13 +126,14 @@ class _DrawerItem extends StatelessWidget {
   final String path;
   final String currentPath;
   final bool expanded;
+  final VoidCallback? onItemTap;
 
   bool get _isSelected => currentPath == path;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final selectedColor = AppColors.primary;
+    const selectedColor = AppColors.primary;
     final defaultColor = theme.colorScheme.onSurfaceVariant;
     final color = _isSelected ? selectedColor : defaultColor;
 
@@ -174,10 +146,13 @@ class _DrawerItem extends StatelessWidget {
         color: _isSelected
             ? selectedColor.withValues(alpha: 0.12)
             : Colors.transparent,
-        borderRadius: BorderRadius.circular(AppDimensions.radiusMedium),
+        borderRadius: BorderRadius.circular(AppDimensions.radiusSmall),
         child: InkWell(
-          borderRadius: BorderRadius.circular(AppDimensions.radiusMedium),
-          onTap: () => context.go(path),
+          borderRadius: BorderRadius.circular(AppDimensions.radiusSmall),
+          onTap: () {
+            context.go(path);
+            onItemTap?.call();
+          },
           child: Padding(
             padding: EdgeInsets.symmetric(
               horizontal: expanded ? AppDimensions.spacingMd : 0,
@@ -195,8 +170,9 @@ class _DrawerItem extends StatelessWidget {
                     label,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: color,
-                      fontWeight:
-                          _isSelected ? FontWeight.w600 : FontWeight.normal,
+                      fontWeight: _isSelected
+                          ? FontWeight.w600
+                          : FontWeight.normal,
                     ),
                   ),
                 ],

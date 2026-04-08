@@ -79,7 +79,7 @@ class _AsrModelRow extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 4),
       child: Row(
         children: [
-          Icon(Icons.hearing, size: 16, color: AppColors.primary),
+          const Icon(Icons.hearing, size: 16, color: AppColors.primary),
           const SizedBox(width: 8),
           Expanded(
             child: Text(dirName, style: theme.textTheme.bodySmall),

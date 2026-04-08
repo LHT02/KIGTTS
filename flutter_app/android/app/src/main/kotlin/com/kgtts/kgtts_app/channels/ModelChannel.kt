@@ -190,6 +190,20 @@ class ModelChannel(
                     }
                 }
             }
+            "ensureBundledVoice" -> {
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val dir = repo.ensureBundledVoice()
+                        withContext(Dispatchers.Main) {
+                            result.success(dir?.absolutePath)
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            result.error("BUNDLED_VOICE_FAILED", e.message, null)
+                        }
+                    }
+                }
+            }
             "getLastVoiceName" -> {
                 val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
                 result.success(prefs.getString("flutter.last_voice_name", null))

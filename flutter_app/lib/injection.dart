@@ -14,6 +14,9 @@ import 'domain/repositories/model_repository.dart';
 import 'domain/repositories/overlay_repository.dart';
 import 'domain/repositories/realtime_repository.dart';
 import 'domain/repositories/settings_repository.dart';
+import 'domain/usecases/model_usecases.dart';
+import 'domain/usecases/realtime_usecases.dart';
+import 'domain/usecases/settings_usecases.dart';
 import 'presentation/cubits/model_manager/model_manager_cubit.dart';
 import 'presentation/cubits/realtime/realtime_cubit.dart';
 import 'presentation/cubits/settings/settings_cubit.dart';
@@ -47,8 +50,22 @@ Future<void> configureDependencies() async {
     () => KeepaliveRepositoryImpl(dataSource: getIt()),
   );
 
+  // --- UseCases (LazySingletons) ---
+  getIt.registerLazySingleton(() => StartRealtimeUseCase(getIt()));
+  getIt.registerLazySingleton(() => StopRealtimeUseCase(getIt()));
+  getIt.registerLazySingleton(() => GetRealtimeEventsUseCase(getIt()));
+  getIt.registerLazySingleton(() => EnqueueTtsUseCase(getIt()));
+  getIt.registerLazySingleton(() => ListVoicePacksUseCase(getIt()));
+  getIt.registerLazySingleton(() => ImportVoicePackUseCase(getIt()));
+  getIt.registerLazySingleton(() => DeleteVoicePackUseCase(getIt()));
+  getIt.registerLazySingleton(() => ListAsrModelsUseCase(getIt()));
+  getIt.registerLazySingleton(() => ImportAsrUseCase(getIt()));
+  getIt.registerLazySingleton(() => GetSettingsUseCase(getIt()));
+  getIt.registerLazySingleton(() => ObserveSettingsUseCase(getIt()));
+  getIt.registerLazySingleton(() => UpdateSettingUseCase(getIt()));
+
   // --- Cubits ---
-  // RealtimeCubit is a singleton so the global RunningStrip can access it.
+  // RealtimeCubit is a singleton so the global FAB can access it.
   getIt.registerLazySingleton(
     () => RealtimeCubit(
       realtimeRepository: getIt(),

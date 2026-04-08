@@ -19,11 +19,11 @@ class _RealtimeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return const Column(
       children: [
-        const StatusBar(),
-        const Expanded(child: RecognizedList()),
-        const RunningControls(),
+        StatusBar(),
+        Expanded(child: RecognizedList()),
+        RunningControls(),
       ],
     );
   }

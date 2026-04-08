@@ -4,18 +4,36 @@ import '../../../cubits/settings/settings_cubit.dart';
 import '../../../cubits/settings/settings_state.dart';
 import '../../../widgets/section_card.dart';
 
-/// Piper TTS synthesis parameter settings.
+/// Piper TTS synthesis parameter settings — standalone card.
 class PiperSettingsSection extends StatelessWidget {
   const PiperSettingsSection({super.key});
 
   @override
   Widget build(BuildContext context) {
+    return const SectionCard(
+      title: 'Piper TTS 参数',
+      children: [PiperSettingsContent()],
+    );
+  }
+}
+
+/// Embeddable Piper TTS params (no SectionCard wrapper).
+/// Used inside RecognitionSection Card 4.
+class PiperSettingsContent extends StatelessWidget {
+  const PiperSettingsContent({super.key});
+
+  @override
+  Widget build(BuildContext context) {
     return BlocBuilder<SettingsCubit, SettingsState>(
+      buildWhen: (p, c) =>
+          p.settings.piperNoiseScale != c.settings.piperNoiseScale ||
+          p.settings.piperLengthScale != c.settings.piperLengthScale ||
+          p.settings.piperNoiseW != c.settings.piperNoiseW ||
+          p.settings.piperSentenceSilence != c.settings.piperSentenceSilence,
       builder: (context, state) {
         final s = state.settings;
         final cubit = context.read<SettingsCubit>();
-        return SectionCard(
-          title: 'Piper TTS 参数',
+        return Column(
           children: [
             _ParamSlider(
               label: '噪声强度 (noiseScale)',

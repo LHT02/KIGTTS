@@ -7,9 +7,11 @@ part 'drawing_state.freezed.dart';
 abstract class DrawingState with _$DrawingState {
   const factory DrawingState({
     @Default([]) List<DrawStroke> strokes,
-    @Default(0xFF000000) int currentColor,
-    @Default(3.0) double strokeWidth,
+    @Default(0xFF80DEEA) int currentColor,
+    @Default(6.0) double strokeWidth,
     @Default(false) bool isEraser,
     @Default(false) bool saving,
+    @Default(true) bool toolbarExpanded,
+    @Default(false) bool isFullscreen,
   }) = _DrawingState;
 }

@@ -22,6 +22,8 @@ mixin _$DrawingState {
   double get strokeWidth => throw _privateConstructorUsedError;
   bool get isEraser => throw _privateConstructorUsedError;
   bool get saving => throw _privateConstructorUsedError;
+  bool get toolbarExpanded => throw _privateConstructorUsedError;
+  bool get isFullscreen => throw _privateConstructorUsedError;
 
   /// Create a copy of DrawingState
   /// with the given fields replaced by the non-null parameter values.
@@ -43,6 +45,8 @@ abstract class $DrawingStateCopyWith<$Res> {
     double strokeWidth,
     bool isEraser,
     bool saving,
+    bool toolbarExpanded,
+    bool isFullscreen,
   });
 }
 
@@ -66,6 +70,8 @@ class _$DrawingStateCopyWithImpl<$Res, $Val extends DrawingState>
     Object? strokeWidth = null,
     Object? isEraser = null,
     Object? saving = null,
+    Object? toolbarExpanded = null,
+    Object? isFullscreen = null,
   }) {
     return _then(
       _value.copyWith(
@@ -89,6 +95,14 @@ class _$DrawingStateCopyWithImpl<$Res, $Val extends DrawingState>
                 ? _value.saving
                 : saving // ignore: cast_nullable_to_non_nullable
                       as bool,
+            toolbarExpanded: null == toolbarExpanded
+                ? _value.toolbarExpanded
+                : toolbarExpanded // ignore: cast_nullable_to_non_nullable
+                      as bool,
+            isFullscreen: null == isFullscreen
+                ? _value.isFullscreen
+                : isFullscreen // ignore: cast_nullable_to_non_nullable
+                      as bool,
           )
           as $Val,
     );
@@ -110,6 +124,8 @@ abstract class _$$DrawingStateImplCopyWith<$Res>
     double strokeWidth,
     bool isEraser,
     bool saving,
+    bool toolbarExpanded,
+    bool isFullscreen,
   });
 }
 
@@ -132,6 +148,8 @@ class __$$DrawingStateImplCopyWithImpl<$Res>
     Object? strokeWidth = null,
     Object? isEraser = null,
     Object? saving = null,
+    Object? toolbarExpanded = null,
+    Object? isFullscreen = null,
   }) {
     return _then(
       _$DrawingStateImpl(
@@ -155,6 +173,14 @@ class __$$DrawingStateImplCopyWithImpl<$Res>
             ? _value.saving
             : saving // ignore: cast_nullable_to_non_nullable
                   as bool,
+        toolbarExpanded: null == toolbarExpanded
+            ? _value.toolbarExpanded
+            : toolbarExpanded // ignore: cast_nullable_to_non_nullable
+                  as bool,
+        isFullscreen: null == isFullscreen
+            ? _value.isFullscreen
+            : isFullscreen // ignore: cast_nullable_to_non_nullable
+                  as bool,
       ),
     );
   }
@@ -165,10 +191,12 @@ class __$$DrawingStateImplCopyWithImpl<$Res>
 class _$DrawingStateImpl implements _DrawingState {
   const _$DrawingStateImpl({
     final List<DrawStroke> strokes = const [],
-    this.currentColor = 0xFF000000,
-    this.strokeWidth = 3.0,
+    this.currentColor = 0xFF80DEEA,
+    this.strokeWidth = 6.0,
     this.isEraser = false,
     this.saving = false,
+    this.toolbarExpanded = true,
+    this.isFullscreen = false,
   }) : _strokes = strokes;
 
   final List<DrawStroke> _strokes;
@@ -192,10 +220,16 @@ class _$DrawingStateImpl implements _DrawingState {
   @override
   @JsonKey()
   final bool saving;
+  @override
+  @JsonKey()
+  final bool toolbarExpanded;
+  @override
+  @JsonKey()
+  final bool isFullscreen;
 
   @override
   String toString() {
-    return 'DrawingState(strokes: $strokes, currentColor: $currentColor, strokeWidth: $strokeWidth, isEraser: $isEraser, saving: $saving)';
+    return 'DrawingState(strokes: $strokes, currentColor: $currentColor, strokeWidth: $strokeWidth, isEraser: $isEraser, saving: $saving, toolbarExpanded: $toolbarExpanded, isFullscreen: $isFullscreen)';
   }
 
   @override
@@ -210,7 +244,11 @@ class _$DrawingStateImpl implements _DrawingState {
                 other.strokeWidth == strokeWidth) &&
             (identical(other.isEraser, isEraser) ||
                 other.isEraser == isEraser) &&
-            (identical(other.saving, saving) || other.saving == saving));
+            (identical(other.saving, saving) || other.saving == saving) &&
+            (identical(other.toolbarExpanded, toolbarExpanded) ||
+                other.toolbarExpanded == toolbarExpanded) &&
+            (identical(other.isFullscreen, isFullscreen) ||
+                other.isFullscreen == isFullscreen));
   }
 
   @override
@@ -221,6 +259,8 @@ class _$DrawingStateImpl implements _DrawingState {
     strokeWidth,
     isEraser,
     saving,
+    toolbarExpanded,
+    isFullscreen,
   );
 
   /// Create a copy of DrawingState
@@ -239,6 +279,8 @@ abstract class _DrawingState implements DrawingState {
     final double strokeWidth,
     final bool isEraser,
     final bool saving,
+    final bool toolbarExpanded,
+    final bool isFullscreen,
   }) = _$DrawingStateImpl;
 
   @override
@@ -251,6 +293,10 @@ abstract class _DrawingState implements DrawingState {
   bool get isEraser;
   @override
   bool get saving;
+  @override
+  bool get toolbarExpanded;
+  @override
+  bool get isFullscreen;
 
   /// Create a copy of DrawingState
   /// with the given fields replaced by the non-null parameter values.

@@ -12,7 +12,7 @@ class KgttsApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return BlocProvider<RealtimeCubit>(
-      create: (_) => getIt<RealtimeCubit>(),
+      create: (_) => getIt<RealtimeCubit>()..initialize(),
       child: MaterialApp.router(
         title: 'KIGTTS',
         debugShowCheckedModeBanner: false,

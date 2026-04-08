@@ -28,7 +28,8 @@ abstract final class AppDimensions {
   static const pageBottomBlank = 92.0;
 
   // Voice pack card
-  static const voicePackAvatarSize = 48.0;
+  static const voicePackAvatarSize = 72.0;
+  static const voicePackDetailAvatarSize = 64.0;
   static const voicePackCardHeight = 72.0;
 
   // Running strip

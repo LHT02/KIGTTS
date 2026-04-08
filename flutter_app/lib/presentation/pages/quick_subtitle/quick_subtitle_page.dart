@@ -2,14 +2,26 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_dimensions.dart';
-import '../../../domain/entities/quick_subtitle.dart';
 import '../../../domain/repositories/realtime_repository.dart';
 import '../../../domain/repositories/settings_repository.dart';
 import '../../../injection.dart';
 import '../../cubits/quick_subtitle/quick_subtitle_cubit.dart';
 import '../../cubits/quick_subtitle/quick_subtitle_state.dart';
+import '../../cubits/realtime/realtime_cubit.dart';
+import '../../cubits/realtime/realtime_state.dart';
+import 'widgets/subtitle_category_tabs.dart';
+import 'widgets/subtitle_display_card.dart';
+import 'widgets/subtitle_input_bar.dart';
+import 'widgets/subtitle_phrase_row.dart';
 
-/// Quick subtitle page for text-to-speech shortcuts (P1).
+/// Quick subtitle page — main page of the app.
+///
+/// Original Android layout (top → bottom):
+/// 1. Display card (Expanded)
+/// 2. Phrase cards (horizontal, 120dp) ← toggleable
+/// 3. Category tabs (😊常用|🎮游戏|📁办公|✏️) ← toggleable
+/// 4. Bottom toolbar (← → 🔊 📺 ▶) + mic FAB overlapping
+/// 5. Input bar (text field + ▷ send)
 class QuickSubtitlePage extends StatelessWidget {
   const QuickSubtitlePage({super.key});
 
@@ -20,260 +32,225 @@ class QuickSubtitlePage extends StatelessWidget {
         realtimeRepository: getIt<RealtimeRepository>(),
         settingsRepository: getIt<SettingsRepository>(),
       )..initialize(),
-      child: const _QuickSubtitleView(),
+      child: const _Body(),
     );
   }
 }
 
-class _QuickSubtitleView extends StatelessWidget {
-  const _QuickSubtitleView();
+class _Body extends StatelessWidget {
+  const _Body();
 
   @override
   Widget build(BuildContext context) {
     return BlocBuilder<QuickSubtitleCubit, QuickSubtitleState>(
       builder: (context, state) {
-        final cubit = context.read<QuickSubtitleCubit>();
+        if (state.loading) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
         final groups = state.config.groups;
         final selectedGroup =
             groups.isNotEmpty && state.selectedGroupIndex < groups.length
                 ? groups[state.selectedGroupIndex]
                 : null;
 
-        return Column(
+        final bottomPad = MediaQuery.paddingOf(context).bottom;
+
+        return Stack(
           children: [
-            // Group tabs
-            if (groups.isNotEmpty)
-              SizedBox(
-                height: 48,
-                child: ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: AppDimensions.spacingMd,
-                  ),
-                  itemCount: groups.length + 1,
-                  itemBuilder: (_, i) {
-                    if (i == groups.length) {
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: ActionChip(
-                          label: const Icon(Icons.add, size: 18),
-                          onPressed: () => _addGroup(context),
-                        ),
-                      );
-                    }
-                    final isSelected = i == state.selectedGroupIndex;
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: ChoiceChip(
-                        label: Text(groups[i].name),
-                        selected: isSelected,
-                        onSelected: (_) => cubit.selectGroup(i),
-                        selectedColor:
-                            AppColors.primary.withValues(alpha: 0.2),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            // Items grid
-            Expanded(
-              child: selectedGroup == null || selectedGroup.items.isEmpty
-                  ? _EmptyState(hasGroups: groups.isNotEmpty)
-                  : _ItemsGrid(
-                      selectedGroup: selectedGroup,
+            Column(
+              children: [
+                // 1. Display card
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+                    child: SubtitleDisplayCard(
+                      displayText: state.displayText,
                       fontSize: state.config.fontSize,
                       bold: state.config.bold,
-                      cubit: cubit,
+                      centered: state.config.centered,
                     ),
+                  ),
+                ),
+                // 2 + 3. Preset section (animated show/hide)
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.fastOutSlowIn,
+                  alignment: Alignment.topCenter,
+                  child: state.presetsVisible && selectedGroup != null
+                      ? Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const SizedBox(height: 4),
+                            // Phrase cards
+                            SubtitlePhraseRow(
+                              items: selectedGroup.items,
+                              selectedIndex: state.selectedItemIndex,
+                              displayText: state.displayText,
+                              groupId: selectedGroup.id,
+                            ),
+                            const SizedBox(height: 4),
+                            // Category tabs
+                            SubtitleCategoryTabs(
+                              groups: groups,
+                              selectedIndex: state.selectedGroupIndex,
+                            ),
+                          ],
+                        )
+                      : const SizedBox.shrink(),
+                ),
+                // 4. Bottom toolbar
+                _BottomToolbar(presetsVisible: state.presetsVisible),
+                // 5. Input bar
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(12, 0, 12, 0),
+                  child: SubtitleInputBar(),
+                ),
+                SizedBox(height: bottomPad + 8),
+              ],
             ),
-            // Input bar
-            _InputBar(
-              onSend: (text) => cubit.sendText(text),
-              onAdd: selectedGroup != null
-                  ? (text) => cubit.addItem(selectedGroup.id, text)
-                  : null,
+            // PTT Mic FAB
+            Positioned(
+              right: 16,
+              bottom: 44 + 48 + 8 + bottomPad,
+              child: const _PttMicFab(),
             ),
           ],
         );
       },
     );
   }
-
-  void _addGroup(BuildContext context) {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('新建分组'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(hintText: '分组名称'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              if (controller.text.isNotEmpty) {
-                context
-                    .read<QuickSubtitleCubit>()
-                    .addGroup(controller.text);
-              }
-              Navigator.pop(ctx);
-            },
-            child: const Text('创建'),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.hasGroups});
-  final bool hasGroups;
+/// Bottom toolbar: ← → [spacer] 🔊 📺 ▶
+/// 📺 toggles presets section visible/hidden.
+class _BottomToolbar extends StatelessWidget {
+  const _BottomToolbar({required this.presetsVisible});
+  final bool presetsVisible;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+    final iconColor = theme.colorScheme.onSurfaceVariant;
+    final cubit = context.read<QuickSubtitleCubit>();
+
+    return SizedBox(
+      height: 44,
+      child: Row(
         children: [
-          Icon(
-            Icons.subtitles,
-            size: 48,
-            color: theme.colorScheme.outline.withValues(alpha: 0.3),
+          const SizedBox(width: 4),
+          IconButton(
+            icon: Icon(Icons.arrow_back_sharp, color: iconColor, size: 22),
+            onPressed: cubit.navigatePrev,
+            tooltip: '上一条',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           ),
-          const SizedBox(height: 8),
-          Text(
-            hasGroups ? '该分组暂无项目' : '点击右下角添加分组',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.outline,
+          IconButton(
+            icon:
+                Icon(Icons.arrow_forward_sharp, color: iconColor, size: 22),
+            onPressed: cubit.navigateNext,
+            tooltip: '下一条',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          ),
+          const Spacer(),
+          IconButton(
+            icon: Icon(Icons.volume_up_sharp, color: iconColor, size: 22),
+            onPressed: () {},
+            tooltip: '播放开关',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          ),
+          // Subtitles toggle — shows/hides preset section
+          IconButton(
+            icon: Icon(
+              presetsVisible
+                  ? Icons.subtitles_sharp
+                  : Icons.subtitles_off_sharp,
+              color: iconColor,
+              size: 22,
             ),
+            onPressed: cubit.togglePresetsVisible,
+            tooltip: presetsVisible ? '隐藏预设' : '显示预设',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           ),
+          BlocBuilder<QuickSubtitleCubit, QuickSubtitleState>(
+            buildWhen: (p, c) => p.displayText != c.displayText,
+            builder: (context, st) {
+              return IconButton(
+                icon: Icon(
+                  Icons.play_arrow_sharp,
+                  color: st.displayText.isNotEmpty
+                      ? iconColor
+                      : iconColor.withValues(alpha: 0.38),
+                  size: 22,
+                ),
+                onPressed: st.displayText.isNotEmpty
+                    ? cubit.sendDisplayText
+                    : null,
+                tooltip: '播放',
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 44, minHeight: 44),
+              );
+            },
+          ),
+          const SizedBox(width: 56), // Space for mic FAB
         ],
       ),
     );
   }
 }
 
-class _ItemsGrid extends StatelessWidget {
-  const _ItemsGrid({
-    required this.selectedGroup,
-    required this.fontSize,
-    required this.bold,
-    required this.cubit,
-  });
-
-  final QuickSubtitleGroup selectedGroup;
-  final double fontSize;
-  final bool bold;
-  final QuickSubtitleCubit cubit;
+/// PTT Mic FAB — large teal circle with mic icon.
+class _PttMicFab extends StatelessWidget {
+  const _PttMicFab();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return GridView.builder(
-      padding: const EdgeInsets.all(AppDimensions.spacingMd),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
-        childAspectRatio: 2.5,
-      ),
-      itemCount: selectedGroup.items.length,
-      itemBuilder: (_, i) {
-        final item = selectedGroup.items[i];
-        return Material(
-          color: theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(AppDimensions.radiusMedium),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(AppDimensions.radiusMedium),
-            onTap: () => cubit.sendItem(item),
-            onLongPress: () =>
-                cubit.removeItem(selectedGroup.id, item.id),
-            child: Center(
-              child: Text(
-                item.text,
-                style: TextStyle(
-                  fontSize: fontSize.clamp(12, 48),
-                  fontWeight: bold ? FontWeight.bold : FontWeight.normal,
-                ),
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
+    return BlocBuilder<RealtimeCubit, RealtimeState>(
+      buildWhen: (p, c) =>
+          p.running != c.running ||
+          p.pttPressed != c.pttPressed ||
+          p.loading != c.loading,
+      builder: (context, state) {
+        final isRecording = state.pttPressed;
+        final cubit = context.read<RealtimeCubit>();
+
+        return SizedBox(
+          width: 64,
+          height: 64,
+          child: GestureDetector(
+            onLongPressStart: (_) => cubit.setPttPressed(true),
+            onLongPressEnd: (_) => cubit.setPttPressed(false),
+            child: FloatingActionButton.large(
+              heroTag: 'pttMic',
+              onPressed: state.loading ? null : () => cubit.toggle(),
+              backgroundColor:
+                  isRecording ? Colors.red : AppColors.primary,
+              elevation: AppDimensions.elevationFab,
+              shape: const CircleBorder(),
+              tooltip: isRecording ? '松开发送' : '按住说话',
+              child: state.loading
+                  ? const SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2.5,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.mic_sharp,
+                      color: Colors.white,
+                      size: 32,
+                    ),
             ),
           ),
         );
       },
-    );
-  }
-}
-
-class _InputBar extends StatefulWidget {
-  const _InputBar({required this.onSend, this.onAdd});
-  final ValueChanged<String> onSend;
-  final ValueChanged<String>? onAdd;
-
-  @override
-  State<_InputBar> createState() => _InputBarState();
-}
-
-class _InputBarState extends State<_InputBar> {
-  final _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(AppDimensions.spacingMd),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextField(
-              controller: _controller,
-              decoration: const InputDecoration(
-                hintText: '输入文字...',
-                border: OutlineInputBorder(),
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              ),
-              onSubmitted: (text) {
-                widget.onSend(text);
-                _controller.clear();
-              },
-            ),
-          ),
-          const SizedBox(width: 8),
-          IconButton(
-            icon: const Icon(Icons.send),
-            color: AppColors.primary,
-            onPressed: () {
-              widget.onSend(_controller.text);
-              _controller.clear();
-            },
-          ),
-          if (widget.onAdd != null)
-            IconButton(
-              icon: const Icon(Icons.add_circle_outline),
-              onPressed: () {
-                if (_controller.text.isNotEmpty) {
-                  widget.onAdd!(_controller.text);
-                  _controller.clear();
-                }
-              },
-            ),
-        ],
-      ),
     );
   }
 }

@@ -67,6 +67,9 @@ class ModelRepositoryImpl implements ModelRepository {
   Future<String?> ensureBundledAsr() => dataSource.ensureBundledAsr();
 
   @override
+  Future<String?> ensureBundledVoice() => dataSource.ensureBundledVoice();
+
+  @override
   Future<String?> getLastVoiceName() => dataSource.getLastVoiceName();
 
   @override

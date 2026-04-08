@@ -19,7 +19,10 @@ final _privateConstructorUsedError = UnsupportedError(
 mixin _$QuickSubtitleState {
   QuickSubtitleConfig get config => throw _privateConstructorUsedError;
   int get selectedGroupIndex => throw _privateConstructorUsedError;
+  int get selectedItemIndex => throw _privateConstructorUsedError;
+  String get displayText => throw _privateConstructorUsedError;
   String get inputText => throw _privateConstructorUsedError;
+  bool get presetsVisible => throw _privateConstructorUsedError;
   bool get loading => throw _privateConstructorUsedError;
   String? get error => throw _privateConstructorUsedError;
 
@@ -40,7 +43,10 @@ abstract class $QuickSubtitleStateCopyWith<$Res> {
   $Res call({
     QuickSubtitleConfig config,
     int selectedGroupIndex,
+    int selectedItemIndex,
+    String displayText,
     String inputText,
+    bool presetsVisible,
     bool loading,
     String? error,
   });
@@ -65,7 +71,10 @@ class _$QuickSubtitleStateCopyWithImpl<$Res, $Val extends QuickSubtitleState>
   $Res call({
     Object? config = null,
     Object? selectedGroupIndex = null,
+    Object? selectedItemIndex = null,
+    Object? displayText = null,
     Object? inputText = null,
+    Object? presetsVisible = null,
     Object? loading = null,
     Object? error = freezed,
   }) {
@@ -79,10 +88,22 @@ class _$QuickSubtitleStateCopyWithImpl<$Res, $Val extends QuickSubtitleState>
                 ? _value.selectedGroupIndex
                 : selectedGroupIndex // ignore: cast_nullable_to_non_nullable
                       as int,
+            selectedItemIndex: null == selectedItemIndex
+                ? _value.selectedItemIndex
+                : selectedItemIndex // ignore: cast_nullable_to_non_nullable
+                      as int,
+            displayText: null == displayText
+                ? _value.displayText
+                : displayText // ignore: cast_nullable_to_non_nullable
+                      as String,
             inputText: null == inputText
                 ? _value.inputText
                 : inputText // ignore: cast_nullable_to_non_nullable
                       as String,
+            presetsVisible: null == presetsVisible
+                ? _value.presetsVisible
+                : presetsVisible // ignore: cast_nullable_to_non_nullable
+                      as bool,
             loading: null == loading
                 ? _value.loading
                 : loading // ignore: cast_nullable_to_non_nullable
@@ -119,7 +140,10 @@ abstract class _$$QuickSubtitleStateImplCopyWith<$Res>
   $Res call({
     QuickSubtitleConfig config,
     int selectedGroupIndex,
+    int selectedItemIndex,
+    String displayText,
     String inputText,
+    bool presetsVisible,
     bool loading,
     String? error,
   });
@@ -144,7 +168,10 @@ class __$$QuickSubtitleStateImplCopyWithImpl<$Res>
   $Res call({
     Object? config = null,
     Object? selectedGroupIndex = null,
+    Object? selectedItemIndex = null,
+    Object? displayText = null,
     Object? inputText = null,
+    Object? presetsVisible = null,
     Object? loading = null,
     Object? error = freezed,
   }) {
@@ -158,10 +185,22 @@ class __$$QuickSubtitleStateImplCopyWithImpl<$Res>
             ? _value.selectedGroupIndex
             : selectedGroupIndex // ignore: cast_nullable_to_non_nullable
                   as int,
+        selectedItemIndex: null == selectedItemIndex
+            ? _value.selectedItemIndex
+            : selectedItemIndex // ignore: cast_nullable_to_non_nullable
+                  as int,
+        displayText: null == displayText
+            ? _value.displayText
+            : displayText // ignore: cast_nullable_to_non_nullable
+                  as String,
         inputText: null == inputText
             ? _value.inputText
             : inputText // ignore: cast_nullable_to_non_nullable
                   as String,
+        presetsVisible: null == presetsVisible
+            ? _value.presetsVisible
+            : presetsVisible // ignore: cast_nullable_to_non_nullable
+                  as bool,
         loading: null == loading
             ? _value.loading
             : loading // ignore: cast_nullable_to_non_nullable
@@ -181,7 +220,10 @@ class _$QuickSubtitleStateImpl implements _QuickSubtitleState {
   const _$QuickSubtitleStateImpl({
     this.config = const QuickSubtitleConfig(),
     this.selectedGroupIndex = 0,
+    this.selectedItemIndex = -1,
+    this.displayText = '',
     this.inputText = '',
+    this.presetsVisible = true,
     this.loading = false,
     this.error,
   });
@@ -194,7 +236,16 @@ class _$QuickSubtitleStateImpl implements _QuickSubtitleState {
   final int selectedGroupIndex;
   @override
   @JsonKey()
+  final int selectedItemIndex;
+  @override
+  @JsonKey()
+  final String displayText;
+  @override
+  @JsonKey()
   final String inputText;
+  @override
+  @JsonKey()
+  final bool presetsVisible;
   @override
   @JsonKey()
   final bool loading;
@@ -203,7 +254,7 @@ class _$QuickSubtitleStateImpl implements _QuickSubtitleState {
 
   @override
   String toString() {
-    return 'QuickSubtitleState(config: $config, selectedGroupIndex: $selectedGroupIndex, inputText: $inputText, loading: $loading, error: $error)';
+    return 'QuickSubtitleState(config: $config, selectedGroupIndex: $selectedGroupIndex, selectedItemIndex: $selectedItemIndex, displayText: $displayText, inputText: $inputText, presetsVisible: $presetsVisible, loading: $loading, error: $error)';
   }
 
   @override
@@ -214,8 +265,14 @@ class _$QuickSubtitleStateImpl implements _QuickSubtitleState {
             (identical(other.config, config) || other.config == config) &&
             (identical(other.selectedGroupIndex, selectedGroupIndex) ||
                 other.selectedGroupIndex == selectedGroupIndex) &&
+            (identical(other.selectedItemIndex, selectedItemIndex) ||
+                other.selectedItemIndex == selectedItemIndex) &&
+            (identical(other.displayText, displayText) ||
+                other.displayText == displayText) &&
             (identical(other.inputText, inputText) ||
                 other.inputText == inputText) &&
+            (identical(other.presetsVisible, presetsVisible) ||
+                other.presetsVisible == presetsVisible) &&
             (identical(other.loading, loading) || other.loading == loading) &&
             (identical(other.error, error) || other.error == error));
   }
@@ -225,7 +282,10 @@ class _$QuickSubtitleStateImpl implements _QuickSubtitleState {
     runtimeType,
     config,
     selectedGroupIndex,
+    selectedItemIndex,
+    displayText,
     inputText,
+    presetsVisible,
     loading,
     error,
   );
@@ -246,7 +306,10 @@ abstract class _QuickSubtitleState implements QuickSubtitleState {
   const factory _QuickSubtitleState({
     final QuickSubtitleConfig config,
     final int selectedGroupIndex,
+    final int selectedItemIndex,
+    final String displayText,
     final String inputText,
+    final bool presetsVisible,
     final bool loading,
     final String? error,
   }) = _$QuickSubtitleStateImpl;
@@ -256,7 +319,13 @@ abstract class _QuickSubtitleState implements QuickSubtitleState {
   @override
   int get selectedGroupIndex;
   @override
+  int get selectedItemIndex;
+  @override
+  String get displayText;
+  @override
   String get inputText;
+  @override
+  bool get presetsVisible;
   @override
   bool get loading;
   @override

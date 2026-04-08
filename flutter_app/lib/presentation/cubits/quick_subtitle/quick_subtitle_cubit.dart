@@ -24,13 +24,37 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
       final json = await _settingsRepo.getJsonSetting(
         PrefsKeys.quickSubtitleConfig,
       );
+      QuickSubtitleConfig config;
       if (json != null && json.isNotEmpty) {
-        final config = QuickSubtitleConfig.fromJson(
+        config = QuickSubtitleConfig.fromJson(
           jsonDecode(json) as Map<String, dynamic>,
         );
-        emit(state.copyWith(config: config, loading: false));
+        // If saved config has no groups (stale from before defaults),
+        // replace with built-in defaults.
+        if (config.groups.isEmpty) {
+          config = defaultQuickSubtitleConfig();
+        }
       } else {
-        emit(state.copyWith(loading: false));
+        // First launch — use built-in defaults
+        config = defaultQuickSubtitleConfig();
+      }
+      emit(state.copyWith(
+        config: config,
+        loading: false,
+        // Auto-select first item of first group
+        displayText: config.groups.isNotEmpty &&
+                config.groups.first.items.isNotEmpty
+            ? config.groups.first.items.first.text
+            : '',
+        selectedItemIndex:
+            config.groups.isNotEmpty &&
+                    config.groups.first.items.isNotEmpty
+                ? 0
+                : -1,
+      ));
+      // Persist defaults if was empty
+      if (json == null || json.isEmpty) {
+        await _persist();
       }
     } catch (e) {
       emit(state.copyWith(loading: false, error: e.toString()));
@@ -47,11 +71,48 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
   }
 
   void selectGroup(int index) {
-    emit(state.copyWith(selectedGroupIndex: index));
+    emit(state.copyWith(selectedGroupIndex: index, selectedItemIndex: -1));
   }
 
   void setInputText(String text) {
     emit(state.copyWith(inputText: text));
+  }
+
+  void setDisplayText(String text) {
+    emit(state.copyWith(displayText: text));
+  }
+
+  void selectItem(int index) {
+    final groups = state.config.groups;
+    if (state.selectedGroupIndex >= groups.length) return;
+    final items = groups[state.selectedGroupIndex].items;
+    if (index < 0 || index >= items.length) return;
+    emit(state.copyWith(
+      selectedItemIndex: index,
+      displayText: items[index].text,
+    ));
+  }
+
+  void navigatePrev() {
+    final groups = state.config.groups;
+    if (state.selectedGroupIndex >= groups.length) return;
+    final items = groups[state.selectedGroupIndex].items;
+    if (items.isEmpty) return;
+    final newIndex = state.selectedItemIndex <= 0
+        ? items.length - 1
+        : state.selectedItemIndex - 1;
+    selectItem(newIndex);
+  }
+
+  void navigateNext() {
+    final groups = state.config.groups;
+    if (state.selectedGroupIndex >= groups.length) return;
+    final items = groups[state.selectedGroupIndex].items;
+    if (items.isEmpty) return;
+    final newIndex = state.selectedItemIndex >= items.length - 1
+        ? 0
+        : state.selectedItemIndex + 1;
+    selectItem(newIndex);
   }
 
   Future<void> sendText(String text) async {
@@ -64,7 +125,12 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
   }
 
   Future<void> sendItem(QuickSubtitleItem item) async {
+    emit(state.copyWith(displayText: item.text));
     await sendText(item.text);
+  }
+
+  Future<void> sendDisplayText() async {
+    await sendText(state.displayText);
   }
 
   Future<void> addGroup(String name) async {
@@ -110,12 +176,17 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
   }
 
   Future<void> removeGroup(String groupId) async {
-    final groups = state.config.groups.where((g) => g.id != groupId).toList();
+    final groups =
+        state.config.groups.where((g) => g.id != groupId).toList();
     emit(state.copyWith(
       config: state.config.copyWith(groups: groups),
       selectedGroupIndex: 0,
     ));
     await _persist();
+  }
+
+  void togglePresetsVisible() {
+    emit(state.copyWith(presetsVisible: !state.presetsVisible));
   }
 
   Future<void> setFontSize(double size) async {
@@ -128,6 +199,13 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
   Future<void> setBold(bool bold) async {
     emit(state.copyWith(
       config: state.config.copyWith(bold: bold),
+    ));
+    await _persist();
+  }
+
+  Future<void> setCentered(bool centered) async {
+    emit(state.copyWith(
+      config: state.config.copyWith(centered: centered),
     ));
     await _persist();
   }

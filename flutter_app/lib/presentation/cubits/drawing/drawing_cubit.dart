@@ -19,9 +19,11 @@ class DrawingCubit extends Cubit<DrawingState> {
 
   void addPoint(double x, double y) {
     if (_currentStroke == null) return;
-    final points = [..._currentStroke!.points, DrawPoint(x: x, y: y)];
+    final points = [
+      ..._currentStroke!.points,
+      DrawPoint(x: x, y: y),
+    ];
     _currentStroke = _currentStroke!.copyWith(points: points);
-    // Emit with current stroke appended for live preview
     emit(state.copyWith(
       strokes: [...state.strokes, _currentStroke!],
     ));
@@ -30,7 +32,6 @@ class DrawingCubit extends Cubit<DrawingState> {
   void endStroke() {
     if (_currentStroke != null && _currentStroke!.points.length >= 2) {
       final committed = [...state.strokes];
-      // Replace preview with final
       if (committed.isNotEmpty) {
         committed[committed.length - 1] = _currentStroke!;
       }
@@ -51,6 +52,10 @@ class DrawingCubit extends Cubit<DrawingState> {
     emit(state.copyWith(isEraser: !state.isEraser));
   }
 
+  void setBrush() {
+    emit(state.copyWith(isEraser: false));
+  }
+
   void undo() {
     if (state.strokes.isEmpty) return;
     final strokes = [...state.strokes]..removeLast();
@@ -59,5 +64,13 @@ class DrawingCubit extends Cubit<DrawingState> {
 
   void clear() {
     emit(state.copyWith(strokes: []));
+  }
+
+  void toggleToolbar() {
+    emit(state.copyWith(toolbarExpanded: !state.toolbarExpanded));
+  }
+
+  void toggleFullscreen() {
+    emit(state.copyWith(isFullscreen: !state.isFullscreen));
   }
 }

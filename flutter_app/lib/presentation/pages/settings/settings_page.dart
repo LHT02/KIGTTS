@@ -4,12 +4,14 @@ import '../../../core/theme/app_dimensions.dart';
 import '../../../injection.dart';
 import '../../cubits/settings/settings_cubit.dart';
 import '../../cubits/settings/settings_state.dart';
-import 'widgets/audio_settings_section.dart';
-import 'widgets/piper_settings_section.dart';
-import 'widgets/playback_settings_section.dart';
-import 'widgets/ui_settings_section.dart';
+import '../../widgets/staggered_card.dart';
+import 'widgets/device_monitor_section.dart';
+import 'widgets/model_resource_section.dart';
+import 'widgets/recognition_section.dart';
+import 'widgets/system_layout_section.dart';
 
 /// Application settings page (P0).
+/// 4 staggered cards: 模型与资源, 设备监控, 系统与布局, 识别与转换.
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
@@ -36,13 +38,29 @@ class _SettingsView extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.only(
             top: AppDimensions.pageTopBlank,
-            bottom: AppDimensions.pageBottomBlank,
+            bottom: AppDimensions.spacingLg,
           ),
           children: const [
-            AudioSettingsSection(),
-            PiperSettingsSection(),
-            PlaybackSettingsSection(),
-            UiSettingsSection(),
+            // Card 1: 模型与资源
+            StaggeredCard(
+              index: 0,
+              child: ModelResourceSection(),
+            ),
+            // Card 2: 设备监控
+            StaggeredCard(
+              index: 1,
+              child: DeviceMonitorSection(),
+            ),
+            // Card 3: 系统与布局
+            StaggeredCard(
+              index: 2,
+              child: SystemLayoutSection(),
+            ),
+            // Card 4: 识别与转换
+            StaggeredCard(
+              index: 3,
+              child: RecognitionSection(),
+            ),
           ],
         );
       },

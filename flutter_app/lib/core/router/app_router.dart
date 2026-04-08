@@ -12,35 +12,40 @@ import '../../presentation/widgets/app_scaffold.dart';
 
 /// Application route paths.
 abstract final class AppRoutes {
-  static const realtime = '/';
-  static const subtitle = '/subtitle';
+  static const home = '/';
   static const overlay = '/overlay';
   static const cards = '/cards';
   static const voicepacks = '/voicepacks';
   static const drawing = '/drawing';
   static const settings = '/settings';
   static const log = '/settings/log';
+
+  /// Realtime page is not in the drawer but still routable.
+  static const realtime = '/realtime';
 }
 
 /// GoRouter configuration with ShellRoute for persistent scaffold.
 final GoRouter appRouter = GoRouter(
-  initialLocation: AppRoutes.realtime,
+  initialLocation: AppRoutes.home,
   routes: [
     ShellRoute(
-      builder: (context, state, child) => AppScaffold(child: child),
+      builder: (context, state, child) => AppScaffold(
+        currentPath: state.matchedLocation,
+        child: child,
+      ),
       routes: [
+        GoRoute(
+          path: AppRoutes.home,
+          pageBuilder: (context, state) => _buildPage(
+            key: state.pageKey,
+            child: const QuickSubtitlePage(),
+          ),
+        ),
         GoRoute(
           path: AppRoutes.realtime,
           pageBuilder: (context, state) => _buildPage(
             key: state.pageKey,
             child: const RealtimePage(),
-          ),
-        ),
-        GoRoute(
-          path: AppRoutes.subtitle,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const QuickSubtitlePage(),
           ),
         ),
         GoRoute(

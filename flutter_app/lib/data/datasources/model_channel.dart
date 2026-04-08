@@ -115,6 +115,14 @@ class ModelChannelDataSource {
     }
   }
 
+  Future<String?> ensureBundledVoice() async {
+    try {
+      return await _method.invokeMethod<String>('ensureBundledVoice');
+    } on PlatformException catch (e) {
+      throw Exception('Failed to ensure bundled voice: ${e.message}');
+    }
+  }
+
   Future<String?> getLastVoiceName() async {
     try {
       return await _method.invokeMethod<String>('getLastVoiceName');

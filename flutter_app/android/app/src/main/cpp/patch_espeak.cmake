@@ -36,6 +36,14 @@ endif()
 set(root_cmake "${ROOT}/CMakeLists.txt")
 if (EXISTS "${root_cmake}")
     file(READ "${root_cmake}" root_content)
+
+    # Ensure CMP0057 (IN_LIST operator) is set to NEW for NDK 27+ compatibility.
+    if (NOT root_content MATCHES "CMP0057")
+        string(REGEX REPLACE "(cmake_minimum_required\\([^)]*\\))"
+            "\\1\ncmake_policy(SET CMP0057 NEW)"
+            root_content "${root_content}")
+    endif()
+
     if (root_content MATCHES "CMAKE_CROSSCOMPILING")
         message(STATUS "espeak-ng data step already gated")
     else()

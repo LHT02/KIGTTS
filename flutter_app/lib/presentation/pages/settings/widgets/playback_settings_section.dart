@@ -6,20 +6,37 @@ import '../../../cubits/settings/settings_cubit.dart';
 import '../../../cubits/settings/settings_state.dart';
 import '../../../widgets/section_card.dart';
 
-/// Playback gain and volume settings with snap-at-100% behavior.
+/// Playback gain and volume settings — standalone card.
 class PlaybackSettingsSection extends StatelessWidget {
   const PlaybackSettingsSection({super.key});
 
   @override
   Widget build(BuildContext context) {
+    return const SectionCard(
+      title: '播放设置',
+      children: [PlaybackSettingsContent()],
+    );
+  }
+}
+
+/// Embeddable playback settings (no SectionCard wrapper).
+/// Used inside RecognitionSection Card 4.
+class PlaybackSettingsContent extends StatelessWidget {
+  const PlaybackSettingsContent({super.key});
+
+  @override
+  Widget build(BuildContext context) {
     return BlocBuilder<SettingsCubit, SettingsState>(
+      buildWhen: (p, c) =>
+          p.settings.playbackGainPercent !=
+              c.settings.playbackGainPercent ||
+          p.settings.minVolumePercent != c.settings.minVolumePercent,
       builder: (context, state) {
         final s = state.settings;
         final cubit = context.read<SettingsCubit>();
-        return SectionCard(
-          title: '播放设置',
+        return Column(
           children: [
-            _SnapGainSlider(
+            SnapGainSlider(
               value: s.playbackGainPercent,
               onChanged: (v) => cubit.setPlaybackGainPercent(v),
             ),
@@ -77,16 +94,22 @@ class _MinVolumeSlider extends StatelessWidget {
 }
 
 /// Custom slider that snaps to 100% when within +/-20% range.
-class _SnapGainSlider extends StatefulWidget {
-  const _SnapGainSlider({required this.value, required this.onChanged});
+/// Public so it can be reused in overlay page.
+class SnapGainSlider extends StatefulWidget {
+  const SnapGainSlider({
+    super.key,
+    required this.value,
+    required this.onChanged,
+  });
+
   final int value;
   final ValueChanged<int> onChanged;
 
   @override
-  State<_SnapGainSlider> createState() => _SnapGainSliderState();
+  State<SnapGainSlider> createState() => _SnapGainSliderState();
 }
 
-class _SnapGainSliderState extends State<_SnapGainSlider> {
+class _SnapGainSliderState extends State<SnapGainSlider> {
   late double _currentValue;
 
   @override
@@ -96,7 +119,7 @@ class _SnapGainSliderState extends State<_SnapGainSlider> {
   }
 
   @override
-  void didUpdateWidget(_SnapGainSlider oldWidget) {
+  void didUpdateWidget(SnapGainSlider oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.value != widget.value) {
       _currentValue = widget.value.toDouble();
