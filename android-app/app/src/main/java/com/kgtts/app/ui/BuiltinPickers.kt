@@ -34,10 +34,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
@@ -61,6 +62,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -105,15 +107,17 @@ private fun BuiltinAnimatedDropdownMenu(
     ) {
         AnimatedVisibility(
             visible = expanded,
-            enter = fadeIn(animationSpec = tween(160, easing = FastOutSlowInEasing)) +
-                slideInVertically(
-                    initialOffsetY = { it / 6 },
-                    animationSpec = tween(180, easing = FastOutSlowInEasing)
+            enter = fadeIn(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
+                scaleIn(
+                    initialScale = 0.94f,
+                    animationSpec = tween(180, easing = FastOutSlowInEasing),
+                    transformOrigin = TransformOrigin(1f, 0f)
                 ),
-            exit = fadeOut(animationSpec = tween(140, easing = LinearEasing)) +
-                slideOutVertically(
-                    targetOffsetY = { it / 8 },
-                    animationSpec = tween(140, easing = LinearEasing)
+            exit = fadeOut(animationSpec = tween(180, easing = FastOutSlowInEasing)) +
+                scaleOut(
+                    targetScale = 0.94f,
+                    animationSpec = tween(180, easing = FastOutSlowInEasing),
+                    transformOrigin = TransformOrigin(1f, 0f)
                 )
         ) {
             Column(content = content)

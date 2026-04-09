@@ -10,8 +10,10 @@ import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
-import android.graphics.Paint
 import android.graphics.BitmapFactory
+import android.graphics.BlurMaskFilter
+import android.graphics.Paint
+import android.graphics.RectF
 import android.media.MediaRecorder
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -48,6 +50,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
@@ -77,6 +81,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -103,8 +108,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
@@ -112,6 +120,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -120,6 +129,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -657,6 +667,8 @@ class MainViewModel(
         private set
     var quickSubtitlePreviewVisible by mutableStateOf(false)
         private set
+    var settingsSelectedCategoryName by mutableStateOf(SettingsCategory.Resources.name)
+        private set
     var quickCards by mutableStateOf<List<QuickCard>>(emptyList())
         private set
     var quickCardSelectedIndex by mutableIntStateOf(0)
@@ -969,6 +981,10 @@ class MainViewModel(
     fun updateQuickSubtitleCentered(enabled: Boolean) {
         quickSubtitleCentered = enabled
         saveQuickSubtitleConfig()
+    }
+
+    fun updateSettingsSelectedCategory(category: SettingsCategory) {
+        settingsSelectedCategoryName = category.name
     }
 
     fun clearQuickSubtitleText() {
@@ -2607,10 +2623,177 @@ private object UiTokens {
     val MenuElevation = 8.dp
     val PageTopBlank = 8.dp
     val PageBottomBlank = 92.dp
+    val WideContentMaxWidth = 860.dp
+    val WideListMaxWidth = 900.dp
     val DrawerWidthExpanded = 216.dp
     val DrawerWidthCollapsed = 72.dp
     val LightCard = Color(0xFFFFFFFF)
     val DarkCard = Color(0xFF1D2023)
+}
+
+@Composable
+private fun CenteredPageBox(
+    maxWidth: Dp,
+    modifier: Modifier = Modifier,
+    horizontalPadding: Dp = 16.dp,
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(modifier = modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(horizontal = horizontalPadding)
+                .widthIn(max = maxWidth)
+                .fillMaxWidth()
+                .fillMaxHeight(),
+            content = content
+        )
+    }
+}
+
+@Composable
+private fun CenteredPageColumn(
+    maxWidth: Dp,
+    modifier: Modifier = Modifier,
+    scroll: ScrollState? = null,
+    horizontalPadding: Dp = 16.dp,
+    contentSpacing: Dp = 12.dp,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    CenteredPageBox(
+        maxWidth = maxWidth,
+        modifier = modifier,
+        horizontalPadding = horizontalPadding
+    ) {
+        var columnModifier = Modifier.fillMaxWidth()
+        if (scroll != null) {
+            columnModifier = columnModifier.verticalScroll(scroll)
+        }
+        Column(
+            modifier = columnModifier,
+            verticalArrangement = Arrangement.spacedBy(contentSpacing),
+            content = content
+        )
+    }
+}
+
+private data class MdShadowLayer(
+    val offsetY: Dp,
+    val blur: Dp,
+    val spread: Dp,
+    val alpha: Float
+)
+
+private data class MdShadowStyle(
+    val umbra: MdShadowLayer,
+    val penumbra: MdShadowLayer,
+    val ambient: MdShadowLayer
+)
+
+private val MdCardShadowStyle = MdShadowStyle(
+    umbra = MdShadowLayer(offsetY = 3.dp, blur = 1.dp, spread = (-2).dp, alpha = 0.14f),
+    penumbra = MdShadowLayer(offsetY = 2.dp, blur = 2.dp, spread = 0.dp, alpha = 0.098f),
+    ambient = MdShadowLayer(offsetY = 1.dp, blur = 5.dp, spread = 0.dp, alpha = 0.084f)
+)
+
+private val MdFabShadowStyle = MdShadowStyle(
+    umbra = MdShadowLayer(offsetY = 3.dp, blur = 5.dp, spread = (-1).dp, alpha = 0.14f),
+    penumbra = MdShadowLayer(offsetY = 6.dp, blur = 10.dp, spread = 0.dp, alpha = 0.098f),
+    ambient = MdShadowLayer(offsetY = 1.dp, blur = 18.dp, spread = 0.dp, alpha = 0.084f)
+)
+
+private fun Modifier.mdCenteredShadow(
+    shape: androidx.compose.ui.graphics.Shape,
+    shadowStyle: MdShadowStyle
+): Modifier = drawBehind {
+    val outline = shape.createOutline(size, layoutDirection, this)
+    fun drawLayer(layer: MdShadowLayer) {
+        val blurPx = layer.blur.toPx()
+        val offsetYPx = layer.offsetY.toPx()
+        val spreadPx = layer.spread.toPx()
+        val frameworkPaint = Paint().apply {
+            isAntiAlias = true
+            this.style = Paint.Style.FILL
+            color = android.graphics.Color.argb(1, 0, 0, 0)
+            setShadowLayer(blurPx, 0f, offsetYPx, Color.Black.copy(alpha = layer.alpha).toArgb())
+        }
+        drawIntoCanvas { canvas ->
+            when (outline) {
+                is Outline.Rectangle -> {
+                    val rect = RectF(
+                        -spreadPx,
+                        -spreadPx,
+                        size.width + spreadPx,
+                        size.height + spreadPx
+                    )
+                    canvas.nativeCanvas.drawRect(rect, frameworkPaint)
+                }
+                is Outline.Rounded -> {
+                    val roundRect = outline.roundRect
+                    val rect = RectF(
+                        roundRect.left - spreadPx,
+                        roundRect.top - spreadPx,
+                        roundRect.right + spreadPx,
+                        roundRect.bottom + spreadPx
+                    )
+                    val radius = (roundRect.topLeftCornerRadius.x + spreadPx).coerceAtLeast(0f)
+                    canvas.nativeCanvas.drawRoundRect(rect, radius, radius, frameworkPaint)
+                }
+                is Outline.Generic -> {
+                    canvas.nativeCanvas.save()
+                    canvas.nativeCanvas.translate(0f, 0f)
+                    canvas.nativeCanvas.drawPath(outline.path.asAndroidPath(), frameworkPaint)
+                    canvas.nativeCanvas.restore()
+                }
+            }
+        }
+    }
+    drawLayer(shadowStyle.umbra)
+    drawLayer(shadowStyle.penumbra)
+    drawLayer(shadowStyle.ambient)
+}
+
+@Composable
+private fun MdShadowCardSurface(
+    modifier: Modifier = Modifier,
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(UiTokens.Radius),
+    backgroundColor: Color = md2CardContainerColor(),
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(
+        modifier = modifier.mdCenteredShadow(shape = shape, shadowStyle = MdCardShadowStyle)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = shape,
+            color = backgroundColor,
+            elevation = 0.dp
+        ) {
+            Box(modifier = Modifier.fillMaxSize(), content = content)
+        }
+    }
+}
+
+@Composable
+private fun MdShadowCircleActionSurface(
+    modifier: Modifier = Modifier,
+    backgroundColor: Color,
+    contentColor: Color,
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(
+        modifier = modifier.mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = CircleShape,
+            color = backgroundColor,
+            contentColor = contentColor,
+            elevation = 0.dp
+        ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center, content = content)
+        }
+    }
 }
 
 private val KgtLightColors = lightColors(
@@ -3203,35 +3386,36 @@ private fun QuickCardSortScreen(
         onDispose { onTopBarActionsChange(null) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideListMaxWidth,
+        contentSpacing = 0.dp
     ) {
-        Spacer(Modifier.height(topBlank))
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(UiTokens.Radius),
-            backgroundColor = md2CardContainerColor(),
-            elevation = UiTokens.CardElevation
-        ) {
-            Text(
-                text = "拖动右侧排序按钮调整名片顺序",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        QuickCardSortRecyclerList(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            cards = cards,
-            topBlankHeight = 2.dp,
-            bottomBlankHeight = 2.dp,
-            onReorder = { ids ->
-                viewModel.reorderQuickCardsByIds(ids)
+            Spacer(Modifier.height(topBlank))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.CardElevation
+            ) {
+                Text(
+                    text = "拖动右侧排序按钮调整名片顺序",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                )
             }
-        )
-        Spacer(Modifier.height(bottomBlank))
+            Spacer(Modifier.height(8.dp))
+            QuickCardSortRecyclerList(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                cards = cards,
+                topBlankHeight = 2.dp,
+                bottomBlankHeight = 2.dp,
+                onReorder = { ids ->
+                    viewModel.reorderQuickCardsByIds(ids)
+                }
+            )
+            Spacer(Modifier.height(bottomBlank))
     }
 }
 
@@ -4797,14 +4981,11 @@ private fun QuickCardEditorScreen(
         onDispose { onTopBarActionsChange(null) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        scroll = rememberScrollState()
     ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
+            Spacer(Modifier.height(UiTokens.PageTopBlank))
 
         Md2SettingsCard("基础信息") {
             Row(
@@ -4952,7 +5133,7 @@ private fun QuickCardEditorScreen(
                 Text("保存")
             }
         }
-        Spacer(Modifier.height(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()))
+            Spacer(Modifier.height(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()))
     }
 
     if (showDeleteConfirm) {
@@ -5804,14 +5985,16 @@ private fun Md2AnimatedOptionMenu(
         AnimatedVisibility(
             visible = expanded,
             enter = fadeIn(animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)) +
-                slideInVertically(
+                scaleIn(
                     animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-                    initialOffsetY = { -it / 5 }
+                    initialScale = 0.94f,
+                    transformOrigin = TransformOrigin(1f, 0f)
                 ),
-            exit = fadeOut(animationSpec = tween(durationMillis = 160, easing = LinearEasing)) +
-                slideOutVertically(
-                    animationSpec = tween(durationMillis = 160, easing = LinearEasing),
-                    targetOffsetY = { -it / 7 }
+            exit = fadeOut(animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)) +
+                scaleOut(
+                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+                    targetScale = 0.94f,
+                    transformOrigin = TransformOrigin(1f, 0f)
                 )
         ) {
             Column(content = content)
@@ -5939,7 +6122,7 @@ private fun Md2SettingDropdownRow(
     }
 }
 
-private enum class SettingsCategory(val title: String, val icon: String) {
+enum class SettingsCategory(val title: String, val icon: String) {
     Resources("资源", "inventory_2"),
     Recognition("识别", "graphic_eq"),
     Audio("音频", "volume_up"),
@@ -5953,18 +6136,14 @@ private fun SettingsTabsCard(
     onSelect: (SettingsCategory) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(UiTokens.Radius),
-        backgroundColor = md2CardContainerColor(),
-        elevation = UiTokens.CardElevation
-    ) {
-        if (compact) {
+    val dividerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
+    if (compact) {
+        Column(
+            modifier = modifier.fillMaxWidth()
+        ) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(0.dp)
             ) {
                 SettingsCategory.entries.forEach { category ->
                     SettingsTabButton(
@@ -5976,21 +6155,26 @@ private fun SettingsTabsCard(
                     )
                 }
             }
-        } else {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                SettingsCategory.entries.forEach { category ->
-                    SettingsTabButton(
-                        category = category,
-                        selected = selectedCategory == category,
-                        compact = false,
-                        onClick = { onSelect(category) }
-                    )
-                }
+                    .height(1.dp)
+                    .background(dividerColor)
+            )
+        }
+    } else {
+        Column(
+            modifier = modifier
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
+        ) {
+            SettingsCategory.entries.forEach { category ->
+                SettingsTabButton(
+                    category = category,
+                    selected = selectedCategory == category,
+                    compact = false,
+                    onClick = { onSelect(category) }
+                )
             }
         }
     }
@@ -6004,27 +6188,24 @@ private fun SettingsTabButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val containerColor =
-        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent
+    val indicatorColor = MaterialTheme.colorScheme.primary
     val contentColor =
-        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
 
-    Surface(
+    Box(
         modifier = modifier
-            .clip(RoundedCornerShape(4.dp))
+            .height(48.dp)
+            .clip(RectangleShape)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = rememberRipple(bounded = true),
                 onClick = onClick
             ),
-        color = containerColor,
-        shape = RoundedCornerShape(4.dp)
     ) {
         if (compact) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp),
+                    .fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
                 MsIcon(
@@ -6033,12 +6214,21 @@ private fun SettingsTabButton(
                     tint = contentColor
                 )
             }
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth(0.72f)
+                        .height(2.dp)
+                        .background(indicatorColor)
+                )
+            }
         } else {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .fillMaxHeight()
+                    .padding(start = 12.dp, end = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -6051,6 +6241,15 @@ private fun SettingsTabButton(
                     text = category.title,
                     style = MaterialTheme.typography.bodyLarge,
                     color = contentColor
+                )
+            }
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .width(2.dp)
+                        .background(indicatorColor)
                 )
             }
         }
@@ -7703,48 +7902,47 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
         viewModel.refreshVoicePacks()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideListMaxWidth,
+        contentSpacing = 0.dp
     ) {
-        if (state.voicePacks.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.TopStart
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxSize()
+            if (state.voicePacks.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.TopStart
                 ) {
-                    Spacer(Modifier.height(UiTokens.PageTopBlank))
-                    Text("暂无语音包，请点击主标题栏导入按钮。")
-                    Spacer(Modifier.height(UiTokens.PageBottomBlank))
+                    Column(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Spacer(Modifier.height(UiTokens.PageTopBlank))
+                        Text("暂无语音包，请点击主标题栏导入按钮。")
+                        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+                    }
                 }
+            } else {
+                VoicePackRecyclerList(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    packs = state.voicePacks,
+                    currentVoicePath = state.voiceDir?.absolutePath,
+                    topBlankHeight = UiTokens.PageTopBlank,
+                    bottomBlankHeight = UiTokens.PageBottomBlank,
+                    onSelect = { viewModel.selectVoice(it.dir) },
+                    onTogglePin = { viewModel.toggleVoicePin(it) },
+                    onDetail = { pack ->
+                        detailPackPath = pack.dir.absolutePath
+                        detailName = pack.meta.name
+                        detailRemark = pack.meta.remark
+                        detailEditing = false
+                    },
+                    onShare = { viewModel.shareVoice(it) },
+                    onDelete = { deletePack = it },
+                    onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
+                )
             }
-        } else {
-            VoicePackRecyclerList(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                packs = state.voicePacks,
-                currentVoicePath = state.voiceDir?.absolutePath,
-                topBlankHeight = UiTokens.PageTopBlank,
-                bottomBlankHeight = UiTokens.PageBottomBlank,
-                onSelect = { viewModel.selectVoice(it.dir) },
-                onTogglePin = { viewModel.toggleVoicePin(it) },
-                onDetail = { pack ->
-                    detailPackPath = pack.dir.absolutePath
-                    detailName = pack.meta.name
-                    detailRemark = pack.meta.remark
-                    detailEditing = false
-                },
-                onShare = { viewModel.shareVoice(it) },
-                onDelete = { deletePack = it },
-                onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
-            )
-        }
     }
 
     if (detailPack != null) {
@@ -8869,14 +9067,14 @@ private fun QuickSubtitleMicFab(
     }
     FloatingActionButton(
         onClick = if (state.pushToTalkMode) ({}) else onToggleMic,
-        modifier = pttModifier,
+        modifier = pttModifier.mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle),
         interactionSource = pttInteractionSource,
         backgroundColor = MaterialTheme.colorScheme.primary,
         contentColor = MaterialTheme.colorScheme.onPrimary,
         shape = CircleShape,
         elevation = FloatingActionButtonDefaults.elevation(
-            defaultElevation = UiTokens.FabElevation,
-            pressedElevation = 12.dp
+            defaultElevation = 0.dp,
+            pressedElevation = 0.dp
         )
     ) {
         if (state.pushToTalkMode) {
@@ -9154,10 +9352,15 @@ fun QuickSubtitleScreen(
                             .padding(3.dp)
                     ) {
                         Card(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .mdCenteredShadow(
+                                    shape = RoundedCornerShape(UiTokens.Radius),
+                                    shadowStyle = MdCardShadowStyle
+                                ),
                             shape = RoundedCornerShape(UiTokens.Radius),
                             backgroundColor = md2CardContainerColor(),
-                            elevation = UiTokens.CardElevation
+                            elevation = 0.dp
                         ) {
                             Row(
                                 modifier = Modifier
@@ -9273,10 +9476,15 @@ fun QuickSubtitleScreen(
                                 .padding(3.dp)
                         ) {
                             Card(
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .mdCenteredShadow(
+                                        shape = RoundedCornerShape(UiTokens.Radius),
+                                        shadowStyle = MdCardShadowStyle
+                                    ),
                                 shape = RoundedCornerShape(UiTokens.Radius),
                                 backgroundColor = md2CardContainerColor(),
-                                elevation = UiTokens.CardElevation
+                                elevation = 0.dp
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxSize()
@@ -9326,8 +9534,12 @@ fun QuickSubtitleScreen(
                                                     Card(
                                                         modifier = Modifier
                                                             .fillMaxWidth()
-                                                .height(72.dp)
-                                                .clickable {
+                                                            .height(72.dp)
+                                                            .mdCenteredShadow(
+                                                                shape = RoundedCornerShape(UiTokens.Radius),
+                                                                shadowStyle = MdCardShadowStyle
+                                                            )
+                                                            .clickable {
                                                                 viewModel.submitQuickSubtitlePreset(
                                                                     text = text,
                                                                     hasVoice = hasVoice
@@ -9335,7 +9547,7 @@ fun QuickSubtitleScreen(
                                                             },
                                                         shape = RoundedCornerShape(UiTokens.Radius),
                                                         backgroundColor = md2CardContainerColor(),
-                                                        elevation = UiTokens.CardElevation
+                                                        elevation = 0.dp
                                                     ) {
                                                         Box(
                                                             modifier = Modifier
@@ -9356,6 +9568,10 @@ fun QuickSubtitleScreen(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
                                                         .height(56.dp)
+                                                        .mdCenteredShadow(
+                                                            shape = RoundedCornerShape(UiTokens.Radius),
+                                                            shadowStyle = MdCardShadowStyle
+                                                        )
                                                         .clickable {
                                                             viewModel.addQuickSubtitleItem(
                                                                 groupIndex = groupIndex,
@@ -9364,7 +9580,7 @@ fun QuickSubtitleScreen(
                                                         },
                                                     shape = RoundedCornerShape(UiTokens.Radius),
                                                     backgroundColor = md2CardContainerColor(),
-                                                    elevation = UiTokens.CardElevation
+                                                    elevation = 0.dp
                                                 ) {
                                                     Box(
                                                         modifier = Modifier.fillMaxSize(),
@@ -10255,14 +10471,19 @@ private fun QuickSubtitlePttConfirmOverlay(
                         }
                         if (showInputAction) {
                             Surface(
-                                modifier = Modifier.requiredSize(72.dp),
+                                modifier = Modifier
+                                    .requiredSize(72.dp)
+                                    .mdCenteredShadow(
+                                        shape = CircleShape,
+                                        shadowStyle = MdFabShadowStyle
+                                    ),
                                 shape = CircleShape,
                                 color = if (dragTarget == PttConfirmDragTarget.ToInput) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
                                     Color(0xFF202124)
                                 },
-                                elevation = 6.dp
+                                elevation = 0.dp
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     MsIcon(
@@ -10274,14 +10495,19 @@ private fun QuickSubtitlePttConfirmOverlay(
                             }
                         }
                         Surface(
-                            modifier = Modifier.requiredSize(72.dp),
+                            modifier = Modifier
+                                .requiredSize(72.dp)
+                                .mdCenteredShadow(
+                                    shape = CircleShape,
+                                        shadowStyle = MdFabShadowStyle
+                                ),
                             shape = CircleShape,
                             color = if (dragTarget == PttConfirmDragTarget.Cancel) {
                                 Color(0xFFB00020)
                             } else {
                                 Color(0xFF202124)
                             },
-                            elevation = 6.dp
+                            elevation = 0.dp
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 MsIcon(
@@ -10332,14 +10558,15 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
                             }
                         )
                         .padding(end = fabEndInset + fabSize + sideGap, bottom = fabBottomOffset)
-                        .requiredSize(fabSize),
+                        .requiredSize(fabSize)
+                        .mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle),
                     shape = CircleShape,
                     color = if (dragTarget == PttConfirmDragTarget.ToInput) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         Color(0xFF202124)
                     },
-                    elevation = 6.dp
+                    elevation = 0.dp
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         MsIcon(
@@ -10360,16 +10587,17 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
                         } else {
                             Modifier
                         }
-                    )
+                )
                     .padding(end = cancelEndInset, bottom = fabBottomOffset)
-                    .requiredSize(fabSize),
+                    .requiredSize(fabSize)
+                    .mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle),
                 shape = CircleShape,
                 color = if (dragTarget == PttConfirmDragTarget.Cancel) {
                     Color(0xFFB00020)
                 } else {
                     Color(0xFF202124)
                 },
-                elevation = 6.dp
+                elevation = 0.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     MsIcon(
@@ -10392,10 +10620,14 @@ private fun QuickSubtitlePttConfirmBottomStrip(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(stripHeight),
+            .height(stripHeight)
+            .mdCenteredShadow(
+                shape = RoundedCornerShape(42.dp),
+                shadowStyle = MdFabShadowStyle
+            ),
         shape = RoundedCornerShape(42.dp),
         color = md2CardContainerColor(),
-        elevation = UiTokens.FabElevation
+        elevation = 0.dp
     ) {
         Row(
             modifier = Modifier
@@ -10471,18 +10703,23 @@ private fun QuickSubtitleEditorScreen(
     val groupNameBringIntoViewRequester = remember { BringIntoViewRequester() }
     val bringIntoViewScope = rememberCoroutineScope()
 
-    LazyColumn(
+    CenteredPageBox(
+        maxWidth = UiTokens.WideContentMaxWidth,
         modifier = modifier
             .fillMaxSize()
             .imePadding()
-            .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(
-            top = UiTokens.PageTopBlank,
-            bottom = UiTokens.PageBottomBlank
-        ),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item(key = "groups_card") {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(
+                top = UiTokens.PageTopBlank,
+                bottom = UiTokens.PageBottomBlank
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item(key = "groups_card") {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(UiTokens.Radius),
@@ -10638,6 +10875,7 @@ private fun QuickSubtitleEditorScreen(
                         viewModel.updateQuickSubtitleItem(selectedGroupIndex, itemIndex, value)
                     }
                 )
+            }
             }
         }
     }
@@ -11162,14 +11400,11 @@ fun FloatingOverlayScreen(
         overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(scroll),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        scroll = scroll
     ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
+            Spacer(Modifier.height(UiTokens.PageTopBlank))
 
         Md2StaggeredFloatIn(index = 0) {
             Md2SettingsCard(title = "悬浮窗状态") {
@@ -11346,9 +11581,9 @@ fun FloatingOverlayScreen(
             }
         }
 
-        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+            Spacer(Modifier.height(UiTokens.PageBottomBlank))
+        }
     }
-}
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
@@ -11827,6 +12062,10 @@ fun DrawingBoardScreen(
                     .align(Alignment.Center)
                     .size(cardWidthDp, cardHeightDp)
                     .onSizeChanged { boardSize = it }
+                    .mdCenteredShadow(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        shadowStyle = MdCardShadowStyle
+                    )
                     .graphicsLayer {
                         scaleX = viewportScale
                         scaleY = viewportScale
@@ -11835,7 +12074,7 @@ fun DrawingBoardScreen(
                     },
                 shape = RoundedCornerShape(UiTokens.Radius),
                 backgroundColor = md2CardContainerColor(),
-                elevation = UiTokens.CardElevation
+                elevation = 0.dp
             ) {
                 Canvas(
                     modifier = Modifier
@@ -12104,10 +12343,14 @@ private fun DrawingToolbar(
         }
     ) {
         Card(
-            modifier = if (isLandscape) Modifier else Modifier.width(portraitToolbarWidth),
+            modifier = (if (isLandscape) Modifier else Modifier.width(portraitToolbarWidth))
+                .mdCenteredShadow(
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    shadowStyle = MdCardShadowStyle
+                ),
             shape = RoundedCornerShape(UiTokens.Radius),
             backgroundColor = md2CardContainerColor(),
-            elevation = 6.dp
+            elevation = 0.dp
         ) {
             val activeSize = if (eraserEnabled) eraserSize else brushSize
             if (isLandscape) {
@@ -12309,9 +12552,13 @@ private fun DrawingToolbarMini(
         }
     ) {
         Card(
+            modifier = Modifier.mdCenteredShadow(
+                shape = RoundedCornerShape(UiTokens.Radius),
+                shadowStyle = MdCardShadowStyle
+            ),
             shape = RoundedCornerShape(UiTokens.Radius),
             backgroundColor = md2CardContainerColor(),
-            elevation = 6.dp
+            elevation = 0.dp
         ) {
             if (isLandscape) {
                 Column(
@@ -12691,7 +12938,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         }
         speakerEnrollOpenedByToggle = false
     }
-    var selectedCategoryName by rememberSaveable { mutableStateOf(SettingsCategory.Resources.name) }
+    val selectedCategoryName = viewModel.settingsSelectedCategoryName
     val selectedCategory = remember(selectedCategoryName) { SettingsCategory.valueOf(selectedCategoryName) }
     val numberReplaceOptions = remember { listOf("不替换", "数字替换为中文字符", "数字替换为中文表达") }
     var numberReplaceExpanded by remember { mutableStateOf(false) }
@@ -13174,18 +13421,16 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         val horizontalInset = if (wideLayout) 24.dp else 16.dp
 
         if (compactTabs) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = horizontalInset)
-                    .verticalScroll(scroll),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            CenteredPageColumn(
+                maxWidth = UiTokens.WideContentMaxWidth,
+                scroll = scroll,
+                horizontalPadding = horizontalInset
             ) {
                 Spacer(Modifier.height(UiTokens.PageTopBlank))
                 SettingsTabsCard(
                     selectedCategory = selectedCategory,
                     compact = true,
-                    onSelect = { selectedCategoryName = it.name }
+                    onSelect = { viewModel.updateSettingsSelectedCategory(it) }
                 )
                 AnimatedContent(
                     targetState = selectedCategory,
@@ -13216,11 +13461,11 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = horizontalInset),
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Column(
                     modifier = Modifier
-                        .width(if (wideLayout) 184.dp else 168.dp)
+                        .width(if (wideLayout) 156.dp else 144.dp)
                         .fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -13228,7 +13473,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                     SettingsTabsCard(
                         selectedCategory = selectedCategory,
                         compact = false,
-                        onSelect = { selectedCategoryName = it.name }
+                        onSelect = { viewModel.updateSettingsSelectedCategory(it) }
                     )
                 }
                 Box(
@@ -13236,13 +13481,11 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .fillMaxWidth()
-                            .widthIn(max = if (wideLayout) 860.dp else Dp.Unspecified)
-                            .verticalScroll(scroll),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    CenteredPageColumn(
+                        maxWidth = UiTokens.WideContentMaxWidth,
+                        modifier = Modifier.fillMaxSize(),
+                        scroll = scroll,
+                        horizontalPadding = 0.dp
                     ) {
                         Spacer(Modifier.height(UiTokens.PageTopBlank))
                         AnimatedContent(
