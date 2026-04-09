@@ -114,6 +114,9 @@ pc_trainer/dist/kgt_trainer/Model/
 pc_trainer/dist/kgt_trainer/piper_env/
 pc_trainer/dist/kgt_trainer/projects/
 android-app/app/src/main/assets/sosv*.zip
+android-app/app/src/main/assets/firefly.zip
+flutter_app/android/app/src/main/assets/sosv*.zip
+flutter_app/android/app/src/main/assets/firefly.zip
 唯一正常的训练器/
 *.ckpt
 *.whl

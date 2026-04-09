@@ -4,6 +4,7 @@ import '../../../core/constants/prefs_keys.dart';
 import '../../../domain/entities/quick_subtitle.dart';
 import '../../../domain/repositories/realtime_repository.dart';
 import '../../../domain/repositories/settings_repository.dart';
+import '../realtime/realtime_cubit.dart';
 import 'quick_subtitle_state.dart';
 
 /// Cubit managing quick subtitle groups and TTS playback.
@@ -11,12 +12,15 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
   QuickSubtitleCubit({
     required RealtimeRepository realtimeRepository,
     required SettingsRepository settingsRepository,
+    RealtimeCubit Function()? realtimeCubitGetter,
   })  : _realtimeRepo = realtimeRepository,
         _settingsRepo = settingsRepository,
+        _realtimeCubitGetter = realtimeCubitGetter,
         super(const QuickSubtitleState());
 
   final RealtimeRepository _realtimeRepo;
   final SettingsRepository _settingsRepo;
+  final RealtimeCubit Function()? _realtimeCubitGetter;
 
   Future<void> initialize() async {
     emit(state.copyWith(loading: true));
@@ -118,6 +122,11 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
   Future<void> sendText(String text) async {
     if (text.trim().isEmpty) return;
     try {
+      // Auto-start the pipeline if not running, so TTS can play
+      final realtimeCubit = _realtimeCubitGetter?.call();
+      if (realtimeCubit != null && !realtimeCubit.state.running) {
+        await realtimeCubit.start();
+      }
       await _realtimeRepo.enqueueTts(text.trim());
     } catch (e) {
       emit(state.copyWith(error: e.toString()));

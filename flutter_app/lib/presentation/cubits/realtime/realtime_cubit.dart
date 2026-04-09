@@ -146,29 +146,41 @@ class RealtimeCubit extends Cubit<RealtimeState> {
   }
 
   /// Start the realtime pipeline.
+  /// If ASR is available, starts full ASR+TTS pipeline.
+  /// If only voice pack is available, starts TTS-only mode.
   Future<void> start() async {
     if (state.running) return;
     final asrDir = state.currentAsrDir;
     final voiceDir = state.currentVoiceDir;
-    if (asrDir == null || voiceDir == null) {
-      emit(state.copyWith(error: '请先加载 ASR 模型和语音包'));
+    if (voiceDir == null) {
+      emit(state.copyWith(error: '请先加载语音包'));
       return;
     }
     try {
       emit(state.copyWith(status: '启动中...'));
-      final ok = await _realtimeRepo.start(
-        asrDir: asrDir,
-        voiceDir: voiceDir,
-      );
-      if (ok) {
-        // Start keepalive service if enabled
-        final settings = await _settingsRepo.getSettings();
-        if (settings.keepAlive) {
-          await _keepaliveRepo.start();
+      if (asrDir != null) {
+        // Full pipeline: ASR + TTS + mic
+        final ok = await _realtimeRepo.start(
+          asrDir: asrDir,
+          voiceDir: voiceDir,
+        );
+        if (ok) {
+          final settings = await _settingsRepo.getSettings();
+          if (settings.keepAlive) {
+            await _keepaliveRepo.start();
+          }
+          emit(state.copyWith(running: true, status: '运行中', error: null));
+        } else {
+          emit(state.copyWith(status: '启动失败', error: '启动失败'));
         }
-        emit(state.copyWith(running: true, status: '运行中', error: null));
       } else {
-        emit(state.copyWith(status: '启动失败', error: '启动失败'));
+        // TTS-only mode: just load voice pack (no ASR / no mic)
+        final ok = await _realtimeRepo.loadVoice(voiceDir);
+        if (ok) {
+          emit(state.copyWith(running: true, status: '仅TTS模式', error: null));
+        } else {
+          emit(state.copyWith(status: '语音包加载失败', error: '语音包加载失败'));
+        }
       }
     } catch (e) {
       emit(state.copyWith(status: '启动失败', error: e.toString()));
@@ -270,9 +282,20 @@ class RealtimeCubit extends Cubit<RealtimeState> {
   }
 
   /// Set PTT pressed state.
+  /// When pressed: auto-start pipeline if needed, then begin PTT session.
+  /// When released: commit PTT session with 'speak' action.
   Future<void> setPttPressed(bool pressed) async {
     emit(state.copyWith(pttPressed: pressed));
-    await _realtimeRepo.setPttPressed(pressed);
+    if (pressed) {
+      // Auto-start pipeline if not running
+      if (!state.running) {
+        await start();
+        if (!state.running) return; // start failed
+      }
+      await startPTT();
+    } else {
+      await stopPTT();
+    }
   }
 
   /// Toggle Push-to-Talk mode on/off.

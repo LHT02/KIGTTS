@@ -6,7 +6,21 @@
 
 ## 1. 运行必需素材（用户侧）
 
-### 1.1 ASR 模型（Android 导入）
+### 1.1 一键配置
+
+克隆仓库后运行根目录的 `setup_assets.ps1`，自动下载 ASR 模型并分发到 `android-app` 和 `flutter_app` 的 assets 目录：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File setup_assets.ps1
+```
+
+脚本会处理：
+- **sosv-int8.zip**（ASR, ~209MB）— 从 GitHub Release 下载
+- **firefly.zip**（默认语音包, ~56MB）— 从项目根目录的「流萤语音包.zip」复制
+
+> 如果网络不通，脚本会给出手动下载链接。
+
+### 1.2 ASR 模型（Android 导入）
 - SOSV 模型发布页（`sosv.zip` / `sosv-int8.zip`）：
   - https://github.com/HiMeditator/auto-caption/releases/tag/sosv-model
 

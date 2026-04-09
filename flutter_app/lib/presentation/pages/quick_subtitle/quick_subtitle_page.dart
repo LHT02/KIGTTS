@@ -5,6 +5,7 @@ import '../../../domain/repositories/settings_repository.dart';
 import '../../../injection.dart';
 import '../../cubits/quick_subtitle/quick_subtitle_cubit.dart';
 import '../../cubits/quick_subtitle/quick_subtitle_state.dart';
+import '../../cubits/realtime/realtime_cubit.dart';
 import 'widgets/subtitle_category_tabs.dart';
 import 'widgets/subtitle_display_card.dart';
 import 'widgets/subtitle_input_bar.dart';
@@ -24,9 +25,10 @@ class QuickSubtitlePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
-      create: (_) => QuickSubtitleCubit(
+      create: (context) => QuickSubtitleCubit(
         realtimeRepository: getIt<RealtimeRepository>(),
         settingsRepository: getIt<SettingsRepository>(),
+        realtimeCubitGetter: () => context.read<RealtimeCubit>(),
       )..initialize(),
       child: const _Body(),
     );
