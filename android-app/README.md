@@ -1,14 +1,17 @@
 # KIGTTS Android App（原 KGTTS）
 
-离线实时 ASR + TTS Android 客户端。
+离线实时 ASR + TTS Android 客户端，同时集成便捷字幕、快捷名片、画板、悬浮窗、语音包与设置系统。
 
 ## 说明
 
 - 技术栈：Kotlin + Jetpack Compose
 - ASR：`sherpa-onnx`（AAR）
-- TTS：Piper ONNX（从 `voicepack.zip` 读取）
+- TTS：Piper ONNX（导入兼容 `.kigvpk` / `.zip`）
 
 > 命名变更：`KIGTTS` 为当前主名称，`KGTTS` 为旧称。
+
+完整的安卓主软件功能、界面设计、导航结构与文件格式说明请看：
+- [../ANDROID_APP_GUIDE.md](../ANDROID_APP_GUIDE.md)
 
 ## 构建
 
@@ -26,7 +29,7 @@ cd android-app
 
 导入项：
 - ASR：`sosv.zip` 或 `sosv-int8.zip`
-- 音色包：`voicepack.zip`
+- 音色包：`.kigvpk`（当前导出格式）或兼容 `.zip`
 
 ## 关键代码
 

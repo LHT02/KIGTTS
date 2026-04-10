@@ -6,6 +6,7 @@
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo_night</item>
         <item name="android:windowSplashScreenBackground">@color/splash_background_night</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+        <item name="android:popupBackground">@drawable/bg_overlay_popup_dark</item>
     </style>
 
     <style name="ThemeOverlay.KGTTS.OverlayPopup" parent="">

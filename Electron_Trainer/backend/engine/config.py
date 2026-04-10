@@ -56,7 +56,7 @@ class ProjectPaths:
         self.transcripts_path = self.work_dir / "transcripts.jsonl"
         self.training_manifest = self.work_dir / "metadata.csv"
         self.export_dir = self.project_root / "export"
-        self.voicepack_path = self.export_dir / "voicepack.zip"
+        self.voicepack_path = self.export_dir / "voicepack.kigvpk"
 
 
 @dataclass

@@ -6,6 +6,7 @@
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo_day</item>
         <item name="android:windowSplashScreenBackground">@color/splash_background_day</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+        <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
     </style>
 
     <style name="Theme.KGTTS.Cropper" parent="Theme.Material3.DayNight">

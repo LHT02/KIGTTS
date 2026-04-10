@@ -3,14 +3,18 @@ package com.kgtts.app.ui
 import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Activity
+import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
-import android.graphics.Paint
 import android.graphics.BitmapFactory
+import android.graphics.BlurMaskFilter
+import android.graphics.Paint
+import android.graphics.RectF
+import android.media.MediaRecorder
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
@@ -46,6 +50,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
@@ -75,6 +81,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -97,12 +104,16 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.RectangleShape
@@ -110,6 +121,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -118,6 +130,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -126,7 +139,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.TextToolbar
+import androidx.compose.ui.platform.TextToolbarStatus
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.semantics.contentDescription
@@ -149,13 +165,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
@@ -175,6 +197,9 @@ import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
 import com.canhub.cropper.CropImageView
 import com.kgtts.app.audio.AudioRoutePreference
+import com.kgtts.app.audio.AudioDenoiserMode
+import com.kgtts.app.audio.AudioLoopbackTester
+import com.kgtts.app.audio.AudioTestConfig
 import com.kgtts.app.audio.RealtimeController
 import com.kgtts.app.audio.SpeakerEnrollResult
 import com.kgtts.app.data.ModelRepository
@@ -331,6 +356,7 @@ data class UiState(
     val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
     val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
     val aec3Enabled: Boolean = false,
+    val denoiserMode: Int = AudioDenoiserMode.OFF,
     val aec3Status: String = "未启用",
     val aec3Diag: String = "AEC3 诊断：未启用",
     val minVolumePercent: Int = 0,
@@ -360,6 +386,11 @@ data class UiState(
     val speakerProfiles: List<SpeakerProfileUiItem> = emptyList(),
     val speakerLastSimilarity: Float = -1f,
     val inputLevel: Float = 0f,
+    val audioTestRecording: Boolean = false,
+    val audioTestPlaying: Boolean = false,
+    val audioTestHasClip: Boolean = false,
+    val audioTestLevel: Float = 0f,
+    val audioTestStatus: String = "未录制测试音频",
     val inputDeviceLabel: String = "未知",
     val outputDeviceLabel: String = "未知"
 )
@@ -512,6 +543,17 @@ class MainViewModel(
         private set
 
     private var controller: RealtimeController? = null
+    private val audioTest = AudioLoopbackTester(appContext, viewModelScope) { snapshot ->
+        viewModelScope.launch(Dispatchers.Main) {
+            uiState = uiState.copy(
+                audioTestRecording = snapshot.recording,
+                audioTestPlaying = snapshot.playing,
+                audioTestHasClip = snapshot.hasClip,
+                audioTestLevel = snapshot.level,
+                audioTestStatus = snapshot.status
+            )
+        }
+    }
     private var restartJob: Job? = null
     private var settingsObserveJob: Job? = null
     private val lastProgressUpdateAtMs = mutableMapOf<Long, Long>()
@@ -635,6 +677,8 @@ class MainViewModel(
         private set
     var quickSubtitlePreviewVisible by mutableStateOf(false)
         private set
+    var settingsSelectedCategoryName by mutableStateOf(SettingsCategory.Resources.name)
+        private set
     var quickCards by mutableStateOf<List<QuickCard>>(emptyList())
         private set
     var quickCardSelectedIndex by mutableIntStateOf(0)
@@ -680,6 +724,7 @@ class MainViewModel(
             preferredInputType = settings.preferredInputType,
             preferredOutputType = settings.preferredOutputType,
             aec3Enabled = settings.aec3Enabled,
+            denoiserMode = settings.denoiserMode,
             aec3Status = nextAec3Status,
             aec3Diag = nextAec3Diag,
             minVolumePercent = settings.minVolumePercent,
@@ -839,6 +884,18 @@ class MainViewModel(
         saveQuickSubtitleConfig()
     }
 
+    fun submitQuickSubtitlePreset(text: String, hasVoice: Boolean = true) {
+        val message = text.trim()
+        if (message.isEmpty()) return
+        quickSubtitleCurrentText = message
+        if (quickSubtitlePlayOnSend && hasVoice) {
+            speakText(message)
+        } else {
+            uiState = uiState.copy(status = "已更新字幕文本")
+        }
+        saveQuickSubtitleConfig()
+    }
+
     fun updateQuickSubtitleInputText(text: String) {
         quickSubtitleInputText = text
     }
@@ -934,6 +991,10 @@ class MainViewModel(
     fun updateQuickSubtitleCentered(enabled: Boolean) {
         quickSubtitleCentered = enabled
         saveQuickSubtitleConfig()
+    }
+
+    fun updateSettingsSelectedCategory(category: SettingsCategory) {
+        settingsSelectedCategoryName = category.name
     }
 
     fun clearQuickSubtitleText() {
@@ -1508,6 +1569,7 @@ class MainViewModel(
             initialPreferredInputType = uiState.preferredInputType,
             initialPreferredOutputType = uiState.preferredOutputType,
             initialUseAec3 = uiState.aec3Enabled,
+            initialDenoiserMode = uiState.denoiserMode,
             initialNumberReplaceMode = uiState.numberReplaceMode,
             initialAllowSystemAecWithAec3 = true,
             initialSpeakerVerifyEnabled = uiState.speakerVerifyEnabled,
@@ -1594,13 +1656,18 @@ class MainViewModel(
 
     fun importVoice(uri: android.net.Uri) {
         viewModelScope.launch {
-            val dir = withContext(Dispatchers.IO) { repo.importVoice(uri, appContext.contentResolver) }
-            UserPrefs.setLastVoiceName(appContext, dir.name)
-            uiState = uiState.copy(voiceDir = dir, status = "音色包导入完成")
-            preloadTts(dir)
-            refreshVoicePacks()
-            if (uiState.floatingOverlayEnabled) {
-                FloatingOverlayService.refresh(appContext)
+            try {
+                val dir = withContext(Dispatchers.IO) { repo.importVoice(uri, appContext.contentResolver) }
+                UserPrefs.setLastVoiceName(appContext, dir.name)
+                uiState = uiState.copy(voiceDir = dir, status = "音色包导入完成")
+                preloadTts(dir)
+                refreshVoicePacks()
+                if (uiState.floatingOverlayEnabled) {
+                    FloatingOverlayService.refresh(appContext)
+                }
+            } catch (e: Exception) {
+                uiState = uiState.copy(status = e.message ?: "音色包导入失败")
+                AppLogger.e("importVoice failed", e)
             }
         }
     }
@@ -1700,7 +1767,7 @@ class MainViewModel(
     fun shareVoice(pack: VoicePackInfo) {
         viewModelScope.launch(Dispatchers.IO) {
             val shareDir = File(appContext.cacheDir, "share")
-            val fileName = "${pack.dir.name}.zip"
+            val fileName = "${repo.sanitizeVoicePackShareName(pack.meta.name, pack.dir.name)}.kigvpk"
             val outZip = File(shareDir, fileName)
             repo.zipVoicePack(pack.dir, outZip)
             withContext(Dispatchers.Main) {
@@ -1710,7 +1777,7 @@ class MainViewModel(
                     outZip
                 )
                 val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/zip"
+                    type = "application/x-kigtts-voicepack"
                     putExtra(Intent.EXTRA_STREAM, uri)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
@@ -2360,6 +2427,58 @@ class MainViewModel(
         }
     }
 
+    fun setDenoiserMode(mode: Int) {
+        val normalized = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
+        uiState = uiState.copy(denoiserMode = normalized)
+        controller?.setDenoiserMode(normalized)
+        viewModelScope.launch {
+            UserPrefs.setDenoiserMode(appContext, normalized)
+        }
+    }
+
+    private fun currentAudioTestConfig(): AudioTestConfig {
+        return AudioTestConfig(
+            audioSource = if (uiState.echoSuppression) {
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            } else {
+                MediaRecorder.AudioSource.MIC
+            },
+            preferredInputType = uiState.preferredInputType,
+            preferredOutputType = uiState.preferredOutputType,
+            useCommunicationMode = uiState.communicationMode
+        )
+    }
+
+    fun startAudioTestRecording() {
+        if (uiState.running || controller?.isMicActive() == true || RealtimeOwnerGate.currentOwner() != null) {
+            uiState = uiState.copy(audioTestStatus = "请先停止语音转换再测试录音")
+            return
+        }
+        val started = audioTest.startRecording(currentAudioTestConfig())
+        if (!started) {
+            uiState = uiState.copy(audioTestStatus = "音频测试：无法开始录制")
+        }
+    }
+
+    fun stopAudioTestRecording() {
+        audioTest.stopRecording()
+    }
+
+    fun startAudioTestPlayback() {
+        val started = audioTest.play(currentAudioTestConfig())
+        if (!started) {
+            uiState = uiState.copy(audioTestStatus = "音频测试：请先录制一段测试音频")
+        }
+    }
+
+    fun stopAudioTestPlayback() {
+        audioTest.stopPlayback()
+    }
+
+    fun clearAudioTest() {
+        audioTest.clear()
+    }
+
     fun speakText(text: String) {
         val message = text.trim()
         if (message.isEmpty()) return
@@ -2460,6 +2579,7 @@ class MainViewModel(
     override fun onCleared() {
         val activeController = controller
         controller = null
+        audioTest.release()
         settingsObserveJob?.cancel()
         settingsObserveJob = null
         if (activeController != null) {
@@ -2487,6 +2607,7 @@ class MainViewModel(
         controller?.setCommunicationMode(settings.communicationMode)
         controller?.setPreferredInputType(settings.preferredInputType)
         controller?.setPreferredOutputType(settings.preferredOutputType)
+        controller?.setDenoiserMode(settings.denoiserMode)
         controller?.setNumberReplaceMode(settings.numberReplaceMode)
         controller?.setAllowSystemAecWithAec3(true)
         controller?.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
@@ -2512,10 +2633,177 @@ private object UiTokens {
     val MenuElevation = 8.dp
     val PageTopBlank = 8.dp
     val PageBottomBlank = 92.dp
+    val WideContentMaxWidth = 860.dp
+    val WideListMaxWidth = 900.dp
     val DrawerWidthExpanded = 216.dp
     val DrawerWidthCollapsed = 72.dp
     val LightCard = Color(0xFFFFFFFF)
     val DarkCard = Color(0xFF1D2023)
+}
+
+@Composable
+private fun CenteredPageBox(
+    maxWidth: Dp,
+    modifier: Modifier = Modifier,
+    horizontalPadding: Dp = 16.dp,
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(modifier = modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(horizontal = horizontalPadding)
+                .widthIn(max = maxWidth)
+                .fillMaxWidth()
+                .fillMaxHeight(),
+            content = content
+        )
+    }
+}
+
+@Composable
+private fun CenteredPageColumn(
+    maxWidth: Dp,
+    modifier: Modifier = Modifier,
+    scroll: ScrollState? = null,
+    horizontalPadding: Dp = 16.dp,
+    contentSpacing: Dp = 12.dp,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    CenteredPageBox(
+        maxWidth = maxWidth,
+        modifier = modifier,
+        horizontalPadding = horizontalPadding
+    ) {
+        var columnModifier = Modifier.fillMaxWidth()
+        if (scroll != null) {
+            columnModifier = columnModifier.verticalScroll(scroll)
+        }
+        Column(
+            modifier = columnModifier,
+            verticalArrangement = Arrangement.spacedBy(contentSpacing),
+            content = content
+        )
+    }
+}
+
+private data class MdShadowLayer(
+    val offsetY: Dp,
+    val blur: Dp,
+    val spread: Dp,
+    val alpha: Float
+)
+
+private data class MdShadowStyle(
+    val umbra: MdShadowLayer,
+    val penumbra: MdShadowLayer,
+    val ambient: MdShadowLayer
+)
+
+private val MdCardShadowStyle = MdShadowStyle(
+    umbra = MdShadowLayer(offsetY = 3.dp, blur = 1.dp, spread = (-2).dp, alpha = 0.14f),
+    penumbra = MdShadowLayer(offsetY = 2.dp, blur = 2.dp, spread = 0.dp, alpha = 0.098f),
+    ambient = MdShadowLayer(offsetY = 1.dp, blur = 5.dp, spread = 0.dp, alpha = 0.084f)
+)
+
+private val MdFabShadowStyle = MdShadowStyle(
+    umbra = MdShadowLayer(offsetY = 3.dp, blur = 5.dp, spread = (-1).dp, alpha = 0.14f),
+    penumbra = MdShadowLayer(offsetY = 6.dp, blur = 10.dp, spread = 0.dp, alpha = 0.098f),
+    ambient = MdShadowLayer(offsetY = 1.dp, blur = 18.dp, spread = 0.dp, alpha = 0.084f)
+)
+
+private fun Modifier.mdCenteredShadow(
+    shape: androidx.compose.ui.graphics.Shape,
+    shadowStyle: MdShadowStyle
+): Modifier = drawBehind {
+    val outline = shape.createOutline(size, layoutDirection, this)
+    fun drawLayer(layer: MdShadowLayer) {
+        val blurPx = layer.blur.toPx()
+        val offsetYPx = layer.offsetY.toPx()
+        val spreadPx = layer.spread.toPx()
+        val frameworkPaint = Paint().apply {
+            isAntiAlias = true
+            this.style = Paint.Style.FILL
+            color = android.graphics.Color.argb(1, 0, 0, 0)
+            setShadowLayer(blurPx, 0f, offsetYPx, Color.Black.copy(alpha = layer.alpha).toArgb())
+        }
+        drawIntoCanvas { canvas ->
+            when (outline) {
+                is Outline.Rectangle -> {
+                    val rect = RectF(
+                        -spreadPx,
+                        -spreadPx,
+                        size.width + spreadPx,
+                        size.height + spreadPx
+                    )
+                    canvas.nativeCanvas.drawRect(rect, frameworkPaint)
+                }
+                is Outline.Rounded -> {
+                    val roundRect = outline.roundRect
+                    val rect = RectF(
+                        roundRect.left - spreadPx,
+                        roundRect.top - spreadPx,
+                        roundRect.right + spreadPx,
+                        roundRect.bottom + spreadPx
+                    )
+                    val radius = (roundRect.topLeftCornerRadius.x + spreadPx).coerceAtLeast(0f)
+                    canvas.nativeCanvas.drawRoundRect(rect, radius, radius, frameworkPaint)
+                }
+                is Outline.Generic -> {
+                    canvas.nativeCanvas.save()
+                    canvas.nativeCanvas.translate(0f, 0f)
+                    canvas.nativeCanvas.drawPath(outline.path.asAndroidPath(), frameworkPaint)
+                    canvas.nativeCanvas.restore()
+                }
+            }
+        }
+    }
+    drawLayer(shadowStyle.umbra)
+    drawLayer(shadowStyle.penumbra)
+    drawLayer(shadowStyle.ambient)
+}
+
+@Composable
+private fun MdShadowCardSurface(
+    modifier: Modifier = Modifier,
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(UiTokens.Radius),
+    backgroundColor: Color = md2CardContainerColor(),
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(
+        modifier = modifier.mdCenteredShadow(shape = shape, shadowStyle = MdCardShadowStyle)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = shape,
+            color = backgroundColor,
+            elevation = 0.dp
+        ) {
+            Box(modifier = Modifier.fillMaxSize(), content = content)
+        }
+    }
+}
+
+@Composable
+private fun MdShadowCircleActionSurface(
+    modifier: Modifier = Modifier,
+    backgroundColor: Color,
+    contentColor: Color,
+    content: @Composable BoxScope.() -> Unit
+) {
+    Box(
+        modifier = modifier.mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = CircleShape,
+            color = backgroundColor,
+            contentColor = contentColor,
+            elevation = 0.dp
+        ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center, content = content)
+        }
+    }
 }
 
 private val KgtLightColors = lightColors(
@@ -2559,6 +2847,7 @@ private val KgtDarkExtraColors = Md2ExtraColors(
 )
 
 private val LocalMd2ExtraColors = staticCompositionLocalOf { KgtLightExtraColors }
+private val LocalSuppressStaggeredFloatIn = staticCompositionLocalOf { false }
 
 private data class Md2ColorScheme(
     val primary: Color,
@@ -3108,35 +3397,36 @@ private fun QuickCardSortScreen(
         onDispose { onTopBarActionsChange(null) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideListMaxWidth,
+        contentSpacing = 0.dp
     ) {
-        Spacer(Modifier.height(topBlank))
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(UiTokens.Radius),
-            backgroundColor = md2CardContainerColor(),
-            elevation = UiTokens.CardElevation
-        ) {
-            Text(
-                text = "拖动右侧排序按钮调整名片顺序",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        QuickCardSortRecyclerList(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            cards = cards,
-            topBlankHeight = 2.dp,
-            bottomBlankHeight = 2.dp,
-            onReorder = { ids ->
-                viewModel.reorderQuickCardsByIds(ids)
+            Spacer(Modifier.height(topBlank))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.CardElevation
+            ) {
+                Text(
+                    text = "拖动右侧排序按钮调整名片顺序",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                )
             }
-        )
-        Spacer(Modifier.height(bottomBlank))
+            Spacer(Modifier.height(8.dp))
+            QuickCardSortRecyclerList(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                cards = cards,
+                topBlankHeight = 2.dp,
+                bottomBlankHeight = 2.dp,
+                onReorder = { ids ->
+                    viewModel.reorderQuickCardsByIds(ids)
+                }
+            )
+            Spacer(Modifier.height(bottomBlank))
     }
 }
 
@@ -4702,14 +4992,11 @@ private fun QuickCardEditorScreen(
         onDispose { onTopBarActionsChange(null) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        scroll = rememberScrollState()
     ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
+            Spacer(Modifier.height(UiTokens.PageTopBlank))
 
         Md2SettingsCard("基础信息") {
             Row(
@@ -4857,7 +5144,7 @@ private fun QuickCardEditorScreen(
                 Text("保存")
             }
         }
-        Spacer(Modifier.height(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()))
+            Spacer(Modifier.height(WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()))
     }
 
     if (showDeleteConfirm) {
@@ -5233,10 +5520,11 @@ private fun Md2StaggeredFloatIn(
     enabled: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    var visible by remember(index, enabled) { mutableStateOf(!enabled) }
+    val effectiveEnabled = enabled && !LocalSuppressStaggeredFloatIn.current
+    var visible by remember(index, effectiveEnabled) { mutableStateOf(!effectiveEnabled) }
 
-    LaunchedEffect(index, enabled) {
-        if (!enabled) {
+    LaunchedEffect(index, effectiveEnabled) {
+        if (!effectiveEnabled) {
             visible = true
             return@LaunchedEffect
         }
@@ -5320,6 +5608,7 @@ class MainActivity : ComponentActivity() {
     private var lastDecorFitsSystemWindows: Boolean = false
     private var pendingBackgroundReturnFix: Boolean = false
     private var delayedResumeFixRunnable: Runnable? = null
+    private var lastHandledExternalVoicePackIntentKey: String? = null
 
     private val viewModel: MainViewModel by viewModels {
         val repo = ModelRepository(this@MainActivity)
@@ -5350,13 +5639,23 @@ class MainActivity : ComponentActivity() {
             val dark = isSystemInDarkTheme()
             val colors = if (dark) KgtDarkColors else KgtLightColors
             val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
+            val textToolbarState = remember { KigttsTextToolbarState() }
+            val textToolbar = remember(textToolbarState) { KigttsTextToolbar(textToolbarState) }
             CompositionLocalProvider(LocalMd2ExtraColors provides extraColors) {
-                MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        AppScaffold(viewModel)
+                CompositionLocalProvider(LocalTextToolbar provides textToolbar) {
+                    MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            Box(Modifier.fillMaxSize()) {
+                                AppScaffold(viewModel)
+                                KigttsTextToolbarPopup(
+                                    state = textToolbarState,
+                                    darkTheme = dark
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -5438,12 +5737,57 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleLaunchIntent(intent: Intent?) {
-        if (intent?.action != OverlayBridge.ACTION_OPEN_QUICK_SUBTITLE) return
-        val requestId = intent.getLongExtra(OverlayBridge.EXTRA_REQUEST_ID, Long.MIN_VALUE)
-        if (requestId == Long.MIN_VALUE) return
-        val target = intent.getStringExtra(OverlayBridge.EXTRA_TARGET) ?: OverlayBridge.TARGET_SUBTITLE
-        val text = intent.getStringExtra(OverlayBridge.EXTRA_TEXT).orEmpty()
-        viewModel.handleQuickSubtitleLaunchRequest(requestId, target, text)
+        when (intent?.action) {
+            OverlayBridge.ACTION_OPEN_QUICK_SUBTITLE -> {
+                val requestId = intent.getLongExtra(OverlayBridge.EXTRA_REQUEST_ID, Long.MIN_VALUE)
+                if (requestId == Long.MIN_VALUE) return
+                val target = intent.getStringExtra(OverlayBridge.EXTRA_TARGET) ?: OverlayBridge.TARGET_SUBTITLE
+                val text = intent.getStringExtra(OverlayBridge.EXTRA_TEXT).orEmpty()
+                viewModel.handleQuickSubtitleLaunchRequest(requestId, target, text)
+            }
+
+            Intent.ACTION_VIEW,
+            Intent.ACTION_SEND -> {
+                val uri = when (intent.action) {
+                    Intent.ACTION_VIEW -> intent.data
+                    Intent.ACTION_SEND -> @Suppress("DEPRECATION") (intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri)
+                    else -> null
+                } ?: return
+                if (!shouldHandleVoicePackIntent(intent, uri)) return
+                val key = "${intent.action}|$uri|${resolveExternalFileName(uri).orEmpty()}"
+                if (lastHandledExternalVoicePackIntentKey == key) return
+                lastHandledExternalVoicePackIntentKey = key
+                viewModel.importVoice(uri)
+                setIntent(Intent())
+            }
+        }
+    }
+
+    private fun shouldHandleVoicePackIntent(intent: Intent, uri: Uri): Boolean {
+        val name = resolveExternalFileName(uri)?.lowercase().orEmpty()
+        val mime = intent.type?.lowercase().orEmpty()
+        return when (intent.action) {
+            Intent.ACTION_VIEW ->
+                name.endsWith(".kigvpk") || mime == "application/x-kigtts-voicepack"
+            Intent.ACTION_SEND ->
+                name.endsWith(".kigvpk") || name.endsWith(".zip") || mime == "application/x-kigtts-voicepack"
+            else -> false
+        }
+    }
+
+    private fun resolveExternalFileName(uri: Uri): String? {
+        if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (index >= 0) {
+                            return cursor.getString(index)
+                        }
+                    }
+                }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')
     }
 
     private fun syncFloatingOverlayState() {
@@ -5458,6 +5802,203 @@ class MainActivity : ComponentActivity() {
             return
         }
         FloatingOverlayService.start(this)
+    }
+}
+
+private class KigttsTextToolbarState {
+    var rect by mutableStateOf(Rect.Zero)
+    var visible by mutableStateOf(false)
+    var onCopyRequested by mutableStateOf<(() -> Unit)?>(null)
+    var onPasteRequested by mutableStateOf<(() -> Unit)?>(null)
+    var onCutRequested by mutableStateOf<(() -> Unit)?>(null)
+    var onSelectAllRequested by mutableStateOf<(() -> Unit)?>(null)
+
+    fun show(
+        rect: Rect,
+        onCopyRequested: (() -> Unit)?,
+        onPasteRequested: (() -> Unit)?,
+        onCutRequested: (() -> Unit)?,
+        onSelectAllRequested: (() -> Unit)?
+    ) {
+        this.rect = rect
+        this.onCopyRequested = onCopyRequested
+        this.onPasteRequested = onPasteRequested
+        this.onCutRequested = onCutRequested
+        this.onSelectAllRequested = onSelectAllRequested
+        visible = true
+    }
+
+    fun hide() {
+        visible = false
+    }
+}
+
+private class KigttsTextToolbar(
+    private val state: KigttsTextToolbarState
+) : TextToolbar {
+    override val status: TextToolbarStatus
+        get() = if (state.visible) TextToolbarStatus.Shown else TextToolbarStatus.Hidden
+
+    override fun showMenu(
+        rect: Rect,
+        onCopyRequested: (() -> Unit)?,
+        onPasteRequested: (() -> Unit)?,
+        onCutRequested: (() -> Unit)?,
+        onSelectAllRequested: (() -> Unit)?
+    ) {
+        state.show(
+            rect = rect,
+            onCopyRequested = onCopyRequested,
+            onPasteRequested = onPasteRequested,
+            onCutRequested = onCutRequested,
+            onSelectAllRequested = onSelectAllRequested
+        )
+    }
+
+    override fun hide() {
+        state.hide()
+    }
+}
+
+private data class KigttsTextToolbarAction(
+    val icon: String,
+    val contentDescription: String,
+    val onClick: (() -> Unit)?
+)
+
+private class KigttsTextToolbarPositionProvider(
+    private val anchorRect: IntRect,
+    private val marginPx: Int
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize
+    ): IntOffset {
+        val centeredX = anchorRect.left + ((anchorRect.width - popupContentSize.width) / 2)
+        val clampedX = centeredX.coerceIn(
+            marginPx,
+            (windowSize.width - popupContentSize.width - marginPx).coerceAtLeast(marginPx)
+        )
+        val aboveY = anchorRect.top - popupContentSize.height - marginPx
+        val belowY = anchorRect.bottom + marginPx
+        val targetY = if (aboveY >= marginPx) {
+            aboveY
+        } else {
+            belowY.coerceAtMost(
+                (windowSize.height - popupContentSize.height - marginPx).coerceAtLeast(marginPx)
+            )
+        }
+        return IntOffset(clampedX, targetY)
+    }
+}
+
+@Composable
+private fun KigttsTextToolbarPopup(
+    state: KigttsTextToolbarState,
+    darkTheme: Boolean
+) {
+    var rendered by remember { mutableStateOf(state.visible) }
+    val menuAlpha by animateFloatAsState(
+        targetValue = if (state.visible) 1f else 0f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "kigtts_text_toolbar_alpha"
+    )
+    val menuScale by animateFloatAsState(
+        targetValue = if (state.visible) 1f else 0.94f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "kigtts_text_toolbar_scale"
+    )
+    LaunchedEffect(state.visible) {
+        if (state.visible) {
+            rendered = true
+        } else if (rendered) {
+            delay(180L)
+            rendered = false
+        }
+    }
+    if (!rendered) return
+    val density = LocalDensity.current
+    val marginPx = with(density) { 8.dp.roundToPx() }
+    val anchorRect = remember(state.rect) {
+        IntRect(
+            left = state.rect.left.toInt(),
+            top = state.rect.top.toInt(),
+            right = state.rect.right.toInt(),
+            bottom = state.rect.bottom.toInt()
+        )
+    }
+    val actions = remember(
+        state.onCopyRequested,
+        state.onPasteRequested,
+        state.onCutRequested,
+        state.onSelectAllRequested
+    ) {
+        listOf(
+            KigttsTextToolbarAction("select_all", "全选", state.onSelectAllRequested),
+            KigttsTextToolbarAction("content_cut", "剪切", state.onCutRequested),
+            KigttsTextToolbarAction("content_copy", "复制", state.onCopyRequested),
+            KigttsTextToolbarAction("content_paste", "粘贴", state.onPasteRequested)
+        ).filter { it.onClick != null }
+    }
+    if (actions.isEmpty()) return
+
+    val backgroundColor = if (darkTheme) Color(0xFF2C2F33) else Color.White
+    val contentColor = if (darkTheme) Color(0xFFE9EDF1) else Color(0xFF202428)
+    val positionProvider = remember(anchorRect, marginPx) {
+        KigttsTextToolbarPositionProvider(anchorRect, marginPx)
+    }
+
+    Popup(
+        popupPositionProvider = positionProvider,
+        properties = PopupProperties(focusable = false, dismissOnClickOutside = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(8.dp)
+                .graphicsLayer {
+                    alpha = menuAlpha
+                    scaleX = menuScale
+                    scaleY = menuScale
+                    transformOrigin = TransformOrigin(0.5f, 0f)
+                    clip = false
+                },
+        ) {
+            Card(
+                modifier = Modifier.wrapContentSize(),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = backgroundColor,
+                elevation = UiTokens.MenuElevation
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    actions.forEach { action ->
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = rememberRipple(bounded = true, radius = 20.dp)
+                                ) {
+                                    action.onClick?.invoke()
+                                    state.hide()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            MsIcon(
+                                name = action.icon,
+                                contentDescription = action.contentDescription,
+                                tint = contentColor
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5640,6 +6181,349 @@ private fun Md2OutlinedField(
 }
 
 @Composable
+private fun rememberTopEndDropdownPopupPositionProvider(verticalMargin: Dp = 4.dp): PopupPositionProvider {
+    val density = LocalDensity.current
+    return remember(density, verticalMargin) {
+        object : PopupPositionProvider {
+            private val verticalMarginPx = with(density) { verticalMargin.roundToPx() }
+
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val preferredX = when (layoutDirection) {
+                    LayoutDirection.Ltr -> anchorBounds.right - popupContentSize.width
+                    LayoutDirection.Rtl -> anchorBounds.left
+                }
+                val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+                val x = preferredX.coerceIn(0, maxX)
+                val belowY = anchorBounds.bottom + verticalMarginPx
+                val aboveY = anchorBounds.top - verticalMarginPx - popupContentSize.height
+                val y = if (belowY + popupContentSize.height <= windowSize.height) {
+                    belowY
+                } else {
+                    aboveY.coerceAtLeast(0)
+                }
+                return IntOffset(x, y)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Md2AnimatedOptionMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var rendered by remember { mutableStateOf(expanded) }
+    val popupPositionProvider = rememberTopEndDropdownPopupPositionProvider()
+    val menuAlpha by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "md2_option_menu_alpha"
+    )
+    val menuScale by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0.94f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "md2_option_menu_scale"
+    )
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            rendered = true
+        } else if (rendered) {
+            delay(180L)
+            rendered = false
+        }
+    }
+    if (!rendered) return
+    Popup(
+        popupPositionProvider = popupPositionProvider,
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true)
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(8.dp)
+                .graphicsLayer {
+                    alpha = menuAlpha
+                    scaleX = menuScale
+                    scaleY = menuScale
+                    transformOrigin = TransformOrigin(1f, 0f)
+                    clip = false
+                },
+        ) {
+            Card(
+                modifier = Modifier
+                    .widthIn(min = 196.dp, max = 216.dp)
+                    .then(modifier),
+                shape = RoundedCornerShape(4.dp),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.MenuElevation
+            ) {
+                Column(content = content)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Md2SettingSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    supportingText: String? = null
+) {
+    val contentAlpha = if (enabled) 1f else 0.56f
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(4.dp))
+            .clickable(
+                enabled = enabled,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(bounded = true)
+            ) { onCheckedChange(!checked) }
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+            )
+            Md2Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                enabled = enabled
+            )
+        }
+        if (!supportingText.isNullOrBlank()) {
+            Text(
+                text = supportingText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha)
+            )
+        }
+    }
+}
+
+@Composable
+private fun Md2SettingDropdownRow(
+    title: String,
+    value: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    supportingText: String? = null,
+    menuContent: @Composable ColumnScope.() -> Unit
+) {
+    val contentAlpha = if (enabled) 1f else 0.56f
+    Box(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(4.dp))
+                .clickable(
+                    enabled = enabled,
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = rememberRipple(bounded = true)
+                ) { onExpandedChange(true) }
+                .padding(horizontal = 2.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                MsIcon(
+                    name = if (expanded) "expand_less" else "expand_more",
+                    contentDescription = title,
+                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha)
+                )
+            }
+            if (!supportingText.isNullOrBlank()) {
+                Text(
+                    text = supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = contentAlpha)
+                )
+            }
+        }
+        Md2AnimatedOptionMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) }
+        ) {
+            menuContent()
+        }
+    }
+}
+
+enum class SettingsCategory(val title: String, val icon: String) {
+    Resources("资源", "inventory_2"),
+    Recognition("识别", "graphic_eq"),
+    Audio("音频", "volume_up"),
+    System("系统", "tune")
+}
+
+@Composable
+private fun SettingsTabsCard(
+    selectedCategory: SettingsCategory,
+    compact: Boolean,
+    onSelect: (SettingsCategory) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dividerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f)
+    if (compact) {
+        Column(
+            modifier = modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(0.dp)
+            ) {
+                SettingsCategory.entries.forEach { category ->
+                    SettingsTabButton(
+                        category = category,
+                        selected = selectedCategory == category,
+                        compact = true,
+                        onClick = { onSelect(category) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(dividerColor)
+            )
+        }
+    } else {
+        Column(
+            modifier = modifier
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
+        ) {
+            SettingsCategory.entries.forEach { category ->
+                SettingsTabButton(
+                    category = category,
+                    selected = selectedCategory == category,
+                    compact = false,
+                    onClick = { onSelect(category) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsTabButton(
+    category: SettingsCategory,
+    selected: Boolean,
+    compact: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val indicatorColor = MaterialTheme.colorScheme.primary
+    val contentColor =
+        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box(
+        modifier = modifier
+            .height(48.dp)
+            .clip(RectangleShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = rememberRipple(bounded = true),
+                onClick = onClick
+            ),
+    ) {
+        if (compact) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                MsIcon(
+                    name = category.icon,
+                    contentDescription = category.title,
+                    tint = contentColor
+                )
+            }
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth(0.72f)
+                        .height(2.dp)
+                        .background(indicatorColor)
+                )
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight()
+                    .padding(start = 12.dp, end = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                MsIcon(
+                    name = category.icon,
+                    contentDescription = category.title,
+                    tint = contentColor
+                )
+                Text(
+                    text = category.title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = contentColor
+                )
+            }
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .width(2.dp)
+                        .background(indicatorColor)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalComposeUiApi::class)
 fun AppScaffold(viewModel: MainViewModel) {
     val pageQuickSubtitle = 0
@@ -5675,6 +6559,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     val clipboard = LocalClipboardManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val localView = LocalView.current
+    val density = LocalDensity.current
     val activity = context as? Activity
     val inMultiWindowMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         activity?.isInMultiWindowMode == true
@@ -5690,6 +6575,14 @@ fun AppScaffold(viewModel: MainViewModel) {
     val hiddenDrawerScrimColor = MaterialTheme.colorScheme.onSurface.copy(
         alpha = if (isDarkTheme) 0.56f else 0.32f
     )
+    val desktopCaptionTopInset = with(density) {
+        WindowInsets.captionBar.getTop(this).toDp()
+    }
+    val topBarDesktopMaximizeInset = if (!inMultiWindowMode && desktopCaptionTopInset > 0.dp) {
+        desktopCaptionTopInset
+    } else {
+        0.dp
+    }
     SideEffect {
         activity?.window?.let { window ->
             window.statusBarColor = topBarColor.toArgb()
@@ -5762,10 +6655,10 @@ fun AppScaffold(viewModel: MainViewModel) {
     val topPlaybackProgress = viewModel.realtimePlaybackProgress
     val drawerItems = listOf(
         DrawerItem(pageQuickSubtitle, "便捷字幕", "subtitles"),
-        DrawerItem(pageOverlay, "悬浮窗", "open_in_new"),
         DrawerItem(pageQuickCard, "快捷名片", "id_card"),
-        DrawerItem(pageVoicePack, "语音包", "record_voice_over"),
         DrawerItem(pageDrawing, "画板", "draw"),
+        DrawerItem(pageOverlay, "悬浮窗", "open_in_new"),
+        DrawerItem(pageVoicePack, "语音包", "record_voice_over"),
         DrawerItem(pageSettings, "设置", "tune")
     )
     val pendingQuickSubtitleLaunchRequest = viewModel.pendingQuickSubtitleLaunchRequest
@@ -6086,7 +6979,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     if (showBuiltinVoicePicker) {
         BuiltinFilePickerDialog(
             title = "选择语音包文件",
-            allowedExtensions = setOf("zip"),
+            allowedExtensions = setOf("zip", "kigvpk"),
             onDismiss = { showBuiltinVoicePicker = false },
             onPicked = { uri ->
                 showBuiltinVoicePicker = false
@@ -6185,6 +7078,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(top = topBarDesktopMaximizeInset)
                 .padding(top = miuiFloatingTopCompensation)
                 .zIndex(2f),
             color = topBarColor,
@@ -6480,7 +7374,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                     ) {
                                         MsIcon("more_vert", contentDescription = "更多")
                                     }
-                                    DropdownMenu(
+                                    Md2AnimatedOptionMenu(
                                         expanded = showQuickCardWebActions && quickCardWebMenuExpanded,
                                         onDismissRequest = { quickCardWebMenuExpanded = false }
                                     ) {
@@ -7285,48 +8179,47 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
         viewModel.refreshVoicePacks()
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideListMaxWidth,
+        contentSpacing = 0.dp
     ) {
-        if (state.voicePacks.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.TopStart
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxSize()
+            if (state.voicePacks.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.TopStart
                 ) {
-                    Spacer(Modifier.height(UiTokens.PageTopBlank))
-                    Text("暂无语音包，请点击主标题栏导入按钮。")
-                    Spacer(Modifier.height(UiTokens.PageBottomBlank))
+                    Column(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Spacer(Modifier.height(UiTokens.PageTopBlank))
+                        Text("暂无语音包，请点击主标题栏导入按钮。")
+                        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+                    }
                 }
+            } else {
+                VoicePackRecyclerList(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    packs = state.voicePacks,
+                    currentVoicePath = state.voiceDir?.absolutePath,
+                    topBlankHeight = UiTokens.PageTopBlank,
+                    bottomBlankHeight = UiTokens.PageBottomBlank,
+                    onSelect = { viewModel.selectVoice(it.dir) },
+                    onTogglePin = { viewModel.toggleVoicePin(it) },
+                    onDetail = { pack ->
+                        detailPackPath = pack.dir.absolutePath
+                        detailName = pack.meta.name
+                        detailRemark = pack.meta.remark
+                        detailEditing = false
+                    },
+                    onShare = { viewModel.shareVoice(it) },
+                    onDelete = { deletePack = it },
+                    onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
+                )
             }
-        } else {
-            VoicePackRecyclerList(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                packs = state.voicePacks,
-                currentVoicePath = state.voiceDir?.absolutePath,
-                topBlankHeight = UiTokens.PageTopBlank,
-                bottomBlankHeight = UiTokens.PageBottomBlank,
-                onSelect = { viewModel.selectVoice(it.dir) },
-                onTogglePin = { viewModel.toggleVoicePin(it) },
-                onDetail = { pack ->
-                    detailPackPath = pack.dir.absolutePath
-                    detailName = pack.meta.name
-                    detailRemark = pack.meta.remark
-                    detailEditing = false
-                },
-                onShare = { viewModel.shareVoice(it) },
-                onDelete = { deletePack = it },
-                onReorder = { newOrder -> viewModel.reorderVoicePacks(newOrder) }
-            )
-        }
     }
 
     if (detailPack != null) {
@@ -8451,14 +9344,14 @@ private fun QuickSubtitleMicFab(
     }
     FloatingActionButton(
         onClick = if (state.pushToTalkMode) ({}) else onToggleMic,
-        modifier = pttModifier,
+        modifier = pttModifier.mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle),
         interactionSource = pttInteractionSource,
         backgroundColor = MaterialTheme.colorScheme.primary,
         contentColor = MaterialTheme.colorScheme.onPrimary,
         shape = CircleShape,
         elevation = FloatingActionButtonDefaults.elevation(
-            defaultElevation = UiTokens.FabElevation,
-            pressedElevation = 12.dp
+            defaultElevation = 0.dp,
+            pressedElevation = 0.dp
         )
     ) {
         if (state.pushToTalkMode) {
@@ -8736,10 +9629,15 @@ fun QuickSubtitleScreen(
                             .padding(3.dp)
                     ) {
                         Card(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .mdCenteredShadow(
+                                    shape = RoundedCornerShape(UiTokens.Radius),
+                                    shadowStyle = MdCardShadowStyle
+                                ),
                             shape = RoundedCornerShape(UiTokens.Radius),
                             backgroundColor = md2CardContainerColor(),
-                            elevation = UiTokens.CardElevation
+                            elevation = 0.dp
                         ) {
                             Row(
                                 modifier = Modifier
@@ -8855,10 +9753,15 @@ fun QuickSubtitleScreen(
                                 .padding(3.dp)
                         ) {
                             Card(
-                                modifier = Modifier.fillMaxSize(),
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .mdCenteredShadow(
+                                        shape = RoundedCornerShape(UiTokens.Radius),
+                                        shadowStyle = MdCardShadowStyle
+                                    ),
                                 shape = RoundedCornerShape(UiTokens.Radius),
                                 backgroundColor = md2CardContainerColor(),
-                                elevation = UiTokens.CardElevation
+                                elevation = 0.dp
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxSize()
@@ -8909,15 +9812,19 @@ fun QuickSubtitleScreen(
                                                         modifier = Modifier
                                                             .fillMaxWidth()
                                                             .height(72.dp)
+                                                            .mdCenteredShadow(
+                                                                shape = RoundedCornerShape(UiTokens.Radius),
+                                                                shadowStyle = MdCardShadowStyle
+                                                            )
                                                             .clickable {
-                                                                viewModel.applyQuickSubtitleText(
+                                                                viewModel.submitQuickSubtitlePreset(
                                                                     text = text,
-                                                                    enqueueSpeak = hasVoice
+                                                                    hasVoice = hasVoice
                                                                 )
                                                             },
                                                         shape = RoundedCornerShape(UiTokens.Radius),
                                                         backgroundColor = md2CardContainerColor(),
-                                                        elevation = UiTokens.CardElevation
+                                                        elevation = 0.dp
                                                     ) {
                                                         Box(
                                                             modifier = Modifier
@@ -8938,6 +9845,10 @@ fun QuickSubtitleScreen(
                                                     modifier = Modifier
                                                         .fillMaxWidth()
                                                         .height(56.dp)
+                                                        .mdCenteredShadow(
+                                                            shape = RoundedCornerShape(UiTokens.Radius),
+                                                            shadowStyle = MdCardShadowStyle
+                                                        )
                                                         .clickable {
                                                             viewModel.addQuickSubtitleItem(
                                                                 groupIndex = groupIndex,
@@ -8946,7 +9857,7 @@ fun QuickSubtitleScreen(
                                                         },
                                                     shape = RoundedCornerShape(UiTokens.Radius),
                                                     backgroundColor = md2CardContainerColor(),
-                                                    elevation = UiTokens.CardElevation
+                                                    elevation = 0.dp
                                                 ) {
                                                     Box(
                                                         modifier = Modifier.fillMaxSize(),
@@ -9135,9 +10046,9 @@ fun QuickSubtitleScreen(
                                             .fillMaxWidth()
                                             .height(72.dp)
                                             .clickable {
-                                                viewModel.applyQuickSubtitleText(
+                                                viewModel.submitQuickSubtitlePreset(
                                                     text = text,
-                                                    enqueueSpeak = hasVoice
+                                                    hasVoice = hasVoice
                                                 )
                                             },
                                         shape = RoundedCornerShape(UiTokens.Radius),
@@ -9220,9 +10131,9 @@ fun QuickSubtitleScreen(
                                                 .width(148.dp)
                                                 .height(94.dp)
                                                 .clickable {
-                                                    viewModel.applyQuickSubtitleText(
+                                                    viewModel.submitQuickSubtitlePreset(
                                                         text = text,
-                                                        enqueueSpeak = hasVoice
+                                                        hasVoice = hasVoice
                                                     )
                                                 },
                                             shape = RoundedCornerShape(UiTokens.Radius),
@@ -9837,14 +10748,19 @@ private fun QuickSubtitlePttConfirmOverlay(
                         }
                         if (showInputAction) {
                             Surface(
-                                modifier = Modifier.requiredSize(72.dp),
+                                modifier = Modifier
+                                    .requiredSize(72.dp)
+                                    .mdCenteredShadow(
+                                        shape = CircleShape,
+                                        shadowStyle = MdFabShadowStyle
+                                    ),
                                 shape = CircleShape,
                                 color = if (dragTarget == PttConfirmDragTarget.ToInput) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
                                     Color(0xFF202124)
                                 },
-                                elevation = 6.dp
+                                elevation = 0.dp
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     MsIcon(
@@ -9856,14 +10772,19 @@ private fun QuickSubtitlePttConfirmOverlay(
                             }
                         }
                         Surface(
-                            modifier = Modifier.requiredSize(72.dp),
+                            modifier = Modifier
+                                .requiredSize(72.dp)
+                                .mdCenteredShadow(
+                                    shape = CircleShape,
+                                        shadowStyle = MdFabShadowStyle
+                                ),
                             shape = CircleShape,
                             color = if (dragTarget == PttConfirmDragTarget.Cancel) {
                                 Color(0xFFB00020)
                             } else {
                                 Color(0xFF202124)
                             },
-                            elevation = 6.dp
+                            elevation = 0.dp
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 MsIcon(
@@ -9914,14 +10835,15 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
                             }
                         )
                         .padding(end = fabEndInset + fabSize + sideGap, bottom = fabBottomOffset)
-                        .requiredSize(fabSize),
+                        .requiredSize(fabSize)
+                        .mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle),
                     shape = CircleShape,
                     color = if (dragTarget == PttConfirmDragTarget.ToInput) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         Color(0xFF202124)
                     },
-                    elevation = 6.dp
+                    elevation = 0.dp
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         MsIcon(
@@ -9942,16 +10864,17 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
                         } else {
                             Modifier
                         }
-                    )
+                )
                     .padding(end = cancelEndInset, bottom = fabBottomOffset)
-                    .requiredSize(fabSize),
+                    .requiredSize(fabSize)
+                    .mdCenteredShadow(shape = CircleShape, shadowStyle = MdFabShadowStyle),
                 shape = CircleShape,
                 color = if (dragTarget == PttConfirmDragTarget.Cancel) {
                     Color(0xFFB00020)
                 } else {
                     Color(0xFF202124)
                 },
-                elevation = 6.dp
+                elevation = 0.dp
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     MsIcon(
@@ -9974,10 +10897,14 @@ private fun QuickSubtitlePttConfirmBottomStrip(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(stripHeight),
+            .height(stripHeight)
+            .mdCenteredShadow(
+                shape = RoundedCornerShape(42.dp),
+                shadowStyle = MdFabShadowStyle
+            ),
         shape = RoundedCornerShape(42.dp),
         color = md2CardContainerColor(),
-        elevation = UiTokens.FabElevation
+        elevation = 0.dp
     ) {
         Row(
             modifier = Modifier
@@ -10053,18 +10980,23 @@ private fun QuickSubtitleEditorScreen(
     val groupNameBringIntoViewRequester = remember { BringIntoViewRequester() }
     val bringIntoViewScope = rememberCoroutineScope()
 
-    LazyColumn(
+    CenteredPageBox(
+        maxWidth = UiTokens.WideContentMaxWidth,
         modifier = modifier
             .fillMaxSize()
             .imePadding()
-            .padding(horizontal = 16.dp),
-        contentPadding = PaddingValues(
-            top = UiTokens.PageTopBlank,
-            bottom = UiTokens.PageBottomBlank
-        ),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        item(key = "groups_card") {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(
+                top = UiTokens.PageTopBlank,
+                bottom = UiTokens.PageBottomBlank
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item(key = "groups_card") {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(UiTokens.Radius),
@@ -10220,6 +11152,7 @@ private fun QuickSubtitleEditorScreen(
                         viewModel.updateQuickSubtitleItem(selectedGroupIndex, itemIndex, value)
                     }
                 )
+            }
             }
         }
     }
@@ -10744,14 +11677,11 @@ fun FloatingOverlayScreen(
         overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(scroll),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        scroll = scroll
     ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
+            Spacer(Modifier.height(UiTokens.PageTopBlank))
 
         Md2StaggeredFloatIn(index = 0) {
             Md2SettingsCard(title = "悬浮窗状态") {
@@ -10885,7 +11815,7 @@ fun FloatingOverlayScreen(
                         onClick = { inputTypeExpanded = true },
                         expanded = inputTypeExpanded
                     )
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = inputTypeExpanded,
                         onDismissRequest = { inputTypeExpanded = false }
                     ) {
@@ -10910,7 +11840,7 @@ fun FloatingOverlayScreen(
                         onClick = { outputTypeExpanded = true },
                         expanded = outputTypeExpanded
                     )
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = outputTypeExpanded,
                         onDismissRequest = { outputTypeExpanded = false }
                     ) {
@@ -10928,9 +11858,9 @@ fun FloatingOverlayScreen(
             }
         }
 
-        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+            Spacer(Modifier.height(UiTokens.PageBottomBlank))
+        }
     }
-}
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
@@ -11086,7 +12016,7 @@ private fun RunningStatusTopStrip(
                             contentDescription = "选择首选输入设备"
                         )
                     }
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = inputExpanded,
                         onDismissRequest = { inputExpanded = false }
                     ) {
@@ -11130,7 +12060,7 @@ private fun RunningStatusTopStrip(
                             contentDescription = "选择首选输出设备"
                         )
                     }
-                    DropdownMenu(
+                    Md2AnimatedOptionMenu(
                         expanded = outputExpanded,
                         onDismissRequest = { outputExpanded = false }
                     ) {
@@ -11409,6 +12339,10 @@ fun DrawingBoardScreen(
                     .align(Alignment.Center)
                     .size(cardWidthDp, cardHeightDp)
                     .onSizeChanged { boardSize = it }
+                    .mdCenteredShadow(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        shadowStyle = MdCardShadowStyle
+                    )
                     .graphicsLayer {
                         scaleX = viewportScale
                         scaleY = viewportScale
@@ -11417,7 +12351,7 @@ fun DrawingBoardScreen(
                     },
                 shape = RoundedCornerShape(UiTokens.Radius),
                 backgroundColor = md2CardContainerColor(),
-                elevation = UiTokens.CardElevation
+                elevation = 0.dp
             ) {
                 Canvas(
                     modifier = Modifier
@@ -11686,10 +12620,14 @@ private fun DrawingToolbar(
         }
     ) {
         Card(
-            modifier = if (isLandscape) Modifier else Modifier.width(portraitToolbarWidth),
+            modifier = (if (isLandscape) Modifier else Modifier.width(portraitToolbarWidth))
+                .mdCenteredShadow(
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    shadowStyle = MdCardShadowStyle
+                ),
             shape = RoundedCornerShape(UiTokens.Radius),
             backgroundColor = md2CardContainerColor(),
-            elevation = 6.dp
+            elevation = 0.dp
         ) {
             val activeSize = if (eraserEnabled) eraserSize else brushSize
             if (isLandscape) {
@@ -11891,9 +12829,13 @@ private fun DrawingToolbarMini(
         }
     ) {
         Card(
+            modifier = Modifier.mdCenteredShadow(
+                shape = RoundedCornerShape(UiTokens.Radius),
+                shadowStyle = MdCardShadowStyle
+            ),
             shape = RoundedCornerShape(UiTokens.Radius),
             backgroundColor = md2CardContainerColor(),
-            elevation = 6.dp
+            elevation = 0.dp
         ) {
             if (isLandscape) {
                 Column(
@@ -12129,9 +13071,15 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         AudioRoutePreference.OUTPUT_USB to "USB 音频",
         AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
     )
+    val denoiserModeOptions = listOf(
+        AudioDenoiserMode.OFF to "关闭",
+        AudioDenoiserMode.RNNOISE to "RNNoise 噪声抑制",
+        AudioDenoiserMode.SPEEX to "Speex 噪声抑制"
+    )
     var drawerModeExpanded by remember { mutableStateOf(false) }
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
+    var denoiserModeExpanded by remember { mutableStateOf(false) }
     var showSpeakerEnrollDialog by remember { mutableStateOf(false) }
     var speakerEnrollStep by remember { mutableIntStateOf(0) } // 0准备 1句1 2句2 3句3 4结果
     var speakerEnrollCountingDown by remember { mutableStateOf(false) }
@@ -12267,205 +13215,177 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         }
         speakerEnrollOpenedByToggle = false
     }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(scroll),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
+    val selectedCategoryName = viewModel.settingsSelectedCategoryName
+    val selectedCategory = remember(selectedCategoryName) { SettingsCategory.valueOf(selectedCategoryName) }
+    val numberReplaceOptions = remember { listOf("不替换", "数字替换为中文字符", "数字替换为中文表达") }
+    var numberReplaceExpanded by remember { mutableStateOf(false) }
 
-        Md2StaggeredFloatIn(index = 0) {
-            Md2SettingsCard(title = "模型与资源") {
-                Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
-                Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
-                Md2Button(onClick = {
-                    if (state.useBuiltinFileManager) {
-                        showBuiltinAsrPicker = true
-                    } else {
-                        asrPicker.launch("*/*")
+    LaunchedEffect(selectedCategory) {
+        scroll.animateScrollTo(0)
+    }
+
+    @Composable
+    fun ResourceSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "模型与资源") {
+                    Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
+                    Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
+                    Md2Button(onClick = {
+                        if (state.useBuiltinFileManager) {
+                            showBuiltinAsrPicker = true
+                        } else {
+                            asrPicker.launch("*/*")
+                        }
+                    }) {
+                        Text("导入 ASR 模型")
                     }
-                }) {
-                    Text("导入 ASR 模型")
                 }
             }
         }
+    }
 
-        Md2StaggeredFloatIn(index = 1) {
-            Md2SettingsCard(title = "设备监控") {
-                val realtimeInputLevel = viewModel.realtimeInputLevel
-                Text("输入音量", fontWeight = FontWeight.Bold)
-                LinearProgressIndicator(
-                    progress = realtimeInputLevel.coerceIn(0f, 1f),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 8.dp)
-                )
-                Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
-                Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        Md2StaggeredFloatIn(index = 2) {
-            Md2SettingsCard(title = "系统与布局") {
-                Text("横屏抽屉模式", fontWeight = FontWeight.Bold)
-                Box {
-                    val label = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second
-                        ?: drawerModeOptions.first().second
-                    Md2DropdownButton(
-                        label = label,
-                        onClick = { drawerModeExpanded = true },
-                        expanded = drawerModeExpanded
+    @Composable
+    fun RecognitionSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "识别与转换") {
+                    Md2SettingSwitchRow(
+                        title = "识别结果自动上屏大字幕",
+                        checked = state.asrSendToQuickSubtitle,
+                        onCheckedChange = { viewModel.setAsrSendToQuickSubtitle(it) },
+                        supportingText = "开启后：语音识别结果会自动更新便捷字幕主文本"
                     )
-                    DropdownMenu(
-                        expanded = drawerModeExpanded,
-                        onDismissRequest = { drawerModeExpanded = false }
+                    Md2SettingSwitchRow(
+                        title = "按住说话模式",
+                        checked = state.pushToTalkMode,
+                        onCheckedChange = { viewModel.setPushToTalkMode(it) },
+                        supportingText = "开启后：实时页 FAB 改为麦克风，按下开始收音，松开停止收音。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "按下输入文本确认",
+                        checked = state.pushToTalkConfirmInputMode,
+                        enabled = state.pushToTalkMode,
+                        onCheckedChange = { viewModel.setPushToTalkConfirmInputMode(it) },
+                        supportingText = "开启后：按住说话时识别文本先显示在悬浮条中，松手可上屏；上滑可改为输入到文本框或取消发送。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "播放时屏蔽录音",
+                        checked = state.muteWhilePlaying,
+                        onCheckedChange = { viewModel.setMuteWhilePlaying(it) },
+                        supportingText = "开启后播放中不进行识别"
+                    )
+                    Text(
+                        "屏蔽结束延迟：${String.format("%.1f", state.muteWhilePlayingDelaySec)}s",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Slider(
+                        value = state.muteWhilePlayingDelaySec,
+                        onValueChange = { viewModel.setMuteWhilePlayingDelay(it) },
+                        valueRange = 0f..5f
+                    )
+                    Text(
+                        "语音识别最低音量阈值：${state.minVolumePercent}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Slider(
+                        value = state.minVolumePercent.toFloat(),
+                        onValueChange = { viewModel.setMinVolumePercent(it.toInt()) },
+                        valueRange = 0f..100f
+                    )
+                    Md2SettingDropdownRow(
+                        title = "数字替换",
+                        value = numberReplaceOptions.getOrElse(state.numberReplaceMode) { numberReplaceOptions[0] },
+                        expanded = numberReplaceExpanded,
+                        onExpandedChange = { numberReplaceExpanded = it },
+                        supportingText = "示例：2000 → 二零零零 / 两千"
                     ) {
-                        drawerModeOptions.forEach { (value, label) ->
+                        numberReplaceOptions.forEachIndexed { idx, label ->
                             M2DropdownMenuItem(
                                 onClick = {
-                                    drawerModeExpanded = false
-                                    viewModel.setLandscapeDrawerMode(value)
+                                    numberReplaceExpanded = false
+                                    viewModel.setNumberReplaceMode(idx)
                                 }
                             ) { Text(label) }
                         }
                     }
                 }
-                Text("竖屏始终为隐藏式；该选项仅影响横屏布局。", style = MaterialTheme.typography.bodySmall)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.solidTopBar,
-                        onCheckedChange = { viewModel.setSolidTopBar(it) }
-                    )
-                    Text("使用纯色顶栏")
-                }
-                Text("开启后顶栏与状态栏颜色改为卡片同款自适应配色。", style = MaterialTheme.typography.bodySmall)
+            }
 
-                Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
-                Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2OutlinedButton(onClick = {
-                        drawingDirPicker.launch(null)
-                    }) {
-                        Text("选择目录")
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "说话人验证") {
+                    Md2SettingSwitchRow(
+                        title = "说话人验证",
+                        checked = state.speakerVerifyEnabled,
+                        onCheckedChange = { enabled ->
+                            if (!enabled) {
+                                viewModel.setSpeakerVerifyEnabled(false)
+                            } else if (state.speakerProfileReady) {
+                                viewModel.setSpeakerVerifyEnabled(true)
+                            } else {
+                                speakerEnrollSamples.clear()
+                                speakerEnrollStep = 0
+                                speakerEnrollCountingDown = false
+                                speakerEnrollCountdown = 3
+                                speakerEnrollReading = false
+                                speakerEnrollProgress = 0f
+                                speakerEnrollLevel = 0f
+                                speakerEnrollRemainingSec = 4f
+                                speakerEnrollSuccess = false
+                                speakerEnrollMessage = "请按页面引导完成注册。"
+                                speakerEnrollRetryDialog = false
+                                speakerEnrollOpenedByToggle = true
+                                showSpeakerEnrollDialog = true
+                            }
+                        },
+                        supportingText = "注册：${state.speakerProfiles.size}/3"
+                    )
+                    state.speakerProfiles.forEachIndexed { idx, profile ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(4.dp),
+                            backgroundColor = md2CardContainerColor(),
+                            elevation = 0.dp
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${idx + 1}. ${profile.name}",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Md2IconButton(
+                                    icon = "delete",
+                                    contentDescription = "删除说话人",
+                                    onClick = { viewModel.removeSpeakerProfileAt(idx) }
+                                )
+                            }
+                        }
                     }
-                    Md2TextButton(onClick = {
-                        val def = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
-                        viewModel.setDrawingSaveRelativePath(def)
-                    }) {
-                        Text("恢复默认")
+                    Text(
+                        "验证阈值：${String.format("%.2f", state.speakerVerifyThreshold)}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Slider(
+                        value = state.speakerVerifyThreshold,
+                        onValueChange = { viewModel.setSpeakerVerifyThreshold(it) },
+                        valueRange = 0.4f..0.95f
+                    )
+                    if (state.speakerLastSimilarity >= 0f) {
+                        Text(
+                            "最近相似度：${String.format("%.2f", state.speakerLastSimilarity)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
-                }
-                Text("通过系统文件管理器选择目录（建议内部存储）", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.quickCardAutoSaveOnExit,
-                        onCheckedChange = { viewModel.setQuickCardAutoSaveOnExit(it) }
-                    )
-                    Text("退出名片编辑时自动保存")
-                }
-                Text("关闭时将弹窗询问“是否保存名片”", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.useBuiltinFileManager,
-                        onCheckedChange = { viewModel.setUseBuiltinFileManager(it) }
-                    )
-                    Text("使用内建文件管理器")
-                }
-                Text("关闭时使用系统文件选择器。", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.useBuiltinGallery,
-                        onCheckedChange = { viewModel.setUseBuiltinGallery(it) }
-                    )
-                    Text("使用内建图库")
-                }
-                Text("关闭时使用系统图库选择器。", style = MaterialTheme.typography.bodySmall)
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Md2Switch(
-                        checked = state.keepAlive,
-                        onCheckedChange = { viewModel.setKeepAlive(it) }
-                    )
-                    Text("保持后台运行")
-                }
-                Text("开启后启用前台服务，锁屏/息屏也持续工作", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        Md2StaggeredFloatIn(index = 3) {
-            Md2SettingsCard(title = "识别与转换") {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.asrSendToQuickSubtitle,
-                    onCheckedChange = { viewModel.setAsrSendToQuickSubtitle(it) }
-                )
-                Text("识别结果自动上屏大字幕")
-            }
-            Text("开启后：语音识别结果会自动更新便捷字幕主文本", style = MaterialTheme.typography.bodySmall)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.pushToTalkMode,
-                    onCheckedChange = { viewModel.setPushToTalkMode(it) }
-                )
-                Text("按住说话模式")
-            }
-            Text("开启后：实时页 FAB 改为麦克风，按下开始收音，松开停止收音。", style = MaterialTheme.typography.bodySmall)
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.pushToTalkConfirmInputMode,
-                    enabled = state.pushToTalkMode,
-                    onCheckedChange = { viewModel.setPushToTalkConfirmInputMode(it) }
-                )
-                Text("按下输入文本确认")
-            }
-            Text(
-                "开启后：按住说话时识别文本先显示在悬浮条中，松手可上屏；上滑可改为输入到文本框或取消发送。",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.speakerVerifyEnabled,
-                    onCheckedChange = { enabled ->
-                        if (!enabled) {
-                            viewModel.setSpeakerVerifyEnabled(false)
-                        } else if (state.speakerProfileReady) {
-                            viewModel.setSpeakerVerifyEnabled(true)
-                        } else {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Md2OutlinedButton(onClick = {
                             speakerEnrollSamples.clear()
                             speakerEnrollStep = 0
                             speakerEnrollCountingDown = false
@@ -12477,256 +13397,407 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             speakerEnrollSuccess = false
                             speakerEnrollMessage = "请按页面引导完成注册。"
                             speakerEnrollRetryDialog = false
-                            speakerEnrollOpenedByToggle = true
+                            speakerEnrollOpenedByToggle = false
                             showSpeakerEnrollDialog = true
+                        }, enabled = viewModel.canAddSpeakerProfile()) {
+                            Text("注册说话人")
+                        }
+                        Md2TextButton(onClick = { viewModel.clearSpeakerProfile() }) {
+                            Text("清除注册")
                         }
                     }
-                )
-                Text("说话人验证")
+                }
             }
-            Text(
-                "说话人注册：${state.speakerProfiles.size}/3",
-                style = MaterialTheme.typography.bodySmall
-            )
-            state.speakerProfiles.forEachIndexed { idx, profile ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(4.dp),
-                    backgroundColor = md2CardContainerColor(),
-                    elevation = 0.dp
-                ) {
+        }
+    }
+
+    @Composable
+    fun AudioSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "设备监控") {
+                    val realtimeInputLevel = viewModel.realtimeInputLevel
+                    Text("输入音量", fontWeight = FontWeight.Bold)
+                    LinearProgressIndicator(
+                        progress = realtimeInputLevel.coerceIn(0f, 1f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp, bottom = 8.dp)
+                    )
+                    Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                    Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "播放与合成") {
+                    Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.playbackGainPercent.toFloat(),
+                        onValueChange = { viewModel.setPlaybackGainPercent(it.toInt()) },
+                        valueRange = 0f..1000f
+                    )
+                    Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
+                    Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.piperNoiseScale,
+                        onValueChange = { viewModel.setPiperNoiseScale(it) },
+                        valueRange = 0f..2f
+                    )
+                    Text("语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.piperLengthScale,
+                        onValueChange = { viewModel.setPiperLengthScale(it) },
+                        valueRange = 0.1f..5f
+                    )
+                    Text("句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = state.piperSentenceSilence,
+                        onValueChange = { viewModel.setPiperSentenceSilence(it) },
+                        valueRange = 0f..2f
+                    )
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 2) {
+                Md2SettingsCard(title = "回声与降噪") {
+                    Md2SettingSwitchRow(
+                        title = "回声抑制(VOICE_COMMUNICATION)",
+                        checked = state.echoSuppression,
+                        onCheckedChange = { viewModel.setEchoSuppression(it) },
+                        supportingText = "开启后使用通话录音源，可能有回声抑制/降噪效果"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "通话模式降噪(MODE_IN_COMMUNICATION)",
+                        checked = state.communicationMode,
+                        onCheckedChange = { viewModel.setCommunicationMode(it) },
+                        supportingText = "开启后切换系统通话模式并统一播放属性"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "AEC3 软件回声消除",
+                        checked = state.aec3Enabled,
+                        onCheckedChange = { viewModel.setAec3Enabled(it) },
+                        supportingText = "需渲染参考音频，可能与系统AEC冲突"
+                    )
+                    Md2SettingDropdownRow(
+                        title = "软件噪声抑制",
+                        value = denoiserModeOptions.firstOrNull { it.first == state.denoiserMode }?.second
+                            ?: denoiserModeOptions.first().second,
+                        expanded = denoiserModeExpanded,
+                        onExpandedChange = { denoiserModeExpanded = it },
+                        supportingText = "关闭时不做软件降噪；RNNoise 更偏语音场景，Speex 更偏传统预处理。"
+                    ) {
+                        denoiserModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    denoiserModeExpanded = false
+                                    viewModel.setDenoiserMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Text("AEC3 状态：${state.aec3Status}", style = MaterialTheme.typography.bodySmall)
+                    Text(state.aec3Diag, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 3) {
+                Md2SettingsCard(title = "设备路由") {
+                    Md2SettingDropdownRow(
+                        title = "优先选择的音频输入设备类型",
+                        value = inputTypeOptions.firstOrNull { it.first == state.preferredInputType }?.second
+                            ?: inputTypeOptions.first().second,
+                        expanded = inputTypeExpanded,
+                        onExpandedChange = { inputTypeExpanded = it },
+                        supportingText = "适配内置、USB、蓝牙、有线等输入设备"
+                    ) {
+                        inputTypeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    inputTypeExpanded = false
+                                    viewModel.setPreferredInputType(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Md2SettingDropdownRow(
+                        title = "优先使用的音频输出类型",
+                        value = outputTypeOptions.firstOrNull { it.first == state.preferredOutputType }?.second
+                            ?: outputTypeOptions.first().second,
+                        expanded = outputTypeExpanded,
+                        onExpandedChange = { outputTypeExpanded = it },
+                        supportingText = "适配扬声器、听筒、蓝牙、USB、有线等输出设备"
+                    ) {
+                        outputTypeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    outputTypeExpanded = false
+                                    viewModel.setPreferredOutputType(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 4) {
+                Md2SettingsCard(title = "音频测试") {
+                    Text("当前状态：${state.audioTestStatus}", style = MaterialTheme.typography.bodySmall)
+                    LinearProgressIndicator(
+                        progress = state.audioTestLevel.coerceIn(0f, 1f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp, bottom = 10.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (state.audioTestRecording) {
+                            Md2Button(
+                                onClick = { viewModel.stopAudioTestRecording() },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("停止录音")
+                            }
+                        } else {
+                            Md2Button(
+                                onClick = { viewModel.startAudioTestRecording() },
+                                modifier = Modifier.weight(1f),
+                                enabled = !state.audioTestPlaying
+                            ) {
+                                Text("开始录音")
+                            }
+                        }
+                        if (state.audioTestPlaying) {
+                            Md2OutlinedButton(
+                                onClick = { viewModel.stopAudioTestPlayback() },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("停止回放")
+                            }
+                        } else {
+                            Md2OutlinedButton(
+                                onClick = { viewModel.startAudioTestPlayback() },
+                                modifier = Modifier.weight(1f),
+                                enabled = state.audioTestHasClip && !state.audioTestRecording
+                            ) {
+                                Text("回放测试")
+                            }
+                        }
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(top = 8.dp),
+                        horizontalArrangement = Arrangement.End
                     ) {
-                        Text(
-                            text = "${idx + 1}. ${profile.name}",
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall
+                        Md2TextButton(
+                            onClick = { viewModel.clearAudioTest() },
+                            enabled = state.audioTestHasClip && !state.audioTestRecording && !state.audioTestPlaying
+                        ) {
+                            Text("清空录音")
+                        }
+                    }
+                    Text(
+                        "用于测试当前麦克风收音和本地回放，不会进入识别或朗读队列。测试前请先停止主语音链路。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun SystemSettingsContent() {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "系统与布局") {
+                    Md2SettingDropdownRow(
+                        title = "横屏抽屉模式",
+                        value = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second
+                            ?: drawerModeOptions.first().second,
+                        expanded = drawerModeExpanded,
+                        onExpandedChange = { drawerModeExpanded = it },
+                        supportingText = "竖屏始终为隐藏式；该选项仅影响横屏布局。"
+                    ) {
+                        drawerModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    drawerModeExpanded = false
+                                    viewModel.setLandscapeDrawerMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Md2SettingSwitchRow(
+                        title = "使用纯色顶栏",
+                        checked = state.solidTopBar,
+                        onCheckedChange = { viewModel.setSolidTopBar(it) },
+                        supportingText = "开启后顶栏与状态栏颜色改为卡片同款自适应配色。"
+                    )
+                    Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
+                    Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2OutlinedButton(onClick = { drawingDirPicker.launch(null) }) {
+                            Text("选择目录")
+                        }
+                        Md2TextButton(onClick = {
+                            val def = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH
+                            viewModel.setDrawingSaveRelativePath(def)
+                        }) {
+                            Text("恢复默认")
+                        }
+                    }
+                    Text("通过系统文件管理器选择目录（建议内部存储）", style = MaterialTheme.typography.bodySmall)
+                    Md2SettingSwitchRow(
+                        title = "退出名片编辑时自动保存",
+                        checked = state.quickCardAutoSaveOnExit,
+                        onCheckedChange = { viewModel.setQuickCardAutoSaveOnExit(it) },
+                        supportingText = "关闭时将弹窗询问“是否保存名片”"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "使用内建文件管理器",
+                        checked = state.useBuiltinFileManager,
+                        onCheckedChange = { viewModel.setUseBuiltinFileManager(it) },
+                        supportingText = "关闭时使用系统文件选择器。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "使用内建图库",
+                        checked = state.useBuiltinGallery,
+                        onCheckedChange = { viewModel.setUseBuiltinGallery(it) },
+                        supportingText = "关闭时使用系统图库选择器。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "保持后台运行",
+                        checked = state.keepAlive,
+                        onCheckedChange = { viewModel.setKeepAlive(it) },
+                        supportingText = "开启后启用前台服务，锁屏/息屏也持续工作"
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun SettingsCategoryContent(category: SettingsCategory) {
+        when (category) {
+            SettingsCategory.Resources -> ResourceSettingsContent()
+            SettingsCategory.Recognition -> RecognitionSettingsContent()
+            SettingsCategory.Audio -> AudioSettingsContent()
+            SettingsCategory.System -> SystemSettingsContent()
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val compactTabs = maxWidth < 600.dp
+        val wideLayout = maxWidth >= 1100.dp
+        val horizontalInset = if (wideLayout) 24.dp else 16.dp
+
+        if (compactTabs) {
+            CenteredPageColumn(
+                maxWidth = UiTokens.WideContentMaxWidth,
+                scroll = scroll,
+                horizontalPadding = horizontalInset
+            ) {
+                Spacer(Modifier.height(UiTokens.PageTopBlank))
+                SettingsTabsCard(
+                    selectedCategory = selectedCategory,
+                    compact = true,
+                    onSelect = { viewModel.updateSettingsSelectedCategory(it) }
+                )
+                AnimatedContent(
+                    targetState = selectedCategory,
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    transitionSpec = {
+                        val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                        ContentTransform(
+                            targetContentEnter = fadeIn(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
+                                slideInHorizontally(
+                                    animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                    initialOffsetX = { direction * (it / 6) }
+                                ),
+                            initialContentExit = fadeOut(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
+                                slideOutHorizontally(
+                                    animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                    targetOffsetX = { -direction * (it / 7) }
+                                ),
+                            sizeTransform = androidx.compose.animation.SizeTransform(clip = false)
                         )
-                        Md2IconButton(
-                            icon = "delete",
-                            contentDescription = "删除说话人",
-                            onClick = { viewModel.removeSpeakerProfileAt(idx) }
-                        )
+                    },
+                    label = "settings_tabs_content_compact"
+                ) { category ->
+                    CompositionLocalProvider(LocalSuppressStaggeredFloatIn provides true) {
+                        SettingsCategoryContent(category)
                     }
                 }
+                Spacer(Modifier.height(UiTokens.PageBottomBlank))
             }
-            Text(
-                "验证阈值：${String.format("%.2f", state.speakerVerifyThreshold)}",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Slider(
-                value = state.speakerVerifyThreshold,
-                onValueChange = { viewModel.setSpeakerVerifyThreshold(it) },
-                valueRange = 0.4f..0.95f
-            )
-            if (state.speakerLastSimilarity >= 0f) {
-                Text(
-                    "最近相似度：${String.format("%.2f", state.speakerLastSimilarity)}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+        } else {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = horizontalInset),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Md2OutlinedButton(onClick = {
-                    speakerEnrollSamples.clear()
-                    speakerEnrollStep = 0
-                    speakerEnrollCountingDown = false
-                    speakerEnrollCountdown = 3
-                    speakerEnrollReading = false
-                    speakerEnrollProgress = 0f
-                    speakerEnrollLevel = 0f
-                    speakerEnrollRemainingSec = 4f
-                    speakerEnrollSuccess = false
-                    speakerEnrollMessage = "请按页面引导完成注册。"
-                    speakerEnrollRetryDialog = false
-                    speakerEnrollOpenedByToggle = false
-                    showSpeakerEnrollDialog = true
-                }, enabled = viewModel.canAddSpeakerProfile()) {
-                    Text("注册说话人")
-                }
-                Md2TextButton(onClick = { viewModel.clearSpeakerProfile() }) {
-                    Text("清除注册")
-                }
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.muteWhilePlaying,
-                    onCheckedChange = { viewModel.setMuteWhilePlaying(it) }
-                )
-                Text("播放时屏蔽录音")
-            }
-            Text("开启后播放中不进行识别", style = MaterialTheme.typography.bodySmall)
-            Text("屏蔽结束延迟：${String.format("%.1f", state.muteWhilePlayingDelaySec)}s", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.muteWhilePlayingDelaySec,
-                onValueChange = { viewModel.setMuteWhilePlayingDelay(it) },
-                valueRange = 0f..5f
-            )
-            Text("语音识别最低音量阈值：${state.minVolumePercent}%", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.minVolumePercent.toFloat(),
-                onValueChange = { viewModel.setMinVolumePercent(it.toInt()) },
-                valueRange = 0f..100f
-            )
-            Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.playbackGainPercent.toFloat(),
-                onValueChange = { viewModel.setPlaybackGainPercent(it.toInt()) },
-                valueRange = 0f..1000f
-            )
-            Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
-            Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.piperNoiseScale,
-                onValueChange = { viewModel.setPiperNoiseScale(it) },
-                valueRange = 0f..2f
-            )
-            Text("语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.piperLengthScale,
-                onValueChange = { viewModel.setPiperLengthScale(it) },
-                valueRange = 0.1f..5f
-            )
-            Text("句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s", style = MaterialTheme.typography.bodySmall)
-            Slider(
-                value = state.piperSentenceSilence,
-                onValueChange = { viewModel.setPiperSentenceSilence(it) },
-                valueRange = 0f..2f
-            )
-            val numberReplaceOptions = listOf("不替换", "数字替换为中文字符", "数字替换为中文表达")
-            var numberReplaceExpanded by remember { mutableStateOf(false) }
-            Text("数字替换", fontWeight = FontWeight.Bold)
-            Box {
-                val label = numberReplaceOptions.getOrElse(state.numberReplaceMode) { numberReplaceOptions[0] }
-                Md2DropdownButton(
-                    label = label,
-                    onClick = { numberReplaceExpanded = true },
-                    expanded = numberReplaceExpanded
-                )
-                DropdownMenu(
-                    expanded = numberReplaceExpanded,
-                    onDismissRequest = { numberReplaceExpanded = false }
+                Column(
+                    modifier = Modifier
+                        .width(if (wideLayout) 156.dp else 144.dp)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    numberReplaceOptions.forEachIndexed { idx, label ->
-                        M2DropdownMenuItem(
-                            onClick = {
-                                numberReplaceExpanded = false
-                                viewModel.setNumberReplaceMode(idx)
-                            }
-                        ) { Text(label) }
-                    }
+                    Spacer(Modifier.height(UiTokens.PageTopBlank))
+                    SettingsTabsCard(
+                        selectedCategory = selectedCategory,
+                        compact = false,
+                        onSelect = { viewModel.updateSettingsSelectedCategory(it) }
+                    )
                 }
-            }
-            Text("示例：2000 → 二零零零 / 两千", style = MaterialTheme.typography.bodySmall)
-        }
-        }
-
-        Md2StaggeredFloatIn(index = 4) {
-            Md2SettingsCard(title = "回声与降噪") {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.echoSuppression,
-                    onCheckedChange = { viewModel.setEchoSuppression(it) }
-                )
-                Text("回声抑制(VOICE_COMMUNICATION)")
-            }
-            Text("开启后使用通话录音源，可能有回声抑制/降噪效果", style = MaterialTheme.typography.bodySmall)
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.communicationMode,
-                    onCheckedChange = { viewModel.setCommunicationMode(it) }
-                )
-                Text("通话模式降噪(MODE_IN_COMMUNICATION)")
-            }
-            Text("开启后切换系统通话模式并统一播放属性", style = MaterialTheme.typography.bodySmall)
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Md2Switch(
-                    checked = state.aec3Enabled,
-                    onCheckedChange = { viewModel.setAec3Enabled(it) }
-                )
-                Text("AEC3 软件回声消除")
-            }
-            Text("AEC3 状态：${state.aec3Status}", style = MaterialTheme.typography.bodySmall)
-            Text(state.aec3Diag, style = MaterialTheme.typography.bodySmall)
-            Text("需渲染参考音频，可能与系统AEC冲突", style = MaterialTheme.typography.bodySmall)
-        }
-        }
-
-        Md2StaggeredFloatIn(index = 5) {
-            Md2SettingsCard(title = "设备路由") {
-            Text("优先选择的音频输入设备类型", style = MaterialTheme.typography.bodySmall)
-            Box {
-                val label = inputTypeOptions.firstOrNull { it.first == state.preferredInputType }?.second
-                    ?: inputTypeOptions.first().second
-                Md2DropdownButton(
-                    label = label,
-                    onClick = { inputTypeExpanded = true },
-                    expanded = inputTypeExpanded
-                )
-                DropdownMenu(
-                    expanded = inputTypeExpanded,
-                    onDismissRequest = { inputTypeExpanded = false }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
                 ) {
-                    inputTypeOptions.forEach { (value, label) ->
-                        M2DropdownMenuItem(
-                            onClick = {
-                                inputTypeExpanded = false
-                                viewModel.setPreferredInputType(value)
+                    CenteredPageColumn(
+                        maxWidth = UiTokens.WideContentMaxWidth,
+                        modifier = Modifier.fillMaxSize(),
+                        scroll = scroll,
+                        horizontalPadding = 0.dp
+                    ) {
+                        Spacer(Modifier.height(UiTokens.PageTopBlank))
+                        AnimatedContent(
+                            targetState = selectedCategory,
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            transitionSpec = {
+                                val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
+                                ContentTransform(
+                                    targetContentEnter = fadeIn(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
+                                        slideInVertically(
+                                            animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                            initialOffsetY = { direction * (it / 6) }
+                                        ),
+                                    initialContentExit = fadeOut(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
+                                        slideOutVertically(
+                                            animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                            targetOffsetY = { -direction * (it / 7) }
+                                        ),
+                                    sizeTransform = androidx.compose.animation.SizeTransform(clip = false)
+                                )
+                            },
+                            label = "settings_tabs_content_rail"
+                        ) { category ->
+                            CompositionLocalProvider(LocalSuppressStaggeredFloatIn provides true) {
+                                SettingsCategoryContent(category)
                             }
-                        ) { Text(label) }
+                        }
+                        Spacer(Modifier.height(UiTokens.PageBottomBlank))
                     }
                 }
             }
-            Text("适配内置、USB、蓝牙、有线等输入设备", style = MaterialTheme.typography.bodySmall)
-
-            Text("优先使用的音频输出类型", style = MaterialTheme.typography.bodySmall)
-            Box {
-                val label = outputTypeOptions.firstOrNull { it.first == state.preferredOutputType }?.second
-                    ?: outputTypeOptions.first().second
-                Md2DropdownButton(
-                    label = label,
-                    onClick = { outputTypeExpanded = true },
-                    expanded = outputTypeExpanded
-                )
-                DropdownMenu(
-                    expanded = outputTypeExpanded,
-                    onDismissRequest = { outputTypeExpanded = false }
-                ) {
-                    outputTypeOptions.forEach { (value, label) ->
-                        M2DropdownMenuItem(
-                            onClick = {
-                                outputTypeExpanded = false
-                                viewModel.setPreferredOutputType(value)
-                            }
-                        ) { Text(label) }
-                    }
-                }
-            }
-            Text("适配扬声器、听筒、蓝牙、USB、有线等输出设备", style = MaterialTheme.typography.bodySmall)
         }
-        }
-
-        Spacer(Modifier.height(UiTokens.PageBottomBlank))
     }
 
     if (showBuiltinAsrPicker) {
@@ -12994,7 +14065,7 @@ fun LogScreen(
                         onClick = { expanded = true },
                         expanded = expanded
                     )
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    Md2AnimatedOptionMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                         logs.forEach { file ->
                             M2DropdownMenuItem(
                                 onClick = {

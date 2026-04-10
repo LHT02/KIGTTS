@@ -1,6 +1,6 @@
 # KIGTTS Trainer（Electron）
 
-Electron 训练端（前端 + 内置 Python 后端），用于从录音训练并导出 `voicepack.zip`。
+Electron 训练端（前端 + 内置 Python 后端），用于从录音训练并导出 `voicepack.kigvpk`。
 
 > 命名变更：`KIGTTS` 为当前主名称，`KGTTS` 为旧称。
 
@@ -17,6 +17,12 @@ npm run dev
 ```bash
 npm run dist
 ```
+
+## 导出产物
+
+- 训练导出的语音包默认文件名为 `voicepack.kigvpk`
+- `.kigvpk` 本质上仍是 zip 结构，供安卓端和其它 KIGTTS 组件直接识别安装
+- 预览加载同时兼容旧的 `.zip` 语音包
 
 ## 目录说明
 

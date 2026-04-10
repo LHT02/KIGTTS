@@ -1239,7 +1239,7 @@ function App() {
   const pickPreviewVoicepack = async () => {
     const file = await window.dialogs?.openFile({
       filters: [
-        { name: 'Voicepack Zip', extensions: ['zip'] },
+        { name: 'KIGTTS Voicepack', extensions: ['kigvpk', 'zip'] },
         { name: 'All', extensions: ['*'] },
       ],
     })
@@ -1930,7 +1930,7 @@ function App() {
         </Typography>
         <Stack spacing={2}>
           <PathField
-            label="语音包 zip/目录"
+            label="语音包 .kigvpk/.zip/目录"
             value={previewVoicepack}
             onChange={setPreviewVoicepack}
             onPick={pickPreviewVoicepack}
