@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.kgtts.app.audio.AudioDenoiserMode
 import com.kgtts.app.audio.AudioRoutePreference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -32,6 +33,7 @@ object UserPrefs {
     private val KEY_PREFERRED_INPUT_TYPE = intPreferencesKey("preferred_input_type")
     private val KEY_PREFERRED_OUTPUT_TYPE = intPreferencesKey("preferred_output_type")
     private val KEY_AEC3_ENABLED = booleanPreferencesKey("aec3_enabled")
+    private val KEY_DENOISER_MODE = intPreferencesKey("denoiser_mode")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -44,6 +46,8 @@ object UserPrefs {
     private val KEY_SOLID_TOP_BAR = booleanPreferencesKey("solid_top_bar")
     private val KEY_DRAWING_SAVE_RELATIVE_PATH = stringPreferencesKey("drawing_save_relative_path")
     private val KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT = booleanPreferencesKey("quick_card_auto_save_on_exit")
+    private val KEY_USE_BUILTIN_FILE_MANAGER = booleanPreferencesKey("use_builtin_file_manager")
+    private val KEY_USE_BUILTIN_GALLERY = booleanPreferencesKey("use_builtin_gallery")
     private val KEY_ASR_SEND_TO_QUICK_SUBTITLE = booleanPreferencesKey("asr_send_to_quick_subtitle")
     private val KEY_PUSH_TO_TALK_MODE = booleanPreferencesKey("push_to_talk_mode")
     private val KEY_PUSH_TO_TALK_CONFIRM_INPUT = booleanPreferencesKey("push_to_talk_confirm_input")
@@ -71,6 +75,7 @@ object UserPrefs {
         val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
         val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
         val aec3Enabled: Boolean = false,
+        val denoiserMode: Int = AudioDenoiserMode.OFF,
         val minVolumePercent: Int = 0,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
@@ -83,6 +88,8 @@ object UserPrefs {
         val solidTopBar: Boolean = true,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val quickCardAutoSaveOnExit: Boolean = false,
+        val useBuiltinFileManager: Boolean = false,
+        val useBuiltinGallery: Boolean = false,
         val asrSendToQuickSubtitle: Boolean = true,
         val pushToTalkMode: Boolean = false,
         val pushToTalkConfirmInput: Boolean = false,
@@ -127,6 +134,8 @@ object UserPrefs {
             preferredOutputType = this[KEY_PREFERRED_OUTPUT_TYPE]
                 ?: if (legacySpeaker) AudioRoutePreference.OUTPUT_SPEAKER else AudioRoutePreference.OUTPUT_AUTO,
             aec3Enabled = this[KEY_AEC3_ENABLED] ?: false,
+            denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.OFF)
+                .coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX),
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 0,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
@@ -141,6 +150,8 @@ object UserPrefs {
             drawingSaveRelativePath = (this[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             quickCardAutoSaveOnExit = this[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
+            useBuiltinFileManager = this[KEY_USE_BUILTIN_FILE_MANAGER] ?: false,
+            useBuiltinGallery = this[KEY_USE_BUILTIN_GALLERY] ?: false,
             asrSendToQuickSubtitle = this[KEY_ASR_SEND_TO_QUICK_SUBTITLE] ?: true,
             pushToTalkMode = this[KEY_PUSH_TO_TALK_MODE] ?: false,
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
@@ -198,6 +209,12 @@ object UserPrefs {
     suspend fun setAec3Enabled(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_AEC3_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setDenoiserMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_DENOISER_MODE] = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
         }
     }
 
@@ -272,6 +289,18 @@ object UserPrefs {
     suspend fun setQuickCardAutoSaveOnExit(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] = enabled
+        }
+    }
+
+    suspend fun setUseBuiltinFileManager(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_USE_BUILTIN_FILE_MANAGER] = enabled
+        }
+    }
+
+    suspend fun setUseBuiltinGallery(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_USE_BUILTIN_GALLERY] = enabled
         }
     }
 

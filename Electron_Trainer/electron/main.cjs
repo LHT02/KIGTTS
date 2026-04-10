@@ -400,7 +400,11 @@ app.whenReady().then(() => {
       const projectRoot = path.resolve(outputDir);
       const exportDir = path.join(projectRoot, 'export');
       let target = projectRoot;
-      if (fs.existsSync(path.join(exportDir, 'voicepack.zip')) || fs.existsSync(exportDir)) {
+      if (
+        fs.existsSync(path.join(exportDir, 'voicepack.kigvpk')) ||
+        fs.existsSync(path.join(exportDir, 'voicepack.zip')) ||
+        fs.existsSync(exportDir)
+      ) {
         target = exportDir;
       }
       if (!fs.existsSync(target)) {

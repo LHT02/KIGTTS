@@ -2,14 +2,17 @@ package com.kgtts.app.data
 
 import android.content.ContentResolver
 import android.content.Context
+import android.database.Cursor
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.net.Uri
+import android.provider.OpenableColumns
 import com.kgtts.app.util.AppLogger
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -37,6 +40,8 @@ class ModelRepository(private val context: Context) {
     private val asrRoot = File(root, "asr")
     private val voiceRoot = File(root, "voice")
     private val bundledAsrAsset = "sosv-int8.zip"
+    private val bundledVoiceAsset = "firefly.zip"
+    private val bundledVoiceName = "firefly"
 
     init {
         root.mkdirs()
@@ -54,13 +59,33 @@ class ModelRepository(private val context: Context) {
     }
 
     fun importVoice(uri: Uri, resolver: ContentResolver): File {
-        val targetDir = File(voiceRoot, safeName(uri))
-        targetDir.mkdirs()
-        AppLogger.i("importVoice uri=$uri target=${targetDir.absolutePath}")
-        unzipToDir(uri, resolver, targetDir)
-        ensureVoiceMeta(targetDir)
-        AppLogger.i("importVoice done target=${targetDir.absolutePath}")
-        return targetDir
+        val targetDir = File(voiceRoot, safeName(uri, resolver))
+        val importDir = File(voiceRoot, ".import-${System.currentTimeMillis()}")
+        if (importDir.exists()) {
+            importDir.deleteRecursively()
+        }
+        importDir.mkdirs()
+        AppLogger.i("importVoice uri=$uri temp=${importDir.absolutePath} target=${targetDir.absolutePath}")
+        try {
+            unzipToDir(uri, resolver, importDir)
+            validateVoicePack(importDir)
+            if (targetDir.exists()) {
+                targetDir.deleteRecursively()
+            }
+            importDir.parentFile?.mkdirs()
+            val moved = importDir.renameTo(targetDir)
+            if (!moved) {
+                importDir.copyRecursively(targetDir, overwrite = true)
+                importDir.deleteRecursively()
+            }
+            ensureVoiceMeta(targetDir)
+            AppLogger.i("importVoice done target=${targetDir.absolutePath}")
+            return targetDir
+        } catch (e: Exception) {
+            importDir.deleteRecursively()
+            AppLogger.e("importVoice failed uri=$uri", e)
+            throw e
+        }
     }
 
     fun listVoicePacks(): List<VoicePackInfo> {
@@ -130,6 +155,16 @@ class ModelRepository(private val context: Context) {
         }
     }
 
+    fun sanitizeVoicePackShareName(name: String, fallback: String): String {
+        val sanitized = name
+            .trim()
+            .ifEmpty { fallback }
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .trim('.')
+            .ifEmpty { fallback.ifBlank { "voicepack" } }
+        return sanitized
+    }
+
     fun ensureBundledAsr(): File? {
         val targetDir = File(asrRoot, "bundled-sosv-int8")
         if (hasOnnx(targetDir)) {
@@ -147,9 +182,29 @@ class ModelRepository(private val context: Context) {
         }
     }
 
-    private fun safeName(uri: Uri): String {
-        val last = uri.lastPathSegment?.substringAfterLast('/') ?: "package"
-        return last.removeSuffix(".zip").ifEmpty { "package" }
+    fun ensureBundledVoice(): File? {
+        val targetDir = File(voiceRoot, bundledVoiceName)
+        if (hasOnnx(targetDir)) {
+            AppLogger.i("bundledVoice already present: ${targetDir.absolutePath}")
+            return targetDir
+        }
+        targetDir.mkdirs()
+        return try {
+            AppLogger.i("bundledVoice extracting asset=$bundledVoiceAsset to ${targetDir.absolutePath}")
+            unzipAssetToDir(bundledVoiceAsset, targetDir)
+            ensureVoiceMeta(targetDir)
+            if (hasOnnx(targetDir)) targetDir else null
+        } catch (e: Exception) {
+            AppLogger.e("bundledVoice extract failed", e)
+            null
+        }
+    }
+
+    private fun safeName(uri: Uri, resolver: ContentResolver? = null): String {
+        val last = displayName(uri, resolver)
+            ?: uri.lastPathSegment?.substringAfterLast('/')
+            ?: "package"
+        return stripArchiveSuffix(last).ifBlank { "package" }
     }
 
     private fun unzipToDir(uri: Uri, resolver: ContentResolver, outDir: File) {
@@ -170,6 +225,27 @@ class ModelRepository(private val context: Context) {
                     entry = zis.nextEntry
                 }
             }
+        }
+    }
+
+    private fun displayName(uri: Uri, resolver: ContentResolver?): String? {
+        if (resolver == null || uri.scheme != ContentResolver.SCHEME_CONTENT) return null
+        val cursor: Cursor = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?: return null
+        cursor.use {
+            if (!it.moveToFirst()) return null
+            val idx = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx < 0) return null
+            return it.getString(idx)
+        }
+    }
+
+    private fun stripArchiveSuffix(name: String): String {
+        val lower = name.lowercase()
+        return when {
+            lower.endsWith(".kigvpk") -> name.dropLast(7)
+            lower.endsWith(".zip") -> name.dropLast(4)
+            else -> name
         }
     }
 
@@ -197,6 +273,36 @@ class ModelRepository(private val context: Context) {
     private fun hasOnnx(dir: File): Boolean {
         if (!dir.exists()) return false
         return dir.walkTopDown().any { it.isFile && it.extension.lowercase() == "onnx" }
+    }
+
+    private fun validateVoicePack(dir: File) {
+        val manifestFile = File(dir, "manifest.json")
+        if (!manifestFile.isFile) {
+            throw IOException("无效语音包：缺少 manifest.json")
+        }
+        val json = try {
+            JSONObject(manifestFile.readText(Charsets.UTF_8))
+        } catch (e: Exception) {
+            throw IOException("无效语音包：manifest.json 解析失败", e)
+        }
+        val files = json.optJSONObject("files")
+            ?: throw IOException("无效语音包：manifest.json 缺少 files 配置")
+        val requiredPaths = listOf(
+            files.optString("model"),
+            files.optString("config"),
+            files.optString("phonemizer")
+        )
+        val requiredNames = listOf("model", "config", "phonemizer")
+        requiredPaths.forEachIndexed { index, relPath ->
+            val normalized = relPath.replace('\\', '/').trim().removePrefix("/")
+            if (normalized.isBlank()) {
+                throw IOException("无效语音包：manifest.files.${requiredNames[index]} 为空")
+            }
+            val target = File(dir, normalized)
+            if (!target.isFile) {
+                throw IOException("无效语音包：缺少必要文件 ${normalized}")
+            }
+        }
     }
 
     private fun metaFile(dir: File): File = File(dir, "voicepack.json")

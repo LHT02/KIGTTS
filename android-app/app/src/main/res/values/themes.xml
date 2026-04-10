@@ -6,6 +6,7 @@
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo_day</item>
         <item name="android:windowSplashScreenBackground">@color/splash_background_day</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+        <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
     </style>
 
     <style name="Theme.KGTTS.Cropper" parent="Theme.Material3.DayNight">
@@ -19,10 +20,33 @@
         <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
         <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
         <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+        <item name="textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+        <item name="textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+    </style>
+
+    <style name="ThemeOverlay.KGTTS.OverlayPopup.Light" parent="">
+        <item name="android:popupBackground">@drawable/bg_overlay_popup</item>
+        <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+        <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+        <item name="textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+        <item name="textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Light</item>
+    </style>
+
+    <style name="ThemeOverlay.KGTTS.OverlayPopup.Dark" parent="">
+        <item name="android:popupBackground">@drawable/bg_overlay_popup_dark</item>
+        <item name="android:textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>
+        <item name="android:textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>
+        <item name="textAppearanceLargePopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>
+        <item name="textAppearanceSmallPopupMenu">@style/TextAppearance.KGTTS.OverlayPopup.Dark</item>
     </style>
 
     <style name="TextAppearance.KGTTS.OverlayPopup.Light" parent="@android:style/TextAppearance.Material.Menu">
         <item name="android:textColor">#111417</item>
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="TextAppearance.KGTTS.OverlayPopup.Dark" parent="@android:style/TextAppearance.Material.Menu">
+        <item name="android:textColor">#E4E8EB</item>
         <item name="android:textSize">14sp</item>
     </style>
 </resources>
