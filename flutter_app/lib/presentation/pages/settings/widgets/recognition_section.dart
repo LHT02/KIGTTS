@@ -30,7 +30,10 @@ class RecognitionSection extends StatelessWidget {
               c.settings.asrSendToQuickSubtitle ||
           p.settings.playbackGainPercent !=
               c.settings.playbackGainPercent ||
-          p.settings.minVolumePercent != c.settings.minVolumePercent,
+          p.settings.minVolumePercent != c.settings.minVolumePercent ||
+          p.settings.pushToTalkMode != c.settings.pushToTalkMode ||
+          p.settings.pushToTalkConfirmInput !=
+              c.settings.pushToTalkConfirmInput,
       builder: (context, state) {
         final s = state.settings;
         final cubit = context.read<SettingsCubit>();
@@ -74,10 +77,37 @@ class RecognitionSection extends StatelessWidget {
               title: const Text('ASR 发送到字幕'),
               subtitle: const Text('识别结果自动显示在字幕页'),
               value: s.asrSendToQuickSubtitle,
-              onChanged: null, // read-only display
+              onChanged: (v) => cubit.setAsrSendToQuickSubtitle(v),
               contentPadding: EdgeInsets.zero,
               dense: true,
             ),
+            const Divider(height: 16),
+            // --- Recording mode ---
+            Text(
+              '录音模式',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            const SizedBox(height: 4),
+            SwitchListTile(
+              title: const Text('按住说话 (PTT)'),
+              subtitle: const Text('开启后需按住按钮才会录音'),
+              value: s.pushToTalkMode,
+              onChanged: (v) => cubit.setPushToTalkMode(v),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+            if (s.pushToTalkMode)
+              SwitchListTile(
+                title: const Text('确认输入模式'),
+                subtitle: const Text('松手前可拖动选择：发送字幕/输入框/取消'),
+                value: s.pushToTalkConfirmInput,
+                onChanged: (v) => cubit.setPushToTalkConfirmInput(v),
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+              ),
             const Divider(height: 16),
             // --- Piper TTS params ---
             Text(

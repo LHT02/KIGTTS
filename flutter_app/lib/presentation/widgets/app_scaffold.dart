@@ -47,7 +47,15 @@ class _AppScaffoldState extends State<AppScaffold> {
   List<Widget> get _actions {
     return switch (widget.currentPath) {
       AppRoutes.home => const [FullscreenAction()],
+      AppRoutes.voicepacks => const [VoicePackImportAction()],
+      AppRoutes.drawing => const [DrawingSaveAction()],
+      AppRoutes.cards => const [QuickCardAddAction(), QuickCardScanAction()],
       AppRoutes.settings => const [LogAction()],
+      AppRoutes.log => const [
+          LogRefreshAction(),
+          LogCopyAction(),
+          LogShareAction(),
+        ],
       _ => const [],
     };
   }

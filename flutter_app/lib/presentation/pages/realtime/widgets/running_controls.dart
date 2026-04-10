@@ -5,7 +5,8 @@ import '../../../../core/theme/app_dimensions.dart';
 import '../../../cubits/realtime/realtime_cubit.dart';
 import '../../../cubits/realtime/realtime_state.dart';
 
-/// Bottom control strip with mic level, playback progress, and start/stop.
+/// Bottom control strip with mic level and playback progress indicators.
+/// The start/stop FAB has been moved to QuickSubtitleMicFab on the home page.
 class RunningControls extends StatelessWidget {
   const RunningControls({super.key});
 
@@ -58,15 +59,15 @@ class RunningControls extends StatelessWidget {
             ),
           ),
           const SizedBox(width: AppDimensions.spacingLg),
-          // Start/Stop button
+          // Status text
           BlocBuilder<RealtimeCubit, RealtimeState>(
-            buildWhen: (p, c) =>
-                p.running != c.running || p.loading != c.loading,
+            buildWhen: (p, c) => p.status != c.status,
             builder: (context, state) {
-              return _ControlButton(
-                running: state.running,
-                loading: state.loading,
-                onPressed: () => context.read<RealtimeCubit>().toggle(),
+              return Text(
+                state.status,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               );
             },
           ),
@@ -111,43 +112,6 @@ class _LevelBar extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ControlButton extends StatelessWidget {
-  const _ControlButton({
-    required this.running,
-    required this.loading,
-    required this.onPressed,
-  });
-  final bool running;
-  final bool loading;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    if (loading) {
-      return const SizedBox(
-        width: 48,
-        height: 48,
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-    return SizedBox(
-      width: 48,
-      height: 48,
-      child: FloatingActionButton(
-        heroTag: 'realtimeControl',
-        mini: true,
-        onPressed: onPressed,
-        backgroundColor:
-            running ? AppColors.darkError : AppColors.primary,
-        child: Icon(
-          running ? Icons.stop : Icons.mic,
-          color: Colors.white,
-        ),
-      ),
     );
   }
 }

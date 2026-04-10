@@ -113,7 +113,7 @@ Java_com_kgtts_app_audio_Aec3Processor_nativeProcessCapture(JNIEnv* env, jobject
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_kgtts_app_audio_Aec3Processor_nativeProcessRender(JNIEnv* env, jobject /*thiz*/,
+Java_com_kgtts_kgtts_1app_audio_Aec3Processor_nativeProcessRender(JNIEnv* env, jobject /*thiz*/,
                                                         jlong ptr, jfloatArray data,
                                                         jint offset, jint length) {
     auto* handle = reinterpret_cast<Aec3Handle*>(ptr);

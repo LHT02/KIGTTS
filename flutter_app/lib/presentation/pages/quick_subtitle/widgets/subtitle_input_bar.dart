@@ -4,17 +4,31 @@ import '../../../../core/theme/app_colors.dart';
 import '../../../cubits/quick_subtitle/quick_subtitle_cubit.dart';
 import '../../../cubits/realtime/realtime_cubit.dart';
 import '../../../cubits/realtime/realtime_state.dart';
+import '../../../cubits/settings/settings_cubit.dart';
+import '../../../cubits/settings/settings_state.dart';
 
 /// Input mode for the subtitle input bar.
-enum InputBarMode { keyboard, ptt }
+enum InputBarMode { keyboard, mic }
 
-/// Bottom input bar with text field / push-to-talk toggle.
+/// Bottom input bar with keyboard/mic toggle on the left.
 ///
-/// When in keyboard mode: text field + send button (left icon switches to mic).
-/// When in PTT mode: "按住说话" button replaces text field (left icon
-/// switches back to keyboard).
+/// Left icon always toggles between keyboard ↔ mic mode.
+/// Centre area shows either:
+/// - **keyboard mode**: text field + send button
+/// - **mic mode**: recording button — whose *gesture behaviour* is controlled
+///   by settings (continuous listen / simple PTT / confirm PTT)
+///
+/// Gesture behaviour in mic mode (driven by settings):
+/// | `pushToTalkMode` | `pushToTalkConfirmInput` | Behaviour |
+/// |---|---|---|
+/// | false | — | **Continuous listen**: tap toggles start/stop (ASR+TTS) |
+/// | true  | false | **Simple PTT**: hold → record → release → auto-TTS |
+/// | true  | true  | **Confirm PTT**: hold → drag to choose target → release |
 class SubtitleInputBar extends StatefulWidget {
-  const SubtitleInputBar({super.key});
+  const SubtitleInputBar({super.key, this.onPttOverlayChanged});
+
+  /// Called with `true` when confirm-PTT overlay should show.
+  final ValueChanged<bool>? onPttOverlayChanged;
 
   @override
   State<SubtitleInputBar> createState() => _SubtitleInputBarState();
@@ -23,6 +37,9 @@ class SubtitleInputBar extends StatefulWidget {
 class _SubtitleInputBarState extends State<SubtitleInputBar> {
   late TextEditingController _controller;
   InputBarMode _mode = InputBarMode.keyboard;
+  Offset? _pttStartOffset;
+
+  static const double _dragThresholdDp = 56;
 
   @override
   void initState() {
@@ -47,68 +64,104 @@ class _SubtitleInputBarState extends State<SubtitleInputBar> {
   void _toggleMode() {
     setState(() {
       _mode = _mode == InputBarMode.keyboard
-          ? InputBarMode.ptt
+          ? InputBarMode.mic
           : InputBarMode.keyboard;
     });
   }
 
+  String _computeDragTarget(Offset delta) {
+    if (delta.dy >= -_dragThresholdDp) return 'SendToSubtitle';
+    if (delta.dx < -12) return 'SendToInput';
+    return 'Cancel';
+  }
+
+  // --- PTT pointer handlers ---
+
+  void _onPttPointerDown(PointerDownEvent e, RealtimeCubit cubit,
+      bool confirmInput) {
+    _pttStartOffset = e.localPosition;
+    cubit.beginPttSession();
+    if (confirmInput) {
+      widget.onPttOverlayChanged?.call(true);
+    }
+  }
+
+  void _onPttPointerMove(PointerMoveEvent e, RealtimeCubit cubit,
+      bool confirmInput) {
+    if (_pttStartOffset == null || !confirmInput) return;
+    final delta = e.localPosition - _pttStartOffset!;
+    cubit.setPttDragTarget(_computeDragTarget(delta));
+  }
+
+  void _onPttPointerUp(PointerUpEvent e, RealtimeCubit cubit,
+      bool confirmInput) {
+    if (_pttStartOffset == null) return;
+    widget.onPttOverlayChanged?.call(false);
+    if (confirmInput) {
+      final delta = e.localPosition - _pttStartOffset!;
+      cubit.commitPttSession(_computeDragTarget(delta));
+    } else {
+      cubit.commitPttSession('speak');
+    }
+    _pttStartOffset = null;
+  }
+
+  void _onPttPointerCancel(PointerCancelEvent e, RealtimeCubit cubit) {
+    if (_pttStartOffset == null) return;
+    widget.onPttOverlayChanged?.call(false);
+    cubit.commitPttSession('Cancel');
+    _pttStartOffset = null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final cubit = context.read<QuickSubtitleCubit>();
+    final subtitleCubit = context.read<QuickSubtitleCubit>();
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
+    return Row(
       children: [
-        // Main input row
-        Row(
-          children: [
-            // Mode toggle button (keyboard <-> mic)
-            _ModeToggleButton(
-              mode: _mode,
-              onToggle: _toggleMode,
-            ),
-            const SizedBox(width: 6),
-            // Content area: text field OR push-to-talk button
-            Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 200),
-                transitionBuilder: (child, anim) {
-                  return FadeTransition(opacity: anim, child: child);
-                },
-                child: _mode == InputBarMode.keyboard
-                    ? _KeyboardInput(
-                        key: const ValueKey('keyboard'),
-                        controller: _controller,
-                        onSend: () => _send(cubit),
-                        onChanged: (t) => cubit.setInputText(t),
-                      )
-                    : const _PttButton(key: ValueKey('ptt')),
-              ),
-            ),
-            const SizedBox(width: 6),
-            // Send / start-stop button
-            if (_mode == InputBarMode.keyboard)
-              IconButton(
-                icon: const Icon(
-                  Icons.send_sharp,
-                  color: AppColors.primary,
-                ),
-                onPressed: () => _send(cubit),
-                tooltip: '发送',
-                constraints: const BoxConstraints(
-                  minWidth: 40,
-                  minHeight: 40,
-                ),
-              )
-            else
-              // In PTT mode, show a toggle start/stop button
-              const _StartStopButton(),
-          ],
+        // Left icon: always keyboard ↔ mic toggle
+        _ModeToggleButton(mode: _mode, onToggle: _toggleMode),
+        const SizedBox(width: 6),
+        // Centre area
+        Expanded(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            transitionBuilder: (child, anim) =>
+                FadeTransition(opacity: anim, child: child),
+            child: _mode == InputBarMode.keyboard
+                ? _KeyboardInput(
+                    key: const ValueKey('keyboard'),
+                    controller: _controller,
+                    onSend: () => _send(subtitleCubit),
+                    onChanged: (t) => subtitleCubit.setInputText(t),
+                  )
+                : _MicButton(
+                    key: const ValueKey('mic'),
+                    onPttPointerDown: _onPttPointerDown,
+                    onPttPointerMove: _onPttPointerMove,
+                    onPttPointerUp: _onPttPointerUp,
+                    onPttPointerCancel: _onPttPointerCancel,
+                  ),
+          ),
         ),
+        const SizedBox(width: 6),
+        // Right side: send button only in keyboard mode
+        if (_mode == InputBarMode.keyboard)
+          IconButton(
+            icon: const Icon(Icons.send_sharp, color: AppColors.primary),
+            onPressed: () => _send(subtitleCubit),
+            tooltip: '发送',
+            constraints:
+                const BoxConstraints(minWidth: 40, minHeight: 40),
+          ),
       ],
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sub-widgets
+// ---------------------------------------------------------------------------
 
 /// Left-side mode toggle button (keyboard <-> microphone icon).
 class _ModeToggleButton extends StatelessWidget {
@@ -135,7 +188,7 @@ class _ModeToggleButton extends StatelessWidget {
         ),
       ),
       onPressed: onToggle,
-      tooltip: mode == InputBarMode.keyboard ? '按住说话' : '键盘输入',
+      tooltip: mode == InputBarMode.keyboard ? '语音模式' : '键盘输入',
       constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
     );
   }
@@ -171,9 +224,7 @@ class _KeyboardInput extends StatelessWidget {
         ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(20),
-          borderSide: BorderSide(
-            color: theme.colorScheme.outline,
-          ),
+          borderSide: BorderSide(color: theme.colorScheme.outline),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(20),
@@ -196,9 +247,181 @@ class _KeyboardInput extends StatelessWidget {
   }
 }
 
-/// Push-to-talk button (replaces text field in PTT mode).
-class _PttButton extends StatelessWidget {
-  const _PttButton({super.key});
+/// Mic-mode recording button.
+///
+/// Reads settings to decide gesture behaviour:
+/// - Continuous listen (`!pttMode`): tap toggles start/stop
+/// - Simple PTT: hold → release → speak
+/// - Confirm PTT: hold → drag → release with target
+class _MicButton extends StatelessWidget {
+  const _MicButton({
+    super.key,
+    required this.onPttPointerDown,
+    required this.onPttPointerMove,
+    required this.onPttPointerUp,
+    required this.onPttPointerCancel,
+  });
+
+  final void Function(PointerDownEvent, RealtimeCubit, bool) onPttPointerDown;
+  final void Function(PointerMoveEvent, RealtimeCubit, bool) onPttPointerMove;
+  final void Function(PointerUpEvent, RealtimeCubit, bool) onPttPointerUp;
+  final void Function(PointerCancelEvent, RealtimeCubit) onPttPointerCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<SettingsCubit, SettingsState>(
+      buildWhen: (p, c) =>
+          p.settings.pushToTalkMode != c.settings.pushToTalkMode ||
+          p.settings.pushToTalkConfirmInput !=
+              c.settings.pushToTalkConfirmInput,
+      builder: (context, settingsState) {
+        final pttMode = settingsState.settings.pushToTalkMode;
+        final confirmInput =
+            settingsState.settings.pushToTalkConfirmInput;
+
+        if (pttMode) {
+          return _PttBar(
+            confirmInput: confirmInput,
+            onPointerDown: onPttPointerDown,
+            onPointerMove: onPttPointerMove,
+            onPointerUp: onPttPointerUp,
+            onPointerCancel: onPttPointerCancel,
+          );
+        } else {
+          return const _ContinuousListenBar();
+        }
+      },
+    );
+  }
+}
+
+/// Continuous-listen bar: tap to toggle start/stop ASR+TTS.
+class _ContinuousListenBar extends StatelessWidget {
+  const _ContinuousListenBar();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return BlocBuilder<RealtimeCubit, RealtimeState>(
+      buildWhen: (p, c) =>
+          p.running != c.running ||
+          p.ttsOnly != c.ttsOnly ||
+          p.loading != c.loading ||
+          p.status != c.status,
+      builder: (context, state) {
+        final cubit = context.read<RealtimeCubit>();
+        final isRunning = state.running;
+        final isTtsOnly = state.ttsOnly;
+
+        if (state.loading) {
+          return Container(
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: AppColors.primary.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  state.status,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: AppColors.primary,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+
+        // Label shows current state
+        final String label;
+        if (isRunning && !isTtsOnly) {
+          label = '停止监听';
+        } else if (isRunning && isTtsOnly) {
+          label = '仅TTS (点击启动ASR)';
+        } else {
+          label = '开始监听';
+        }
+
+        return GestureDetector(
+          onTap: () {
+            if (isRunning && isTtsOnly) {
+              // Currently TTS-only, user wants full ASR — stop then start
+              cubit.stop().then((_) => cubit.start());
+            } else {
+              cubit.toggle();
+            }
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            height: 40,
+            decoration: BoxDecoration(
+              color: isRunning && !isTtsOnly
+                  ? Colors.red.withValues(alpha: 0.15)
+                  : AppColors.primary.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isRunning && !isTtsOnly
+                    ? Colors.red.withValues(alpha: 0.5)
+                    : AppColors.primary.withValues(alpha: 0.4),
+                width: 1.5,
+              ),
+            ),
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  isRunning && !isTtsOnly
+                      ? Icons.stop_sharp
+                      : Icons.play_arrow_sharp,
+                  color: isRunning && !isTtsOnly
+                      ? Colors.red
+                      : AppColors.primary,
+                  size: 20,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: isRunning && !isTtsOnly
+                        ? Colors.red
+                        : AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Push-to-talk bar with Listener for pointer events.
+class _PttBar extends StatelessWidget {
+  const _PttBar({
+    required this.confirmInput,
+    required this.onPointerDown,
+    required this.onPointerMove,
+    required this.onPointerUp,
+    required this.onPointerCancel,
+  });
+
+  final bool confirmInput;
+  final void Function(PointerDownEvent, RealtimeCubit, bool) onPointerDown;
+  final void Function(PointerMoveEvent, RealtimeCubit, bool) onPointerMove;
+  final void Function(PointerUpEvent, RealtimeCubit, bool) onPointerUp;
+  final void Function(PointerCancelEvent, RealtimeCubit) onPointerCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -210,9 +433,11 @@ class _PttButton extends StatelessWidget {
         final cubit = context.read<RealtimeCubit>();
         final isPressed = state.pttPressed;
 
-        return GestureDetector(
-          onLongPressStart: (_) => cubit.setPttPressed(true),
-          onLongPressEnd: (_) => cubit.setPttPressed(false),
+        return Listener(
+          onPointerDown: (e) => onPointerDown(e, cubit, confirmInput),
+          onPointerMove: (e) => onPointerMove(e, cubit, confirmInput),
+          onPointerUp: (e) => onPointerUp(e, cubit, confirmInput),
+          onPointerCancel: (e) => onPointerCancel(e, cubit),
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 150),
             height: 40,
@@ -233,13 +458,17 @@ class _PttButton extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Icon(
-                  isPressed ? Icons.mic_sharp : Icons.mic_none_sharp,
+                  isPressed
+                      ? Icons.settings_voice_sharp
+                      : Icons.mic_sharp,
                   color: isPressed ? Colors.red : AppColors.primary,
                   size: 20,
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  isPressed ? '松开发送' : '按住说话',
+                  isPressed
+                      ? (confirmInput ? '拖动选择...' : '松开发送')
+                      : '按住说话',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: isPressed ? Colors.red : AppColors.primary,
                     fontWeight: FontWeight.w600,
@@ -248,41 +477,6 @@ class _PttButton extends StatelessWidget {
               ],
             ),
           ),
-        );
-      },
-    );
-  }
-}
-
-/// Small start/stop toggle shown in PTT mode.
-class _StartStopButton extends StatelessWidget {
-  const _StartStopButton();
-
-  @override
-  Widget build(BuildContext context) {
-    return BlocBuilder<RealtimeCubit, RealtimeState>(
-      buildWhen: (p, c) =>
-          p.running != c.running || p.loading != c.loading,
-      builder: (context, state) {
-        final cubit = context.read<RealtimeCubit>();
-        if (state.loading) {
-          return const SizedBox(
-            width: 40,
-            height: 40,
-            child: Padding(
-              padding: EdgeInsets.all(10),
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          );
-        }
-        return IconButton(
-          icon: Icon(
-            state.running ? Icons.stop_sharp : Icons.play_arrow_sharp,
-            color: state.running ? Colors.red : AppColors.primary,
-          ),
-          onPressed: () => cubit.toggle(),
-          tooltip: state.running ? '停止' : '启动',
-          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
         );
       },
     );

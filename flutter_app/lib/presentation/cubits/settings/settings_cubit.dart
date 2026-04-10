@@ -96,6 +96,9 @@ class SettingsCubit extends Cubit<SettingsState> {
   Future<void> setFloatingOverlayEnabled(bool v) =>
       _update(PrefsKeys.floatingOverlayEnabled, v);
 
+  Future<void> setAsrSendToQuickSubtitle(bool v) =>
+      _update(PrefsKeys.asrSendToQuickSubtitle, v);
+
   Future<void> setSpeakerVerifyEnabled(bool v) =>
       _update(PrefsKeys.speakerVerifyEnabled, v);
 
