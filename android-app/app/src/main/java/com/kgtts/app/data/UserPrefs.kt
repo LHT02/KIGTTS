@@ -1,4 +1,4 @@
-package com.kgtts.app.data
+package com.lhtstudio.kigtts.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
@@ -6,10 +6,11 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.kgtts.app.audio.AudioDenoiserMode
-import com.kgtts.app.audio.AudioRoutePreference
+import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
+import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -24,6 +25,7 @@ object UserPrefs {
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
 
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
+    private val KEY_SYSTEM_TTS_ORDER = longPreferencesKey("system_tts_order")
     private val KEY_MUTE_WHILE_PLAYING = booleanPreferencesKey("mute_while_playing")
     private val KEY_MUTE_DELAY_SEC = floatPreferencesKey("mute_delay_sec")
     private val KEY_ECHO_SUPPRESSION = booleanPreferencesKey("echo_suppression")
@@ -103,12 +105,33 @@ object UserPrefs {
 
     suspend fun getLastVoiceName(context: Context): String? {
         val prefs = context.dataStore.data.first()
-        return prefs[KEY_LAST_VOICE]
+        return prefs[KEY_LAST_VOICE]?.takeIf { it.isNotBlank() }
     }
 
     suspend fun setLastVoiceName(context: Context, name: String) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_LAST_VOICE] = name
+            if (name.isBlank()) {
+                prefs.remove(KEY_LAST_VOICE)
+            } else {
+                prefs[KEY_LAST_VOICE] = name
+            }
+        }
+    }
+
+    suspend fun clearLastVoiceName(context: Context) {
+        context.dataStore.edit { prefs ->
+            prefs.remove(KEY_LAST_VOICE)
+        }
+    }
+
+    suspend fun getSystemTtsOrder(context: Context): Long? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_SYSTEM_TTS_ORDER]
+    }
+
+    suspend fun setSystemTtsOrder(context: Context, order: Long) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SYSTEM_TTS_ORDER] = order
         }
     }
 

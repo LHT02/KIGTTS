@@ -1,4 +1,4 @@
-package com.kgtts.app.audio
+package com.lhtstudio.kigtts.app.audio
 
 import android.content.Context
 import android.media.AudioAttributes
@@ -9,7 +9,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Build
-import com.kgtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

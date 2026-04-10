@@ -1,4 +1,4 @@
-package com.kgtts.app.overlay
+package com.lhtstudio.kigtts.app.overlay
 
 import android.animation.LayoutTransition
 import android.animation.ValueAnimator
@@ -61,13 +61,13 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
-import com.kgtts.app.R
-import com.kgtts.app.data.UserPrefs
-import com.kgtts.app.overlay.RealtimeRuntimeBridge
-import com.kgtts.app.ui.QuickCard
-import com.kgtts.app.ui.QuickCardType
-import com.kgtts.app.util.AppLogger
-import com.kgtts.app.util.QuickCardRenderCache
+import com.lhtstudio.kigtts.app.R
+import com.lhtstudio.kigtts.app.data.UserPrefs
+import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
+import com.lhtstudio.kigtts.app.ui.QuickCard
+import com.lhtstudio.kigtts.app.ui.QuickCardType
+import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -867,17 +867,10 @@ class FloatingOverlayService : Service() {
             .setContentTitle("KIGTTS 悬浮窗")
             .setContentText("悬浮窗正在运行")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        startForeground(NOTIFICATION_ID, notification)
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -5950,20 +5943,20 @@ class FloatingOverlayService : Service() {
     }
 
     private fun preferredInputTypeOptions(): List<Pair<Int, String>> = listOf(
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_AUTO to "自动",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_BUILTIN_MIC to "内置麦克风/话筒",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_USB to "USB 麦克风",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_BLUETOOTH to "蓝牙麦克风",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_WIRED to "有线麦克风"
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_AUTO to "自动",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_BUILTIN_MIC to "内置麦克风/话筒",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_USB to "USB 麦克风",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_BLUETOOTH to "蓝牙麦克风",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_WIRED to "有线麦克风"
     )
 
     private fun preferredOutputTypeOptions(): List<Pair<Int, String>> = listOf(
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_AUTO to "自动",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_SPEAKER to "扬声器",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_EARPIECE to "听筒",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_BLUETOOTH to "蓝牙音频",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_USB to "USB 音频",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_AUTO to "自动",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_SPEAKER to "扬声器",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_EARPIECE to "听筒",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_BLUETOOTH to "蓝牙音频",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_USB to "USB 音频",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
     )
 
     private fun preferredInputTypeLabel(type: Int): String =
@@ -6517,8 +6510,8 @@ class FloatingOverlayService : Service() {
         private const val NOTIFICATION_ID = 3204
         private const val OWNER_TAG = "overlay"
         private const val FAB_SIZE_DP = 56
-        private const val ACTION_STOP = "com.kgtts.app.action.OVERLAY_STOP"
-        private const val ACTION_REFRESH = "com.kgtts.app.action.OVERLAY_REFRESH"
+        private const val ACTION_STOP = "com.lhtstudio.kigtts.app.action.OVERLAY_STOP"
+        private const val ACTION_REFRESH = "com.lhtstudio.kigtts.app.action.OVERLAY_REFRESH"
 
         fun canDrawOverlays(context: Context): Boolean {
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

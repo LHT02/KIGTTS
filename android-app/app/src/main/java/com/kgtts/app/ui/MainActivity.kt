@@ -1,4 +1,4 @@
-package com.kgtts.app.ui
+package com.lhtstudio.kigtts.app.ui
 
 import android.annotation.SuppressLint
 import android.Manifest
@@ -24,6 +24,7 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
@@ -86,9 +87,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.Camera
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.TorchState
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.animateFloatAsState
@@ -134,6 +137,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -191,39 +195,52 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.kgtts.app.R
+import com.lhtstudio.kigtts.app.R
 import com.canhub.cropper.CropImageContract
 import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
 import com.canhub.cropper.CropImageView
-import com.kgtts.app.audio.AudioRoutePreference
-import com.kgtts.app.audio.AudioDenoiserMode
-import com.kgtts.app.audio.AudioLoopbackTester
-import com.kgtts.app.audio.AudioTestConfig
-import com.kgtts.app.audio.RealtimeController
-import com.kgtts.app.audio.SpeakerEnrollResult
-import com.kgtts.app.data.ModelRepository
-import com.kgtts.app.data.VoicePackInfo
-import com.kgtts.app.data.UserPrefs
-import com.kgtts.app.overlay.FloatingOverlayService
-import com.kgtts.app.overlay.OverlayBridge
-import com.kgtts.app.overlay.RealtimeOwnerGate
-import com.kgtts.app.overlay.RealtimeRuntimeBridge
-import com.kgtts.app.service.KeepAliveService
-import com.kgtts.app.util.AppLogger
-import com.kgtts.app.util.QuickCardRenderCache
+import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
+import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
+import com.lhtstudio.kigtts.app.audio.AudioLoopbackTester
+import com.lhtstudio.kigtts.app.audio.AudioTestConfig
+import com.lhtstudio.kigtts.app.audio.RealtimeController
+import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
+import com.lhtstudio.kigtts.app.data.ModelRepository
+import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
+import com.lhtstudio.kigtts.app.data.VoicePackInfo
+import com.lhtstudio.kigtts.app.data.UserPrefs
+import com.lhtstudio.kigtts.app.data.VoicePackMeta
+import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
+import com.lhtstudio.kigtts.app.overlay.FloatingOverlayService
+import com.lhtstudio.kigtts.app.overlay.OverlayBridge
+import com.lhtstudio.kigtts.app.overlay.RealtimeOwnerGate
+import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
+import com.lhtstudio.kigtts.app.service.KeepAliveService
+import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
+import com.google.android.gms.tasks.Task
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
+import com.google.zxing.InvertedLuminanceSource
+import com.google.zxing.LuminanceSource
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -248,6 +265,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.atan2
@@ -279,6 +297,65 @@ private fun softInputModeSummary(mode: Int): String {
     return "adjust=$adjust,state=$state,raw=0x${mode.toString(16)}"
 }
 
+private val qrDecodeHints: Map<DecodeHintType, Any> = mapOf(
+    DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+    DecodeHintType.TRY_HARDER to true
+)
+
+private fun createQrMlKitScanner(): BarcodeScanner {
+    val options = BarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        .enableAllPotentialBarcodes()
+        .build()
+    return BarcodeScanning.getClient(options)
+}
+
+private fun Iterable<Barcode>.decodedQrTexts(): List<String> {
+    return mapNotNull { barcode ->
+        barcode.rawValue?.trim()?.takeIf { it.isNotEmpty() }
+            ?: barcode.displayValue?.trim()?.takeIf { it.isNotEmpty() }
+    }.distinct()
+}
+
+private fun Iterable<Barcode>.firstDecodedQrText(): String? {
+    return decodedQrTexts().firstOrNull()
+}
+
+private fun decodeQrWithZxing(source: LuminanceSource): String? {
+    val variants = arrayOf(
+        BinaryBitmap(HybridBinarizer(source)),
+        BinaryBitmap(GlobalHistogramBinarizer(source)),
+        BinaryBitmap(HybridBinarizer(InvertedLuminanceSource(source))),
+        BinaryBitmap(GlobalHistogramBinarizer(InvertedLuminanceSource(source)))
+    )
+    for (bitmap in variants) {
+        val reader = MultiFormatReader().apply { setHints(qrDecodeHints) }
+        val text = runCatching { reader.decodeWithState(bitmap)?.text }
+            .getOrNull()
+            ?.trim()
+            .takeIf { !it.isNullOrEmpty() }
+        reader.reset()
+        if (text != null) return text
+    }
+    return null
+}
+
+private suspend fun <T> awaitTask(task: Task<T>): T? = suspendCancellableCoroutine { cont ->
+    task.addOnSuccessListener { result ->
+        if (cont.isActive) cont.resume(result)
+    }
+    task.addOnFailureListener {
+        if (cont.isActive) cont.resume(null)
+    }
+    task.addOnCanceledListener {
+        if (cont.isActive) cont.resume(null)
+    }
+}
+
+private const val WECHAT_PACKAGE_NAME = "com.tencent.mm"
+private const val WECHAT_LAUNCHER_ACTIVITY = "com.tencent.mm.ui.LauncherUI"
+private const val WECHAT_BROWSER_FALLBACK_URL = "https://weixin.qq.com/"
+
 private fun normalizeQrTextToWebUrl(raw: String): String? {
     val text = raw.trim()
     if (text.isEmpty()) return null
@@ -288,6 +365,71 @@ private fun normalizeQrTextToWebUrl(raw: String): String? {
     if (scheme.isNotEmpty()) return null
     if (text.contains(Regex("\\s"))) return null
     return "https://$text"
+}
+
+private fun isWeChatQrContent(raw: String): Boolean {
+    val text = raw.trim()
+    if (text.isEmpty()) return false
+    val parsed = runCatching { Uri.parse(text) }.getOrNull()
+    val scheme = parsed?.scheme?.lowercase(Locale.US).orEmpty()
+    val host = parsed?.host?.lowercase(Locale.US).orEmpty()
+    if (scheme == "weixin" || scheme == "wxp" || scheme == "wxpay") return true
+    if (host == "weixin.qq.com" || host.endsWith(".weixin.qq.com")) return true
+    if (host == "u.wechat.com" || host.endsWith(".u.wechat.com")) return true
+    if (host == "wx.tenpay.com" || host.endsWith(".wx.tenpay.com")) return true
+    if (host == "payapp.weixin.qq.com" || host.endsWith(".payapp.weixin.qq.com")) return true
+    val lower = text.lowercase(Locale.US)
+    return lower.startsWith("https://u.wechat.com/") ||
+        lower.startsWith("http://u.wechat.com/") ||
+        lower.startsWith("https://weixin.qq.com/") ||
+        lower.startsWith("http://weixin.qq.com/") ||
+        lower.startsWith("https://wx.tenpay.com/") ||
+        lower.startsWith("http://wx.tenpay.com/")
+}
+
+private fun isPackageInstalled(context: Context, packageName: String): Boolean {
+    return runCatching {
+        @Suppress("DEPRECATION")
+        context.packageManager.getPackageInfo(packageName, 0)
+        true
+    }.getOrElse { false }
+}
+
+private fun launchWeChatScanner(context: Context): Boolean {
+    val explicit = Intent().apply {
+        setClassName(WECHAT_PACKAGE_NAME, WECHAT_LAUNCHER_ACTIVITY)
+        putExtra("LauncherUI.From.Scaner.Shortcut", true)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    if (runCatching {
+            context.startActivity(explicit)
+            true
+        }.getOrDefault(false)
+    ) {
+        return true
+    }
+    val launchIntent = context.packageManager.getLaunchIntentForPackage(WECHAT_PACKAGE_NAME)?.apply {
+        putExtra("LauncherUI.From.Scaner.Shortcut", true)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return runCatching {
+        if (launchIntent != null) {
+            context.startActivity(launchIntent)
+            true
+        } else {
+            false
+        }
+    }.getOrDefault(false)
+}
+
+private fun openExternalBrowser(context: Context, url: String): Boolean {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return runCatching {
+        context.startActivity(intent)
+        true
+    }.getOrDefault(false)
 }
 
 private fun normalizeDrawingSaveRelativePath(raw: String): String {
@@ -341,6 +483,17 @@ private fun drawingRelativePathFromTreeUri(uri: android.net.Uri): String? {
 }
 
 private const val QUICK_SUBTITLE_CLEARED_HINT = "我不太方便说话，请等我一下……"
+
+private const val SYSTEM_TTS_DEFAULT_LABEL = "系统 TTS"
+private const val SYSTEM_TTS_DEFAULT_REMARK = "使用 Android 系统语音服务"
+
+private fun sortVoicePacks(items: List<VoicePackInfo>): List<VoicePackInfo> {
+    return items.sortedWith(
+        compareByDescending<VoicePackInfo> { it.meta.pinned }
+            .thenBy { it.meta.order }
+            .thenBy { it.meta.name }
+    )
+}
 
 data class UiState(
     val asrDir: File? = null,
@@ -410,6 +563,11 @@ data class ExternalQuickSubtitleRequest(
     val requestId: Long,
     val target: String,
     val text: String
+)
+
+data class ExternalVoicePackInstallRequest(
+    val requestId: Long,
+    val message: String
 )
 
 private fun isOverlayOpenTarget(target: String): Boolean {
@@ -540,6 +698,8 @@ class MainViewModel(
     var realtimePlaybackProgress by mutableFloatStateOf(0f)
         private set
     var pendingQuickSubtitleLaunchRequest by mutableStateOf<ExternalQuickSubtitleRequest?>(null)
+        private set
+    var pendingVoicePackInstallRequest by mutableStateOf<ExternalVoicePackInstallRequest?>(null)
         private set
 
     private var controller: RealtimeController? = null
@@ -932,6 +1092,19 @@ class MainViewModel(
     fun consumeQuickSubtitleLaunchRequest(requestId: Long) {
         if (pendingQuickSubtitleLaunchRequest?.requestId == requestId) {
             pendingQuickSubtitleLaunchRequest = null
+        }
+    }
+
+    private fun requestVoicePackInstallNavigation(message: String) {
+        pendingVoicePackInstallRequest = ExternalVoicePackInstallRequest(
+            requestId = SystemClock.uptimeMillis(),
+            message = message
+        )
+    }
+
+    fun consumeVoicePackInstallRequest(requestId: Long) {
+        if (pendingVoicePackInstallRequest?.requestId == requestId) {
+            pendingVoicePackInstallRequest = null
         }
     }
 
@@ -1436,19 +1609,37 @@ class MainViewModel(
             val pixels = IntArray(width * height)
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
             val source = RGBLuminanceSource(width, height, pixels)
-            val binary = BinaryBitmap(HybridBinarizer(source))
-            val hints = mapOf(
-                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)
-            )
-            MultiFormatReader().decode(binary, hints)?.text
+            decodeQrWithZxing(source)
         }.getOrNull()
     }
 
     suspend fun decodeQrContentFromBitmap(bitmap: Bitmap): String? = withContext(Dispatchers.IO) {
+        val mlKit = createQrMlKitScanner()
+        try {
+            val mlResult = awaitTask(mlKit.process(InputImage.fromBitmap(bitmap, 0)))
+                ?.firstDecodedQrText()
+            if (!mlResult.isNullOrEmpty()) {
+                return@withContext mlResult
+            }
+        } finally {
+            runCatching { mlKit.close() }
+        }
         decodeQrContentFromBitmapInternal(bitmap)
     }
 
     suspend fun decodeQrContentFromImage(uri: android.net.Uri): String? = withContext(Dispatchers.IO) {
+        val mlKit = createQrMlKitScanner()
+        try {
+            val inputImage = runCatching { InputImage.fromFilePath(appContext, uri) }.getOrNull()
+            if (inputImage != null) {
+                val mlResult = awaitTask(mlKit.process(inputImage))?.firstDecodedQrText()
+                if (!mlResult.isNullOrEmpty()) {
+                    return@withContext mlResult
+                }
+            }
+        } finally {
+            runCatching { mlKit.close() }
+        }
         val bmp = runCatching {
             appContext.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
         }.getOrNull() ?: return@withContext null
@@ -1462,18 +1653,21 @@ class MainViewModel(
             viewModelScope,
             onResult = { id, text ->
                 val normalized = text.trim()
-                val isPttConfirmPressed =
+                val isPttConfirmMode =
                     uiState.pushToTalkMode &&
-                    uiState.pushToTalkConfirmInputMode &&
+                    uiState.pushToTalkConfirmInputMode
+                val isPttConfirmSessionOpen = isPttConfirmMode && !pttSessionCommitConsumed
+                val isPttConfirmPressed =
+                    isPttConfirmSessionOpen &&
                     uiState.pushToTalkPressed
                 // PTT确认模式下彻底解耦：
                 // - 流式/最终识别只更新PTT会话文本
                 // - 主历史与任务只在松手提交
-                if (!isPttConfirmPressed && normalized.isNotEmpty()) {
+                if (!isPttConfirmMode && normalized.isNotEmpty()) {
                     appendRecognizedHistory(normalized, id)
                 }
-                if (uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode) {
-                    if (uiState.pushToTalkPressed && normalized.isNotEmpty()) {
+                if (isPttConfirmMode) {
+                    if (isPttConfirmPressed && normalized.isNotEmpty()) {
                         // 合并“流式片段 + 最终片段”，避免覆盖导致丢字。
                         appendPttFinalTranscript(normalized)
                     }
@@ -1488,6 +1682,7 @@ class MainViewModel(
                 if (normalized.isEmpty()) return@RealtimeController
                 if (uiState.pushToTalkMode &&
                     uiState.pushToTalkConfirmInputMode &&
+                    !pttSessionCommitConsumed &&
                     uiState.pushToTalkPressed
                 ) {
                     // 流式阶段只刷新预览，不直接累加到最终会话文本，
@@ -1602,10 +1797,94 @@ class MainViewModel(
         if (voiceDir == null) return
         val activeController = ensureController()
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
+            val loaded = withContext(Dispatchers.IO) {
                 activeController.loadTts(voiceDir)
             }
+            if (!loaded && uiState.voiceDir?.absolutePath == voiceDir.absolutePath) {
+                uiState = uiState.copy(
+                    status = if (isSystemTtsVoiceDir(voiceDir)) {
+                        "系统 TTS 初始化失败，请先完成系统 TTS 设置"
+                    } else {
+                        "音色包加载失败"
+                    }
+                )
+            }
         }
+    }
+
+    fun openSystemTtsSetup(context: Context) {
+        val intents = listOf(
+            android.content.Intent(android.speech.tts.TextToSpeech.Engine.ACTION_CHECK_TTS_DATA),
+            android.content.Intent("com.android.settings.TTS_SETTINGS")
+        )
+        for (intent in intents) {
+            val resolved = runCatching {
+                context.packageManager.resolveActivity(intent, 0)
+            }.getOrNull()
+            if (resolved != null) {
+                runCatching {
+                    context.startActivity(intent.apply {
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                }.onSuccess { return }.onFailure {
+                    AppLogger.e("openSystemTtsSetup failed action=${intent.action}", it)
+                }
+            }
+        }
+        toast(context, "无法打开系统 TTS 设置")
+    }
+
+    private fun systemTtsVoiceDir(): File = repo.systemTtsVirtualDir()
+
+    private fun isSystemTtsVoicePack(pack: VoicePackInfo): Boolean = isSystemTtsVoiceDir(pack.dir)
+
+    private suspend fun loadSystemTtsVoicePackInfo(existing: List<VoicePackInfo>): VoicePackInfo {
+        val defaultOrder = (existing.maxOfOrNull { it.meta.order } ?: -1L) + 1L
+        val order = UserPrefs.getSystemTtsOrder(appContext) ?: defaultOrder.also {
+            UserPrefs.setSystemTtsOrder(appContext, it)
+        }
+        return VoicePackInfo(
+            dir = systemTtsVoiceDir(),
+            meta = VoicePackMeta(
+                name = SYSTEM_TTS_DEFAULT_LABEL,
+                remark = SYSTEM_TTS_DEFAULT_REMARK,
+                avatar = "avatar.png",
+                pinned = false,
+                order = order
+            )
+        )
+    }
+
+    private suspend fun loadVoicePackList(): List<VoicePackInfo> {
+        val physical = withContext(Dispatchers.IO) { repo.listVoicePacks() }
+        val system = loadSystemTtsVoicePackInfo(physical)
+        return sortVoicePacks(physical + system)
+    }
+
+    private suspend fun findFallbackVoicePack(excludingDir: File): File? {
+        val excludedPath = excludingDir.absolutePath
+        val listed = loadVoicePackList()
+            .firstOrNull { it.dir.absolutePath != excludedPath }
+            ?.dir
+        if (listed != null) return listed
+        return systemTtsVoiceDir().takeIf { it.absolutePath != excludedPath }
+    }
+
+    private suspend fun stopRealtimeImmediatelyForVoicePackDeletion() {
+        val activeController = controller ?: return
+        withContext(Dispatchers.IO) {
+            activeController.stopMic()
+        }
+        RealtimeOwnerGate.release(APP_REALTIME_OWNER_TAG)
+        KeepAliveService.stop(appContext)
+        realtimeInputLevel = 0f
+        realtimePlaybackProgress = 0f
+        uiState = uiState.copy(
+            running = false,
+            status = "当前语音包已删除，麦克风已停止",
+            pushToTalkPressed = false,
+            pushToTalkStreamingText = ""
+        )
     }
 
     fun loadBundledAsr() {
@@ -1624,17 +1903,28 @@ class MainViewModel(
     fun loadLastVoice() {
         viewModelScope.launch {
             val lastName = UserPrefs.getLastVoiceName(appContext)
-            val lastDir = lastName?.let { repo.resolveVoicePack(it) }
+            val lastDir = when (lastName) {
+                SYSTEM_TTS_VOICE_NAME -> systemTtsVoiceDir()
+                null -> null
+                else -> repo.resolveVoicePack(lastName)
+            }
             if (lastDir != null) {
-                uiState = uiState.copy(voiceDir = lastDir, status = "已加载上次音色包")
+                uiState = uiState.copy(
+                    voiceDir = lastDir,
+                    status = if (isSystemTtsVoiceDir(lastDir)) "已加载系统 TTS" else "已加载上次音色包"
+                )
             } else {
                 val bundledDir = withContext(Dispatchers.IO) { repo.ensureBundledVoice() }
+                val selected = bundledDir ?: systemTtsVoiceDir()
                 uiState = uiState.copy(
-                    voiceDir = bundledDir ?: uiState.voiceDir,
-                    status = if (bundledDir != null) "已加载内置音色包" else uiState.status
+                    voiceDir = selected,
+                    status = if (bundledDir != null) "已加载内置音色包" else "已切换到系统 TTS"
                 )
+                if (bundledDir == null) {
+                    UserPrefs.setLastVoiceName(appContext, SYSTEM_TTS_VOICE_NAME)
+                }
             }
-            preloadTts(lastDir)
+            preloadTts(uiState.voiceDir)
             refreshVoicePacks()
         }
     }
@@ -1654,7 +1944,10 @@ class MainViewModel(
         }
     }
 
-    fun importVoice(uri: android.net.Uri) {
+    fun importVoice(
+        uri: android.net.Uri,
+        openVoicePackPageOnSuccess: Boolean = false
+    ) {
         viewModelScope.launch {
             try {
                 val dir = withContext(Dispatchers.IO) { repo.importVoice(uri, appContext.contentResolver) }
@@ -1665,6 +1958,9 @@ class MainViewModel(
                 if (uiState.floatingOverlayEnabled) {
                     FloatingOverlayService.refresh(appContext)
                 }
+                if (openVoicePackPageOnSuccess) {
+                    requestVoicePackInstallNavigation("语音包安装完成")
+                }
             } catch (e: Exception) {
                 uiState = uiState.copy(status = e.message ?: "音色包导入失败")
                 AppLogger.e("importVoice failed", e)
@@ -1674,8 +1970,14 @@ class MainViewModel(
 
     fun selectVoice(dir: File) {
         viewModelScope.launch {
-            UserPrefs.setLastVoiceName(appContext, dir.name)
-            uiState = uiState.copy(voiceDir = dir, status = "已选择音色包")
+            UserPrefs.setLastVoiceName(
+                appContext,
+                if (isSystemTtsVoiceDir(dir)) SYSTEM_TTS_VOICE_NAME else dir.name
+            )
+            uiState = uiState.copy(
+                voiceDir = dir,
+                status = if (isSystemTtsVoiceDir(dir)) "已选择系统 TTS" else "已选择音色包"
+            )
             preloadTts(dir)
             refreshVoicePacks()
             if (uiState.floatingOverlayEnabled) {
@@ -1686,12 +1988,13 @@ class MainViewModel(
 
     fun refreshVoicePacks() {
         viewModelScope.launch {
-            val packs = withContext(Dispatchers.IO) { repo.listVoicePacks() }
+            val packs = loadVoicePackList()
             uiState = uiState.copy(voicePacks = packs)
         }
     }
 
     fun updateVoiceMeta(pack: VoicePackInfo, name: String, remark: String) {
+        if (isSystemTtsVoicePack(pack)) return
         val trimmedName = name.trim().ifEmpty { "未命名" }
         val trimmedRemark = remark.trim()
         viewModelScope.launch {
@@ -1703,6 +2006,7 @@ class MainViewModel(
     }
 
     fun updateVoiceAvatar(pack: VoicePackInfo, uri: android.net.Uri) {
+        if (isSystemTtsVoicePack(pack)) return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 repo.updateVoiceAvatar(pack.dir, appContext.contentResolver, uri, "avatar.png")
@@ -1712,6 +2016,7 @@ class MainViewModel(
     }
 
     fun toggleVoicePin(pack: VoicePackInfo) {
+        if (isSystemTtsVoicePack(pack)) return
         viewModelScope.launch {
             repo.updateVoiceMeta(pack.dir) { meta ->
                 meta.copy(pinned = !meta.pinned)
@@ -1730,8 +2035,16 @@ class MainViewModel(
         val b = list[newIdx]
         if (a.meta.pinned != b.meta.pinned) return
         viewModelScope.launch {
-            repo.updateVoiceMeta(a.dir) { meta -> meta.copy(order = b.meta.order) }
-            repo.updateVoiceMeta(b.dir) { meta -> meta.copy(order = a.meta.order) }
+            if (isSystemTtsVoiceDir(a.dir)) {
+                UserPrefs.setSystemTtsOrder(appContext, b.meta.order)
+            } else {
+                repo.updateVoiceMeta(a.dir) { meta -> meta.copy(order = b.meta.order) }
+            }
+            if (isSystemTtsVoiceDir(b.dir)) {
+                UserPrefs.setSystemTtsOrder(appContext, a.meta.order)
+            } else {
+                repo.updateVoiceMeta(b.dir) { meta -> meta.copy(order = a.meta.order) }
+            }
             refreshVoicePacks()
         }
     }
@@ -1742,8 +2055,12 @@ class MainViewModel(
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 newOrder.forEachIndexed { index, pack ->
-                    repo.updateVoiceMeta(pack.dir) { meta ->
-                        meta.copy(order = index.toLong())
+                    if (isSystemTtsVoiceDir(pack.dir)) {
+                        UserPrefs.setSystemTtsOrder(appContext, index.toLong())
+                    } else {
+                        repo.updateVoiceMeta(pack.dir) { meta ->
+                            meta.copy(order = index.toLong())
+                        }
                     }
                 }
             }
@@ -1752,19 +2069,73 @@ class MainViewModel(
     }
 
     fun deleteVoice(pack: VoicePackInfo) {
+        if (isSystemTtsVoicePack(pack)) {
+            uiState = uiState.copy(status = "系统 TTS 不能删除")
+            return
+        }
         val current = uiState.voiceDir?.absolutePath == pack.dir.absolutePath
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                repo.deleteVoicePack(pack.dir)
-            }
             if (current) {
-                uiState = uiState.copy(voiceDir = null)
+                val fallbackVoice = findFallbackVoicePack(pack.dir)
+                if (fallbackVoice != null) {
+                    val activeController = controller
+                    val switched = if (activeController != null) {
+                        withContext(Dispatchers.IO) { activeController.loadTts(fallbackVoice) }
+                    } else {
+                        true
+                    }
+                    if (!switched) {
+                        uiState = uiState.copy(status = "切换备用语音包失败，已取消删除")
+                        return@launch
+                    }
+                    UserPrefs.setLastVoiceName(
+                        appContext,
+                        if (isSystemTtsVoiceDir(fallbackVoice)) SYSTEM_TTS_VOICE_NAME else fallbackVoice.name
+                    )
+                    uiState = uiState.copy(
+                        voiceDir = fallbackVoice,
+                        status = if (isSystemTtsVoiceDir(fallbackVoice)) {
+                            "已切换到系统 TTS"
+                        } else {
+                            "已切换备用语音包：${fallbackVoice.name}"
+                        }
+                    )
+                } else {
+                    if (uiState.running || controller?.isMicActive() == true) {
+                        stopRealtimeImmediatelyForVoicePackDeletion()
+                    }
+                    UserPrefs.clearLastVoiceName(appContext)
+                    uiState = uiState.copy(voiceDir = null)
+                }
+            }
+            try {
+                withContext(Dispatchers.IO) {
+                    repo.deleteVoicePack(pack.dir)
+                }
+            } catch (e: SecurityException) {
+                uiState = uiState.copy(status = e.message ?: "语音包删除失败")
+                AppLogger.e("deleteVoice failed", e)
+                return@launch
+            }
+            if (!current) {
+                uiState = uiState.copy(status = "语音包已删除")
+            } else if (uiState.voiceDir != null) {
+                uiState = uiState.copy(status = "语音包已删除并切换到备用语音包")
+            } else if (uiState.status.isBlank() || !uiState.status.contains("麦克风已停止")) {
+                uiState = uiState.copy(status = "语音包已删除")
             }
             refreshVoicePacks()
+            if (uiState.floatingOverlayEnabled) {
+                FloatingOverlayService.refresh(appContext)
+            }
         }
     }
 
     fun shareVoice(pack: VoicePackInfo) {
+        if (isSystemTtsVoicePack(pack)) {
+            uiState = uiState.copy(status = "系统 TTS 不能分享")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val shareDir = File(appContext.cacheDir, "share")
             val fileName = "${repo.sanitizeVoicePackShareName(pack.meta.name, pack.dir.name)}.kigvpk"
@@ -2942,6 +3313,40 @@ private fun QuickCardNavHost(
     onNavReady: () -> Unit,
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
 ) {
+    val context = LocalContext.current
+    val navigateDecodedQrResult: (String, String) -> Unit = { decoded, popRoute ->
+        if (isWeChatQrContent(decoded)) {
+            if (isPackageInstalled(context, WECHAT_PACKAGE_NAME)) {
+                toast(context, "该二维码为微信二维码，需要使用微信进行扫描")
+                if (!launchWeChatScanner(context)) {
+                    toast(context, "打开微信失败，请手动打开微信扫一扫")
+                }
+            } else {
+                toast(context, "该二维码为微信二维码，需要安装微信")
+                val browserTarget = normalizeQrTextToWebUrl(decoded) ?: WECHAT_BROWSER_FALLBACK_URL
+                if (!openExternalBrowser(context, browserTarget)) {
+                    toast(context, "无法打开系统浏览器")
+                }
+            }
+            navController.popBackStack(popRoute, inclusive = true)
+        } else {
+            val url = normalizeQrTextToWebUrl(decoded)
+            if (url.isNullOrEmpty()) {
+                navController.navigate(QuickCardRoutes.scanText(decoded)) {
+                    popUpTo(popRoute) { inclusive = true }
+                    launchSingleTop = true
+                }
+            } else {
+                navController.navigate(QuickCardRoutes.web(url)) {
+                    popUpTo(popRoute) { inclusive = true }
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
+    val handleDecodedQrResult: (String) -> Unit = { decoded ->
+        navigateDecodedQrResult(decoded, QuickCardRoutes.Scanner)
+    }
     NavHost(
         navController = navController,
         startDestination = QuickCardRoutes.Main,
@@ -3039,19 +3444,32 @@ private fun QuickCardNavHost(
             QuickCardScannerScreen(
                 onTopBarActionsChange = onTopBarActionsChange,
                 onOpenFailed = { navController.popBackStack() },
-                onResult = { decoded ->
-                    val url = normalizeQrTextToWebUrl(decoded)
-                    if (url.isNullOrEmpty()) {
-                        navController.navigate(QuickCardRoutes.scanText(decoded)) {
-                            popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
-                            launchSingleTop = true
-                        }
-                    } else {
-                        navController.navigate(QuickCardRoutes.web(url)) {
-                            popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
-                            launchSingleTop = true
-                        }
+                onResult = handleDecodedQrResult,
+                onCandidates = { items ->
+                    navController.navigate(QuickCardRoutes.scanCandidates(items)) {
+                        popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
+                        launchSingleTop = true
                     }
+                }
+            )
+        }
+        composable(
+            route = QuickCardRoutes.ScanCandidates,
+            arguments = listOf(navArgument("items") { type = NavType.StringType })
+        ) { entry ->
+            val items = remember(entry) {
+                runCatching {
+                    val raw = Uri.decode(entry.arguments?.getString("items").orEmpty())
+                    val arr = JSONArray(raw)
+                    List(arr.length()) { idx -> arr.optString(idx).trim() }
+                        .filter { it.isNotEmpty() }
+                }.getOrDefault(emptyList())
+            }
+            QuickCardScanCandidatesScreen(
+                items = items,
+                onTopBarActionsChange = onTopBarActionsChange,
+                onSelect = { decoded ->
+                    navigateDecodedQrResult(decoded, QuickCardRoutes.ScanCandidates)
                 }
             )
         }
@@ -3709,23 +4127,62 @@ private fun QuickCardSortRow(
 private fun QuickCardScannerScreen(
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
     onOpenFailed: () -> Unit,
-    onResult: (String) -> Unit
+    onResult: (String) -> Unit,
+    onCandidates: (List<String>) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val previewView = remember(context) {
         PreviewView(context).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
     }
+    val scanner = remember { createQrMlKitScanner() }
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
     val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
     val scanned = remember { AtomicBoolean(false) }
+    val analyzing = remember { AtomicBoolean(false) }
+    val onResultState = rememberUpdatedState(onResult)
+    val onCandidatesState = rememberUpdatedState(onCandidates)
     var cameraReady by remember { mutableStateOf(false) }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
+    var minZoomRatio by remember { mutableStateOf(1f) }
+    var maxZoomRatio by remember { mutableStateOf(1f) }
+    var zoomRatio by remember { mutableStateOf(1f) }
+    var torchEnabled by remember { mutableStateOf(false) }
+    var flashAvailable by remember { mutableStateOf(false) }
+    val scaleDetector = remember(context) {
+        ScaleGestureDetector(
+            context,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val camera = boundCamera ?: return false
+                    val target = (zoomRatio * detector.scaleFactor)
+                        .coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
+                    if (kotlin.math.abs(target - zoomRatio) < 0.01f) return false
+                    camera.cameraControl.setZoomRatio(target)
+                    zoomRatio = target
+                    return true
+                }
+            }
+        )
+    }
 
     LaunchedEffect(Unit) {
         onTopBarActionsChange(null)
+    }
+
+    DisposableEffect(previewView, scaleDetector) {
+        previewView.setOnTouchListener { _, event ->
+            scaleDetector.onTouchEvent(event)
+            false
+        }
+        onDispose {
+            previewView.setOnTouchListener(null)
+        }
     }
 
     DisposableEffect(previewView, lifecycleOwner) {
@@ -3743,36 +4200,65 @@ private fun QuickCardScannerScreen(
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            val reader = MultiFormatReader().apply {
-                setHints(
-                    mapOf(
-                        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-                        DecodeHintType.TRY_HARDER to true
-                    )
-                )
-            }
 
             analysis.setAnalyzer(analyzerExecutor) { imageProxy ->
-                try {
-                    if (!scanned.get()) {
-                        val text = decodeQrFromImageProxy(imageProxy, reader)?.trim().orEmpty()
-                        if (text.isNotEmpty() && scanned.compareAndSet(false, true)) {
-                            mainExecutor.execute { onResult(text) }
+                if (scanned.get() || !analyzing.compareAndSet(false, true)) {
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
+                val mediaImage = imageProxy.image
+                if (mediaImage == null) {
+                    analyzing.set(false)
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
+                val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                scanner.process(inputImage)
+                    .addOnSuccessListener(analyzerExecutor) { barcodes ->
+                        val mlTexts = barcodes.decodedQrTexts()
+                        when {
+                            mlTexts.size > 1 && scanned.compareAndSet(false, true) -> {
+                                mainExecutor.execute { onCandidatesState.value(mlTexts) }
+                            }
+                            mlTexts.size == 1 && scanned.compareAndSet(false, true) -> {
+                                mainExecutor.execute { onResultState.value(mlTexts.first()) }
+                            }
+                            else -> {
+                                val zxingText = decodeQrFromImageProxy(imageProxy)?.trim().orEmpty()
+                                if (zxingText.isNotEmpty() && scanned.compareAndSet(false, true)) {
+                                    mainExecutor.execute { onResultState.value(zxingText) }
+                                }
+                            }
                         }
                     }
-                } finally {
-                    imageProxy.close()
-                }
+                    .addOnFailureListener(analyzerExecutor) {
+                        val zxingText = decodeQrFromImageProxy(imageProxy)?.trim().orEmpty()
+                        if (zxingText.isNotEmpty() && scanned.compareAndSet(false, true)) {
+                            mainExecutor.execute { onResultState.value(zxingText) }
+                        }
+                    }
+                    .addOnCompleteListener(analyzerExecutor) {
+                        analyzing.set(false)
+                        imageProxy.close()
+                    }
             }
 
             runCatching {
                 provider.unbindAll()
-                provider.bindToLifecycle(
+                val camera = provider.bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     analysis
                 )
+                boundCamera = camera
+                flashAvailable = camera.cameraInfo.hasFlashUnit()
+                torchEnabled = camera.cameraInfo.torchState.value == TorchState.ON
+                camera.cameraInfo.zoomState.value?.let { state ->
+                    minZoomRatio = state.minZoomRatio
+                    maxZoomRatio = state.maxZoomRatio.coerceAtLeast(state.minZoomRatio)
+                    zoomRatio = state.zoomRatio.coerceIn(minZoomRatio, maxZoomRatio)
+                }
                 cameraReady = true
             }.onFailure {
                 AppLogger.e("quickCard scanner bind failed", it)
@@ -3782,11 +4268,14 @@ private fun QuickCardScannerScreen(
         }
         providerFuture.addListener(listener, mainExecutor)
         onDispose {
+            boundCamera = null
             runCatching {
                 if (providerFuture.isDone) {
                     providerFuture.get().unbindAll()
                 }
             }
+            analyzing.set(false)
+            runCatching { scanner.close() }
             analyzerExecutor.shutdown()
         }
     }
@@ -3801,7 +4290,7 @@ private fun QuickCardScannerScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        val finderSize = 260.dp
+        val finderSize = if (isLandscape) 214.dp else 260.dp
         val outerMaskColor = Color.Black.copy(alpha = 0.62f)
 
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -3844,7 +4333,7 @@ private fun QuickCardScannerScreen(
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .offset(y = -(finderSize / 2f) - 24.dp)
+                    .offset(y = -(finderSize / 2f) - if (isLandscape) 18.dp else 24.dp)
                     .padding(horizontal = 16.dp)
             )
 
@@ -3857,6 +4346,141 @@ private fun QuickCardScannerScreen(
                     modifier = Modifier.fillMaxSize(),
                     color = Color.White
                 )
+            }
+
+            if (isLandscape) {
+                val sliderHeight = finderSize
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .offset(x = finderSize / 2f + 34.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp
+                    ) {
+                        CompositionLocalProvider(
+                            LocalContentColor provides if (cameraReady && flashAvailable) {
+                                Color.White
+                            } else {
+                                Color.White.copy(alpha = 0.42f)
+                            }
+                        ) {
+                            Box(modifier = Modifier.padding(6.dp)) {
+                                Md2IconButton(
+                                    icon = if (torchEnabled) "flash_on" else "flash_off",
+                                    contentDescription = "手电筒",
+                                    onClick = {
+                                        val camera = boundCamera ?: return@Md2IconButton
+                                        val enabled = !torchEnabled
+                                        camera.cameraControl.enableTorch(enabled)
+                                        torchEnabled = enabled
+                                    },
+                                    enabled = cameraReady && flashAvailable
+                                )
+                            }
+                        }
+                    }
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            MsIcon("zoom_in", contentDescription = "放大", tint = Color.White)
+                            Md2VerticalSlider(
+                                value = zoomRatio,
+                                onValueChange = { target ->
+                                    val camera = boundCamera ?: return@Md2VerticalSlider
+                                    val resolved = target.coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
+                                    camera.cameraControl.setZoomRatio(resolved)
+                                    zoomRatio = resolved
+                                },
+                                valueRange = minZoomRatio..maxZoomRatio.coerceAtLeast(minZoomRatio),
+                                modifier = Modifier
+                                    .height(sliderHeight)
+                                    .width(32.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .offset(y = finderSize / 2f + 32.dp)
+                        .padding(horizontal = 28.dp)
+                        .fillMaxWidth(0.78f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            MsIcon("zoom_in", contentDescription = "放大", tint = Color.White)
+                            Slider(
+                                value = zoomRatio,
+                                onValueChange = { target ->
+                                    val camera = boundCamera ?: return@Slider
+                                    val resolved = target.coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
+                                    camera.cameraControl.setZoomRatio(resolved)
+                                    zoomRatio = resolved
+                                },
+                                valueRange = minZoomRatio..maxZoomRatio.coerceAtLeast(minZoomRatio),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = MaterialTheme.colors.primary,
+                                    activeTrackColor = MaterialTheme.colors.primary,
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.35f)
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp
+                    ) {
+                        CompositionLocalProvider(
+                            LocalContentColor provides if (cameraReady && flashAvailable) {
+                                Color.White
+                            } else {
+                                Color.White.copy(alpha = 0.42f)
+                            }
+                        ) {
+                            Box(modifier = Modifier.padding(6.dp)) {
+                                Md2IconButton(
+                                    icon = if (torchEnabled) "flash_on" else "flash_off",
+                                    contentDescription = "手电筒",
+                                    onClick = {
+                                        val camera = boundCamera ?: return@Md2IconButton
+                                        val enabled = !torchEnabled
+                                        camera.cameraControl.enableTorch(enabled)
+                                        torchEnabled = enabled
+                                    },
+                                    enabled = cameraReady && flashAvailable
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -3918,6 +4542,82 @@ private fun QrScannerFinderFrame(
         vSeg(right, top, top + cornerH, thick)
         vSeg(right, top + cornerH, bottom - cornerH, thin)
         vSeg(right, bottom - cornerH, bottom, thick)
+    }
+}
+
+@Composable
+private fun QuickCardScanCandidatesScreen(
+    items: List<String>,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val scroll = rememberScrollState()
+
+    LaunchedEffect(Unit) {
+        onTopBarActionsChange(null)
+    }
+
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(vertical = 16.dp),
+        scroll = scroll,
+        horizontalPadding = 20.dp,
+        contentSpacing = 12.dp
+    ) {
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "检测到多个二维码",
+            style = MaterialTheme.typography.h6
+        )
+        Text(
+            text = "请选择要打开的二维码内容",
+            style = MaterialTheme.typography.body2,
+            color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
+        )
+        if (items.isEmpty()) {
+            Card(
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = MaterialTheme.colors.surface,
+                elevation = UiTokens.CardElevation
+            ) {
+                Text(
+                    text = "没有可用候选项",
+                    modifier = Modifier.padding(18.dp),
+                    style = MaterialTheme.typography.body1
+                )
+            }
+        } else {
+            items.forEachIndexed { index, item ->
+                Card(
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = MaterialTheme.colors.surface,
+                    elevation = UiTokens.CardElevation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(item) }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "候选 ${index + 1}",
+                            style = MaterialTheme.typography.overline,
+                            color = MaterialTheme.colors.primary
+                        )
+                        Text(
+                            text = item,
+                            style = MaterialTheme.typography.body1,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
     }
 }
 
@@ -4070,8 +4770,7 @@ private fun QuickCardWebViewScreen(
 }
 
 private fun decodeQrFromImageProxy(
-    imageProxy: ImageProxy,
-    reader: MultiFormatReader
+    imageProxy: ImageProxy
 ): String? {
     val width = imageProxy.width
     val height = imageProxy.height
@@ -4115,10 +4814,7 @@ private fun decodeQrFromImageProxy(
         height,
         false
     )
-    val bitmap = BinaryBitmap(HybridBinarizer(source))
-    return runCatching { reader.decodeWithState(bitmap)?.text }
-        .getOrNull()
-        .also { reader.reset() }
+    return decodeQrWithZxing(source)
 }
 
 @Composable
@@ -5590,11 +6286,15 @@ private object QuickCardRoutes {
     const val Editor = "quick_card/editor"
     const val Sort = "quick_card/sort"
     const val Scanner = "quick_card/scanner"
+    private const val ScanCandidatesArg = "items"
+    const val ScanCandidates = "quick_card/scan_candidates/{$ScanCandidatesArg}"
     private const val ScanTextArg = "text"
     const val ScanText = "quick_card/scan_text/{$ScanTextArg}"
     private const val WebArg = "url"
     const val Web = "quick_card/web/{$WebArg}"
 
+    fun scanCandidates(items: List<String>): String =
+        "quick_card/scan_candidates/${Uri.encode(JSONArray(items).toString())}"
     fun scanText(text: String): String = "quick_card/scan_text/${Uri.encode(text)}"
     fun web(url: String): String = "quick_card/web/${Uri.encode(url)}"
 }
@@ -5757,7 +6457,7 @@ class MainActivity : ComponentActivity() {
                 val key = "${intent.action}|$uri|${resolveExternalFileName(uri).orEmpty()}"
                 if (lastHandledExternalVoicePackIntentKey == key) return
                 lastHandledExternalVoicePackIntentKey = key
-                viewModel.importVoice(uri)
+                viewModel.importVoice(uri, openVoicePackPageOnSuccess = true)
                 setIntent(Intent())
             }
         }
@@ -6662,6 +7362,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         DrawerItem(pageSettings, "设置", "tune")
     )
     val pendingQuickSubtitleLaunchRequest = viewModel.pendingQuickSubtitleLaunchRequest
+    val pendingVoicePackInstallRequest = viewModel.pendingVoicePackInstallRequest
     val drawerSelectedPage = basePage
     DisposableEffect(viewModel) {
         val delegate = object : RealtimeRuntimeBridge.AppDelegate {
@@ -6801,6 +7502,15 @@ fun AppScaffold(viewModel: MainViewModel) {
             }
         }
         viewModel.consumeQuickSubtitleLaunchRequest(request.requestId)
+        if (!usePermanentDrawer) {
+            drawerState.close()
+        }
+    }
+    LaunchedEffect(pendingVoicePackInstallRequest?.requestId) {
+        val request = pendingVoicePackInstallRequest ?: return@LaunchedEffect
+        page = pageVoicePack
+        toast(context, request.message)
+        viewModel.consumeVoicePackInstallRequest(request.requestId)
         if (!usePermanentDrawer) {
             drawerState.close()
         }
@@ -6946,34 +7656,41 @@ fun AppScaffold(viewModel: MainViewModel) {
         }
     }
     var pttConfirmOwnedByMainPanel by remember { mutableStateOf(false) }
+    var pttTemporaryStartByMainPanel by remember { mutableStateOf(false) }
 
     val onPushToTalkPressStart = {
         pttConfirmOwnedByMainPanel = true
-        viewModel.setPushToTalkPressed(true)
-        viewModel.beginPushToTalkSession()
-        if (!state.running) {
-            val granted = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-            if (granted) {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            pttConfirmOwnedByMainPanel = false
+            pttTemporaryStartByMainPanel = false
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            pttTemporaryStartByMainPanel = !state.running
+            if (pttTemporaryStartByMainPanel) {
                 viewModel.start()
-            } else {
-                permLauncher.launch(Manifest.permission.RECORD_AUDIO)
             }
+            viewModel.beginPushToTalkSession()
+            viewModel.setPushToTalkPressed(true)
         }
     }
     val onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit = { releaseAction ->
+        val shouldStop = pttTemporaryStartByMainPanel
         viewModel.commitPushToTalkSession(releaseAction)
         viewModel.setPushToTalkPressed(false)
         pttConfirmOwnedByMainPanel = false
-        if (state.running) {
+        pttTemporaryStartByMainPanel = false
+        if (shouldStop) {
             viewModel.stop()
         }
     }
     LaunchedEffect(state.pushToTalkPressed) {
         if (!state.pushToTalkPressed) {
             pttConfirmOwnedByMainPanel = false
+            pttTemporaryStartByMainPanel = false
         }
     }
     if (showBuiltinVoicePicker) {
@@ -8095,7 +8812,13 @@ fun ModelScreen(viewModel: MainViewModel, state: UiState) {
                 Text("请前往“语音包”页面顶部文件夹按钮导入语音包。")
                 Spacer(Modifier.height(8.dp))
                 Text("当前语音包路径：", style = MaterialTheme.typography.labelSmall)
-                Text(state.voiceDir?.absolutePath ?: "未选择")
+                Text(
+                    when {
+                        isSystemTtsVoiceDir(state.voiceDir) -> SYSTEM_TTS_DEFAULT_LABEL
+                        state.voiceDir != null -> state.voiceDir.absolutePath
+                        else -> "未选择"
+                    }
+                )
             }
         }
         Text("状态：${state.status}")
@@ -8775,6 +9498,7 @@ private fun VoicePackCardContent(
     onDelete: () -> Unit,
     onStartDrag: () -> Unit
 ) {
+    val isSystemPack = isSystemTtsVoiceDir(pack.dir)
     val avatarFile = File(pack.dir, pack.meta.avatar)
     val avatarBitmap = rememberAvatarBitmap(avatarFile)
     val cardElevation by animateDpAsState(
@@ -8820,6 +9544,10 @@ private fun VoicePackCardContent(
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(pack.meta.name, fontWeight = FontWeight.SemiBold)
+                            if (isSystemPack) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("系统", style = MaterialTheme.typography.bodySmall)
+                            }
                             if (pack.meta.pinned) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("置顶", style = MaterialTheme.typography.bodySmall)
@@ -8868,22 +9596,26 @@ private fun VoicePackCardContent(
                     Md2IconButton(
                         icon = if (pack.meta.pinned) "keep_off" else "push_pin",
                         contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
-                        onClick = onTogglePin
+                        onClick = onTogglePin,
+                        enabled = !isSystemPack
                     )
                     Md2IconButton(
                         icon = "info",
                         contentDescription = "语音包详细信息",
-                        onClick = onDetail
+                        onClick = onDetail,
+                        enabled = !isSystemPack
                     )
                     Md2IconButton(
                         icon = "share",
                         contentDescription = "分享语音包",
-                        onClick = onShare
+                        onClick = onShare,
+                        enabled = !isSystemPack
                     )
                     Md2IconButton(
                         icon = "delete",
                         contentDescription = "删除语音包",
-                        onClick = onDelete
+                        onClick = onDelete,
+                        enabled = !isSystemPack
                     )
                 }
             }
@@ -13219,6 +13951,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     val selectedCategory = remember(selectedCategoryName) { SettingsCategory.valueOf(selectedCategoryName) }
     val numberReplaceOptions = remember { listOf("不替换", "数字替换为中文字符", "数字替换为中文表达") }
     var numberReplaceExpanded by remember { mutableStateOf(false) }
+    val isSystemTtsSelected = isSystemTtsVoiceDir(state.voiceDir)
 
     LaunchedEffect(selectedCategory) {
         scroll.animateScrollTo(0)
@@ -13431,6 +14164,10 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
 
             Md2StaggeredFloatIn(index = 1) {
                 Md2SettingsCard(title = "播放与合成") {
+                    Text(
+                        "当前朗读后端：${if (isSystemTtsSelected) SYSTEM_TTS_DEFAULT_LABEL else "语音包"}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = state.playbackGainPercent.toFloat(),
@@ -13438,19 +14175,47 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         valueRange = 0f..1000f
                     )
                     Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
-                    Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
-                    Slider(
-                        value = state.piperNoiseScale,
-                        onValueChange = { viewModel.setPiperNoiseScale(it) },
-                        valueRange = 0f..2f
+                    if (isSystemTtsSelected) {
+                        Text(
+                            "系统 TTS 使用设备已安装的语音引擎与音色。音色随机度等 Piper 专属参数在系统 TTS 下不生效。",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Md2Button(
+                            onClick = {
+                                viewModel.openSystemTtsSetup(context)
+                            }
+                        ) {
+                            Text("打开系统 TTS 设置")
+                        }
+                    } else {
+                        Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = state.piperNoiseScale,
+                            onValueChange = { viewModel.setPiperNoiseScale(it) },
+                            valueRange = 0f..2f
+                        )
+                    }
+                    Text(
+                        if (isSystemTtsSelected) {
+                            "系统语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}"
+                        } else {
+                            "语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}"
+                        },
+                        style = MaterialTheme.typography.bodySmall
                     )
-                    Text("语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}", style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = state.piperLengthScale,
                         onValueChange = { viewModel.setPiperLengthScale(it) },
                         valueRange = 0.1f..5f
                     )
-                    Text("句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (isSystemTtsSelected) {
+                            "系统 TTS 句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s"
+                        } else {
+                            "句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s"
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     Slider(
                         value = state.piperSentenceSilence,
                         onValueChange = { viewModel.setPiperSentenceSilence(it) },

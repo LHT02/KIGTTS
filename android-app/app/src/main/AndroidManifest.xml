@@ -11,6 +11,12 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
+        </intent>
     </queries>
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -77,8 +83,7 @@
             android:foregroundServiceType="microphone|mediaPlayback" />
         <service
             android:name=".overlay.FloatingOverlayService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
+            android:exported="false" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

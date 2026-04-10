@@ -1,12 +1,12 @@
-package com.kgtts.app.overlay
+package com.lhtstudio.kigtts.app.overlay
 
 import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
-import com.kgtts.app.ui.MainActivity
+import com.lhtstudio.kigtts.app.ui.MainActivity
 
 object OverlayBridge {
-    const val ACTION_OPEN_QUICK_SUBTITLE = "com.kgtts.app.action.OPEN_QUICK_SUBTITLE"
+    const val ACTION_OPEN_QUICK_SUBTITLE = "com.lhtstudio.kigtts.app.action.OPEN_QUICK_SUBTITLE"
     const val EXTRA_REQUEST_ID = "overlay_request_id"
     const val EXTRA_TARGET = "overlay_target"
     const val EXTRA_TEXT = "overlay_text"
