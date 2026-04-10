@@ -6559,6 +6559,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     val clipboard = LocalClipboardManager.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val localView = LocalView.current
+    val density = LocalDensity.current
     val activity = context as? Activity
     val inMultiWindowMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
         activity?.isInMultiWindowMode == true
@@ -6574,6 +6575,14 @@ fun AppScaffold(viewModel: MainViewModel) {
     val hiddenDrawerScrimColor = MaterialTheme.colorScheme.onSurface.copy(
         alpha = if (isDarkTheme) 0.56f else 0.32f
     )
+    val desktopCaptionTopInset = with(density) {
+        WindowInsets.captionBar.getTop(this).toDp()
+    }
+    val topBarDesktopMaximizeInset = if (!inMultiWindowMode && desktopCaptionTopInset > 0.dp) {
+        desktopCaptionTopInset
+    } else {
+        0.dp
+    }
     SideEffect {
         activity?.window?.let { window ->
             window.statusBarColor = topBarColor.toArgb()
@@ -7069,6 +7078,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(top = topBarDesktopMaximizeInset)
                 .padding(top = miuiFloatingTopCompensation)
                 .zIndex(2f),
             color = topBarColor,
