@@ -925,6 +925,7 @@ class RealtimeController(
     initialCommunicationMode: Boolean,
     initialMinVolumePercent: Int,
     initialPlaybackGainPercent: Int,
+    initialDenoiserMode: Int,
     initialPiperNoiseScale: Float,
     initialPiperLengthScale: Float,
     initialPiperNoiseW: Float,
@@ -954,6 +955,7 @@ class RealtimeController(
     @Volatile private var useVoiceCommunication = initialUseVoiceCommunication
     @Volatile private var useCommunicationMode = initialCommunicationMode
     @Volatile private var minSegmentRms = (initialMinVolumePercent.coerceIn(0, 100) / 100.0)
+    @Volatile private var denoiserMode = initialDenoiserMode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
     @Volatile private var suppressDelayMs = (initialSuppressDelaySec.coerceIn(0f, 5f) * 1000f).toLong()
     @Volatile private var piperNoiseScale = initialPiperNoiseScale.coerceIn(0f, 2f)
     @Volatile private var piperLengthScale = initialPiperLengthScale.coerceIn(0.1f, 5f)
@@ -984,6 +986,9 @@ class RealtimeController(
     private var currentVoiceDir: File? = null
     private var lastLevelReportMs: Long = 0L
     private val recorderMutex = Mutex()
+    private var rnnoiseProcessor: RnNoiseProcessor? = null
+    private var speexNoiseProcessor: SpeexNoiseSuppressor? = null
+    private val denoiserLock = Any()
     private var lastAcceptedTtsTextKey: String = ""
     private var lastAcceptedTtsAtMs: Long = 0L
     private val duplicateTtsWindowMs: Long = 1800L
@@ -1171,6 +1176,28 @@ class RealtimeController(
         player.setPlaybackGainPercent(percent)
     }
 
+    fun setDenoiserMode(mode: Int) {
+        val normalized = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
+        synchronized(denoiserLock) {
+            if (denoiserMode == normalized) return
+            denoiserMode = normalized
+            when (normalized) {
+                AudioDenoiserMode.OFF -> releaseNoiseProcessorsLocked()
+                AudioDenoiserMode.RNNOISE -> {
+                    speexNoiseProcessor?.release()
+                    speexNoiseProcessor = null
+                    rnnoiseProcessor?.reset()
+                }
+                AudioDenoiserMode.SPEEX -> {
+                    rnnoiseProcessor?.release()
+                    rnnoiseProcessor = null
+                    speexNoiseProcessor?.reset()
+                }
+                else -> Unit
+            }
+        }
+    }
+
     private fun applyTtsSynthesisTuning() {
         tts?.setSynthesisTuning(
             noiseScale = piperNoiseScale,
@@ -1258,6 +1285,10 @@ class RealtimeController(
 
     fun setSuppressAsrAutoSpeak(enabled: Boolean) {
         suppressAsrAutoSpeak = enabled
+    }
+
+    fun isMicActive(): Boolean {
+        return recorder != null
     }
 
     private fun nextResultId(): Long {
@@ -1588,6 +1619,7 @@ class RealtimeController(
             synchronized(queueLock) {
                 ttsQueue.clear()
             }
+            releaseNoiseProcessors()
             aec3?.release()
             aec3 = null
             notifyAec3Status(if (useAec3) "待启动" else "未启用")
@@ -1625,9 +1657,92 @@ class RealtimeController(
         unregisterAudioDeviceCallback()
         restoreOutputRoutePreference()
         restoreCommunicationMode()
+        resetNoiseProcessors()
         if (aec3 == null) {
             notifyAec3Status(if (useAec3) "待启动" else "未启用")
         }
+    }
+
+    private fun ensureRnNoiseProcessor(): RnNoiseProcessor? {
+        synchronized(denoiserLock) {
+            rnnoiseProcessor?.let { return it }
+            return runCatching { RnNoiseProcessor() }
+                .onFailure {
+                    AppLogger.e("RNNoise init failed", it)
+                    notifyError("RNNoise 初始化失败")
+                    denoiserMode = AudioDenoiserMode.OFF
+                }
+                .getOrNull()
+                ?.also { rnnoiseProcessor = it }
+        }
+    }
+
+    private fun ensureSpeexNoiseProcessor(): SpeexNoiseSuppressor? {
+        synchronized(denoiserLock) {
+            speexNoiseProcessor?.let { return it }
+            return runCatching { SpeexNoiseSuppressor(sampleRate = sampleRate, frameSize = 160) }
+                .onFailure {
+                    AppLogger.e("Speex init failed", it)
+                    notifyError("Speex 初始化失败")
+                    denoiserMode = AudioDenoiserMode.OFF
+                }
+                .getOrNull()
+                ?.also { speexNoiseProcessor = it }
+        }
+    }
+
+    private fun applyNoiseSuppression(buffer: FloatArray, length: Int) {
+        synchronized(denoiserLock) {
+            when (denoiserMode) {
+                AudioDenoiserMode.RNNOISE -> ensureRnNoiseProcessorLocked()?.processInPlace(buffer, length)
+                AudioDenoiserMode.SPEEX -> ensureSpeexNoiseProcessorLocked()?.processInPlace(buffer, length)
+                else -> Unit
+            }
+        }
+    }
+
+    private fun resetNoiseProcessors() {
+        synchronized(denoiserLock) {
+            rnnoiseProcessor?.reset()
+            speexNoiseProcessor?.reset()
+        }
+    }
+
+    private fun releaseNoiseProcessors() {
+        synchronized(denoiserLock) {
+            releaseNoiseProcessorsLocked()
+        }
+    }
+
+    private fun ensureRnNoiseProcessorLocked(): RnNoiseProcessor? {
+        rnnoiseProcessor?.let { return it }
+        return runCatching { RnNoiseProcessor() }
+            .onFailure {
+                AppLogger.e("RNNoise init failed", it)
+                notifyError("RNNoise 初始化失败")
+                denoiserMode = AudioDenoiserMode.OFF
+            }
+            .getOrNull()
+            ?.also { rnnoiseProcessor = it }
+    }
+
+    private fun ensureSpeexNoiseProcessorLocked(): SpeexNoiseSuppressor? {
+        speexNoiseProcessor?.let { return it }
+        return runCatching { SpeexNoiseSuppressor(sampleRate = sampleRate, frameSize = 160) }
+            .onFailure {
+                AppLogger.e("Speex init failed", it)
+                notifyError("Speex 初始化失败")
+                denoiserMode = AudioDenoiserMode.OFF
+            }
+            .getOrNull()
+            ?.also { speexNoiseProcessor = it }
+    }
+
+    private fun releaseNoiseProcessorsLocked() {
+        rnnoiseProcessor?.release()
+        rnnoiseProcessor = null
+        speexNoiseProcessor?.release()
+        speexNoiseProcessor = null
     }
 
     private fun applyCommunicationMode(enabled: Boolean) {
@@ -1848,6 +1963,7 @@ class RealtimeController(
                         captureFrames.incrementAndGet()
                         lastCaptureMs.set(SystemClock.uptimeMillis())
                     }
+                    applyNoiseSuppression(floatBuf, read)
                     var sumSq = 0.0
                     for (i in 0 until read) {
                         val v = floatBuf[i]

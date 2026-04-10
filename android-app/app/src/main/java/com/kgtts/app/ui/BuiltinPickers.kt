@@ -25,14 +25,26 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
+import androidx.compose.material.Card
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.OutlinedTextField
 import androidx.compose.material.Button
@@ -40,6 +52,7 @@ import androidx.compose.material.OutlinedButton
 import androidx.compose.material.TextButton
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -48,12 +61,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -73,6 +97,92 @@ data class BuiltinGalleryItem(
     val bucketName: String,
     val dateMs: Long
 )
+
+@Composable
+private fun rememberBuiltinTopEndPopupPositionProvider(verticalMargin: androidx.compose.ui.unit.Dp = 4.dp): PopupPositionProvider {
+    val density = LocalDensity.current
+    return remember(density, verticalMargin) {
+        object : PopupPositionProvider {
+            private val verticalMarginPx = with(density) { verticalMargin.roundToPx() }
+
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val preferredX = when (layoutDirection) {
+                    LayoutDirection.Ltr -> anchorBounds.right - popupContentSize.width
+                    LayoutDirection.Rtl -> anchorBounds.left
+                }
+                val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+                val x = preferredX.coerceIn(0, maxX)
+                val belowY = anchorBounds.bottom + verticalMarginPx
+                val aboveY = anchorBounds.top - verticalMarginPx - popupContentSize.height
+                val y = if (belowY + popupContentSize.height <= windowSize.height) {
+                    belowY
+                } else {
+                    aboveY.coerceAtLeast(0)
+                }
+                return IntOffset(x, y)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BuiltinAnimatedDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    var renderMenu by remember { mutableStateOf(expanded) }
+    val popupPositionProvider = rememberBuiltinTopEndPopupPositionProvider()
+    val menuAlpha by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "builtin_dropdown_alpha"
+    )
+    val menuScale by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0.94f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "builtin_dropdown_scale"
+    )
+    if (expanded && !renderMenu) renderMenu = true
+    LaunchedEffect(expanded) {
+        if (!expanded) {
+            kotlinx.coroutines.delay(180L)
+            renderMenu = false
+        }
+    }
+    if (!renderMenu) return
+    Popup(
+        popupPositionProvider = popupPositionProvider,
+        onDismissRequest = onDismissRequest,
+        properties = PopupProperties(focusable = true)
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(8.dp)
+                .graphicsLayer {
+                    alpha = menuAlpha
+                    scaleX = menuScale
+                    scaleY = menuScale
+                    transformOrigin = TransformOrigin(1f, 0f)
+                    clip = false
+                },
+        ) {
+            Card(
+                modifier = Modifier.widthIn(min = 196.dp, max = 216.dp),
+                shape = RoundedCornerShape(4.dp),
+                backgroundColor = MaterialTheme.colors.surface,
+                elevation = 8.dp
+            ) {
+                Column(content = content)
+            }
+        }
+    }
+}
 
 @Composable
 fun BuiltinFilePickerDialog(
@@ -133,7 +243,7 @@ fun BuiltinFilePickerDialog(
 
                 Box {
                     OutlinedButton(onClick = { sortExpanded = true }) { Text(sortOption.label) }
-                    DropdownMenu(
+                    BuiltinAnimatedDropdownMenu(
                         expanded = sortExpanded,
                         onDismissRequest = { sortExpanded = false }
                     ) {
@@ -293,7 +403,7 @@ fun BuiltinGalleryPickerDialog(
                     OutlinedButton(onClick = { albumExpanded = true }) {
                         Text(albums[selectedAlbumId] ?: "全部相册")
                     }
-                    DropdownMenu(
+                    BuiltinAnimatedDropdownMenu(
                         expanded = albumExpanded,
                         onDismissRequest = { albumExpanded = false }
                     ) {

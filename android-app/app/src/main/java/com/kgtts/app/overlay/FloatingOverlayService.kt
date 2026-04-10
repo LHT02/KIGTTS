@@ -204,6 +204,7 @@ class FloatingOverlayService : Service() {
     private var fabSnapAnimator: ValueAnimator? = null
     private var fabIdleDockJob: Job? = null
     private var fabIdleDocked = false
+    private var fabVisibilityTarget: Boolean? = null
     private var portraitFabAnchor: OverlayFabAnchor? = null
     private var landscapeFabAnchor: OverlayFabAnchor? = null
     private var currentFabOrientation = Configuration.ORIENTATION_PORTRAIT
@@ -249,6 +250,8 @@ class FloatingOverlayService : Service() {
     private var miniPreviewQuickCardId: Long? = null
     private var quickCards: List<QuickCard> = emptyList()
     private var quickCardSelectedIndex = 0
+    private val miniQuickCardPageHeights = mutableMapOf<Long, Int>()
+    private var miniQuickCardMeasureWidth = 0
     private var quickCardConfigRawCache = ""
     private var overlayShortcutSaving = false
     private var overlayLauncherLayoutLoaded = false
@@ -348,13 +351,21 @@ class FloatingOverlayService : Service() {
 
         override fun onBindViewHolder(holder: PageViewHolder, position: Int) {
             holder.container.removeAllViews()
+            val card = items.getOrNull(position)
             holder.container.addView(
-                createMiniQuickCardPage(items.getOrNull(position)),
+                createMiniQuickCardPage(card),
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
             )
+            holder.container.post {
+                val measuredHeight = holder.container.height
+                if (measuredHeight > 0) {
+                    miniQuickCardPageHeights[miniQuickCardHeightKey(card)] = measuredHeight
+                    miniQuickCardPreviewContainer?.requestLayout()
+                }
+            }
         }
 
         override fun getItemCount(): Int = items.size
@@ -1819,16 +1830,31 @@ class FloatingOverlayService : Service() {
                             paddingLeft -
                             paddingRight
                         ).coerceAtLeast(0)
-                    val targetHeight = if (currentChild != null) {
-                        val childWidthSpec = MeasureSpec.makeMeasureSpec(
-                            contentWidth,
-                            MeasureSpec.EXACTLY
-                        )
-                        val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
-                        currentChild.measure(childWidthSpec, childHeightSpec)
-                        currentChild.measuredHeight + paddingTop + paddingBottom
-                    } else {
-                        dp(320) + paddingTop + paddingBottom
+                    if (contentWidth != miniQuickCardMeasureWidth) {
+                        miniQuickCardMeasureWidth = contentWidth
+                        miniQuickCardPageHeights.clear()
+                    }
+                    val currentCard =
+                        if (quickCards.isEmpty()) null else quickCards.getOrNull(pager?.currentItem ?: 0)
+                    val cachedHeight = miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)]
+                    val targetHeight = when {
+                        cachedHeight != null -> cachedHeight + paddingTop + paddingBottom
+                        currentChild != null -> {
+                            val childWidthSpec = MeasureSpec.makeMeasureSpec(
+                                contentWidth,
+                                MeasureSpec.EXACTLY
+                            )
+                            val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+                            currentChild.measure(childWidthSpec, childHeightSpec)
+                            currentChild.measuredHeight.also {
+                                miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
+                            } + paddingTop + paddingBottom
+                        }
+                        else -> {
+                            measureMiniQuickCardPageHeight(contentWidth, currentCard).also {
+                                miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
+                            } + paddingTop + paddingBottom
+                        }
                     }
                     val exactHeight = MeasureSpec.makeMeasureSpec(targetHeight, MeasureSpec.EXACTLY)
                     super.onMeasure(widthMeasureSpec, exactHeight)
@@ -2297,7 +2323,7 @@ class FloatingOverlayService : Service() {
         miniStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressedState) 1f else 0.68f
         miniStatusEqContainer?.alpha = if (runningState || hasLatestResult) 1f else 0.68f
         refreshStatusDetailUi()
-        animateFabVisibility(!(miniVisible || panelVisible))
+        syncFabVisibility(!(miniVisible || panelVisible))
         fabButton?.alpha = if (pttPressedState) 0.94f else 1f
         panelActionFab?.alpha = if (pttPressedState) 0.94f else 1f
         miniActionFab?.alpha = if (pttPressedState) 0.94f else 1f
@@ -2305,6 +2331,15 @@ class FloatingOverlayService : Service() {
             bubbleRow?.visibility = View.GONE
         }
         refreshFabIdleDockState()
+    }
+
+    private fun syncFabVisibility(show: Boolean) {
+        if (!show) {
+            cancelFabIdleDock(restoreFab = true)
+        }
+        if (fabVisibilityTarget == show) return
+        fabVisibilityTarget = show
+        animateFabVisibility(show)
     }
 
     private fun updateConfirmLayout() {
@@ -2586,13 +2621,18 @@ class FloatingOverlayService : Service() {
     private fun showPanel() {
         scope.launch {
             collapseOverlayStatusExpanded(animate = false)
+            val switchingFromMini = miniVisible
+            panelVisible = true
+            if (!switchingFromMini) {
+                miniVisible = false
+            }
+            syncFabVisibility(false)
             loadOverlayShortcuts()
             loadOverlayLauncherLayout()
             refreshPanelUi()
             updatePanelPosition()
             panelRoot?.visibility = View.VISIBLE
-            if (miniVisible) {
-                panelVisible = true
+            if (switchingFromMini) {
                 updateFabUi()
                 animateOverlaySwitch(
                     outgoing = miniContent,
@@ -2604,8 +2644,6 @@ class FloatingOverlayService : Service() {
                     }
                 )
             } else {
-                panelVisible = true
-                miniVisible = false
                 updateFabUi()
                 animateOverlayIn(panelContent, fromBottom = true)
             }
@@ -2628,7 +2666,10 @@ class FloatingOverlayService : Service() {
     private fun showMiniPanel(mode: MiniOverlayMode = MiniOverlayMode.Subtitle) {
         scope.launch {
             collapseOverlayStatusExpanded(animate = false)
+            val switchingFromPanel = panelVisible
             miniMode = mode
+            miniVisible = true
+            syncFabVisibility(false)
             when (miniMode) {
                 MiniOverlayMode.Subtitle -> {
                     loadQuickSubtitleConfig()
@@ -2643,8 +2684,7 @@ class FloatingOverlayService : Service() {
             updateMiniPanelPosition()
             refreshMiniPreviewUi()
             miniRoot?.visibility = View.VISIBLE
-            if (panelVisible) {
-                miniVisible = true
+            if (switchingFromPanel) {
                 updateFabUi()
                 animateOverlaySwitch(
                     outgoing = panelContent,
@@ -2658,7 +2698,6 @@ class FloatingOverlayService : Service() {
                     }
                 )
             } else {
-                miniVisible = true
                 updateFabUi()
                 animateOverlayIn(miniContent, fromBottom = false)
             }
@@ -3255,6 +3294,7 @@ class FloatingOverlayService : Service() {
         val previewHost = miniQuickCardPreviewContainer ?: return
         val pager = miniQuickCardPager ?: return
         val adapter = miniQuickCardPagerAdapter ?: return
+        miniQuickCardPageHeights.clear()
         adapter.submitCards(quickCards)
         previewHost.requestLayout()
         val safeIndex =
@@ -3272,6 +3312,17 @@ class FloatingOverlayService : Service() {
         }
         refreshMiniQuickCardIndicators()
         refreshMiniPreviewUi()
+    }
+
+    private fun miniQuickCardHeightKey(card: QuickCard?): Long = card?.id ?: Long.MIN_VALUE
+
+    private fun measureMiniQuickCardPageHeight(contentWidth: Int, card: QuickCard?): Int {
+        val previewContainer = miniQuickCardPreviewContainer ?: return dp(320)
+        val probe = createMiniQuickCardPage(card)
+        val childWidthSpec = View.MeasureSpec.makeMeasureSpec(contentWidth.coerceAtLeast(0), View.MeasureSpec.EXACTLY)
+        val childHeightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        probe.measure(childWidthSpec, childHeightSpec)
+        return probe.measuredHeight.coerceAtLeast(dp(320) - previewContainer.paddingTop - previewContainer.paddingBottom)
     }
 
     private fun createMiniQuickCardPage(card: QuickCard?): View {

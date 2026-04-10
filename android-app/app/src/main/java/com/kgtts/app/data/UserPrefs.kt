@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.kgtts.app.audio.AudioDenoiserMode
 import com.kgtts.app.audio.AudioRoutePreference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -32,6 +33,7 @@ object UserPrefs {
     private val KEY_PREFERRED_INPUT_TYPE = intPreferencesKey("preferred_input_type")
     private val KEY_PREFERRED_OUTPUT_TYPE = intPreferencesKey("preferred_output_type")
     private val KEY_AEC3_ENABLED = booleanPreferencesKey("aec3_enabled")
+    private val KEY_DENOISER_MODE = intPreferencesKey("denoiser_mode")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -73,6 +75,7 @@ object UserPrefs {
         val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
         val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
         val aec3Enabled: Boolean = false,
+        val denoiserMode: Int = AudioDenoiserMode.OFF,
         val minVolumePercent: Int = 0,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
@@ -131,6 +134,8 @@ object UserPrefs {
             preferredOutputType = this[KEY_PREFERRED_OUTPUT_TYPE]
                 ?: if (legacySpeaker) AudioRoutePreference.OUTPUT_SPEAKER else AudioRoutePreference.OUTPUT_AUTO,
             aec3Enabled = this[KEY_AEC3_ENABLED] ?: false,
+            denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.OFF)
+                .coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX),
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 0,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
@@ -204,6 +209,12 @@ object UserPrefs {
     suspend fun setAec3Enabled(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_AEC3_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setDenoiserMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_DENOISER_MODE] = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
         }
     }
 

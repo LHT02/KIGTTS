@@ -28,8 +28,12 @@ def _load_voicepack_base(voicepack_path: Path, temp_dir: Path) -> Tuple[Path, di
     if voicepack_path.is_dir():
         manifest_path = voicepack_path / "manifest.json"
         if not manifest_path.exists():
-            zip_candidate = voicepack_path / "voicepack.zip"
-            if zip_candidate.exists():
+            archive_candidates = [
+                voicepack_path / "voicepack.kigvpk",
+                voicepack_path / "voicepack.zip",
+            ]
+            zip_candidate = next((candidate for candidate in archive_candidates if candidate.exists()), None)
+            if zip_candidate is not None:
                 return _load_voicepack_base(zip_candidate, temp_dir)
             raise FileNotFoundError("语音包目录缺少 manifest.json")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
