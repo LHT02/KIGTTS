@@ -138,6 +138,8 @@ class RnNoiseProcessor {
     private val work48In by lazy { FloatArray(nativeFrameSize) }
     private val work48Out by lazy { FloatArray(nativeFrameSize) }
     private val frame16 = 160
+    private val lock = Any()
+    @Volatile private var released = false
     private val processor by lazy {
         object : StreamingFrameProcessor(frame16) {
             override fun processFrame(input: FloatArray, output: FloatArray) {
@@ -155,16 +157,26 @@ class RnNoiseProcessor {
     }
 
     fun processInPlace(buffer: FloatArray, length: Int = buffer.size) {
-        processor.processInPlace(buffer, length)
+        synchronized(lock) {
+            if (released) return
+            processor.processInPlace(buffer, length)
+        }
     }
 
     fun reset() {
-        processor.reset()
+        synchronized(lock) {
+            if (released) return
+            processor.reset()
+        }
     }
 
     fun release() {
-        processor.reset()
-        RnNoiseNative.nativeDestroy(handle)
+        synchronized(lock) {
+            if (released) return
+            released = true
+            processor.reset()
+            RnNoiseNative.nativeDestroy(handle)
+        }
     }
 
     private fun upsample16kTo48k(input: FloatArray, output: FloatArray) {
@@ -190,6 +202,8 @@ class SpeexNoiseSuppressor(
     sampleRate: Int = 16000,
     frameSize: Int = 160
 ) {
+    private val lock = Any()
+    @Volatile private var released = false
     private val handle by lazy {
         SpeexNative.nativeCreate(frameSize, sampleRate).also {
             check(it != 0L) { "Speex init failed" }
@@ -212,16 +226,26 @@ class SpeexNoiseSuppressor(
     }
 
     fun processInPlace(buffer: FloatArray, length: Int = buffer.size) {
-        processor.processInPlace(buffer, length)
+        synchronized(lock) {
+            if (released) return
+            processor.processInPlace(buffer, length)
+        }
     }
 
     fun reset() {
-        processor.reset()
+        synchronized(lock) {
+            if (released) return
+            processor.reset()
+        }
     }
 
     fun release() {
-        processor.reset()
-        SpeexNative.nativeDestroy(handle)
+        synchronized(lock) {
+            if (released) return
+            released = true
+            processor.reset()
+            SpeexNative.nativeDestroy(handle)
+        }
     }
 }
 

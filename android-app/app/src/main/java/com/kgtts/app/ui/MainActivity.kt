@@ -104,6 +104,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -138,7 +139,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.TextToolbar
+import androidx.compose.ui.platform.TextToolbarStatus
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.semantics.contentDescription
@@ -161,13 +165,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 import androidx.core.content.FileProvider
 import androidx.core.content.ContextCompat
@@ -2837,6 +2847,7 @@ private val KgtDarkExtraColors = Md2ExtraColors(
 )
 
 private val LocalMd2ExtraColors = staticCompositionLocalOf { KgtLightExtraColors }
+private val LocalSuppressStaggeredFloatIn = staticCompositionLocalOf { false }
 
 private data class Md2ColorScheme(
     val primary: Color,
@@ -5509,10 +5520,11 @@ private fun Md2StaggeredFloatIn(
     enabled: Boolean = true,
     content: @Composable () -> Unit
 ) {
-    var visible by remember(index, enabled) { mutableStateOf(!enabled) }
+    val effectiveEnabled = enabled && !LocalSuppressStaggeredFloatIn.current
+    var visible by remember(index, effectiveEnabled) { mutableStateOf(!effectiveEnabled) }
 
-    LaunchedEffect(index, enabled) {
-        if (!enabled) {
+    LaunchedEffect(index, effectiveEnabled) {
+        if (!effectiveEnabled) {
             visible = true
             return@LaunchedEffect
         }
@@ -5627,13 +5639,23 @@ class MainActivity : ComponentActivity() {
             val dark = isSystemInDarkTheme()
             val colors = if (dark) KgtDarkColors else KgtLightColors
             val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
+            val textToolbarState = remember { KigttsTextToolbarState() }
+            val textToolbar = remember(textToolbarState) { KigttsTextToolbar(textToolbarState) }
             CompositionLocalProvider(LocalMd2ExtraColors provides extraColors) {
-                MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        AppScaffold(viewModel)
+                CompositionLocalProvider(LocalTextToolbar provides textToolbar) {
+                    MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            Box(Modifier.fillMaxSize()) {
+                                AppScaffold(viewModel)
+                                KigttsTextToolbarPopup(
+                                    state = textToolbarState,
+                                    darkTheme = dark
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -5780,6 +5802,203 @@ class MainActivity : ComponentActivity() {
             return
         }
         FloatingOverlayService.start(this)
+    }
+}
+
+private class KigttsTextToolbarState {
+    var rect by mutableStateOf(Rect.Zero)
+    var visible by mutableStateOf(false)
+    var onCopyRequested by mutableStateOf<(() -> Unit)?>(null)
+    var onPasteRequested by mutableStateOf<(() -> Unit)?>(null)
+    var onCutRequested by mutableStateOf<(() -> Unit)?>(null)
+    var onSelectAllRequested by mutableStateOf<(() -> Unit)?>(null)
+
+    fun show(
+        rect: Rect,
+        onCopyRequested: (() -> Unit)?,
+        onPasteRequested: (() -> Unit)?,
+        onCutRequested: (() -> Unit)?,
+        onSelectAllRequested: (() -> Unit)?
+    ) {
+        this.rect = rect
+        this.onCopyRequested = onCopyRequested
+        this.onPasteRequested = onPasteRequested
+        this.onCutRequested = onCutRequested
+        this.onSelectAllRequested = onSelectAllRequested
+        visible = true
+    }
+
+    fun hide() {
+        visible = false
+    }
+}
+
+private class KigttsTextToolbar(
+    private val state: KigttsTextToolbarState
+) : TextToolbar {
+    override val status: TextToolbarStatus
+        get() = if (state.visible) TextToolbarStatus.Shown else TextToolbarStatus.Hidden
+
+    override fun showMenu(
+        rect: Rect,
+        onCopyRequested: (() -> Unit)?,
+        onPasteRequested: (() -> Unit)?,
+        onCutRequested: (() -> Unit)?,
+        onSelectAllRequested: (() -> Unit)?
+    ) {
+        state.show(
+            rect = rect,
+            onCopyRequested = onCopyRequested,
+            onPasteRequested = onPasteRequested,
+            onCutRequested = onCutRequested,
+            onSelectAllRequested = onSelectAllRequested
+        )
+    }
+
+    override fun hide() {
+        state.hide()
+    }
+}
+
+private data class KigttsTextToolbarAction(
+    val icon: String,
+    val contentDescription: String,
+    val onClick: (() -> Unit)?
+)
+
+private class KigttsTextToolbarPositionProvider(
+    private val anchorRect: IntRect,
+    private val marginPx: Int
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize
+    ): IntOffset {
+        val centeredX = anchorRect.left + ((anchorRect.width - popupContentSize.width) / 2)
+        val clampedX = centeredX.coerceIn(
+            marginPx,
+            (windowSize.width - popupContentSize.width - marginPx).coerceAtLeast(marginPx)
+        )
+        val aboveY = anchorRect.top - popupContentSize.height - marginPx
+        val belowY = anchorRect.bottom + marginPx
+        val targetY = if (aboveY >= marginPx) {
+            aboveY
+        } else {
+            belowY.coerceAtMost(
+                (windowSize.height - popupContentSize.height - marginPx).coerceAtLeast(marginPx)
+            )
+        }
+        return IntOffset(clampedX, targetY)
+    }
+}
+
+@Composable
+private fun KigttsTextToolbarPopup(
+    state: KigttsTextToolbarState,
+    darkTheme: Boolean
+) {
+    var rendered by remember { mutableStateOf(state.visible) }
+    val menuAlpha by animateFloatAsState(
+        targetValue = if (state.visible) 1f else 0f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "kigtts_text_toolbar_alpha"
+    )
+    val menuScale by animateFloatAsState(
+        targetValue = if (state.visible) 1f else 0.94f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "kigtts_text_toolbar_scale"
+    )
+    LaunchedEffect(state.visible) {
+        if (state.visible) {
+            rendered = true
+        } else if (rendered) {
+            delay(180L)
+            rendered = false
+        }
+    }
+    if (!rendered) return
+    val density = LocalDensity.current
+    val marginPx = with(density) { 8.dp.roundToPx() }
+    val anchorRect = remember(state.rect) {
+        IntRect(
+            left = state.rect.left.toInt(),
+            top = state.rect.top.toInt(),
+            right = state.rect.right.toInt(),
+            bottom = state.rect.bottom.toInt()
+        )
+    }
+    val actions = remember(
+        state.onCopyRequested,
+        state.onPasteRequested,
+        state.onCutRequested,
+        state.onSelectAllRequested
+    ) {
+        listOf(
+            KigttsTextToolbarAction("select_all", "全选", state.onSelectAllRequested),
+            KigttsTextToolbarAction("content_cut", "剪切", state.onCutRequested),
+            KigttsTextToolbarAction("content_copy", "复制", state.onCopyRequested),
+            KigttsTextToolbarAction("content_paste", "粘贴", state.onPasteRequested)
+        ).filter { it.onClick != null }
+    }
+    if (actions.isEmpty()) return
+
+    val backgroundColor = if (darkTheme) Color(0xFF2C2F33) else Color.White
+    val contentColor = if (darkTheme) Color(0xFFE9EDF1) else Color(0xFF202428)
+    val positionProvider = remember(anchorRect, marginPx) {
+        KigttsTextToolbarPositionProvider(anchorRect, marginPx)
+    }
+
+    Popup(
+        popupPositionProvider = positionProvider,
+        properties = PopupProperties(focusable = false, dismissOnClickOutside = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(8.dp)
+                .graphicsLayer {
+                    alpha = menuAlpha
+                    scaleX = menuScale
+                    scaleY = menuScale
+                    transformOrigin = TransformOrigin(0.5f, 0f)
+                    clip = false
+                },
+        ) {
+            Card(
+                modifier = Modifier.wrapContentSize(),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = backgroundColor,
+                elevation = UiTokens.MenuElevation
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    actions.forEach { action ->
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = rememberRipple(bounded = true, radius = 20.dp)
+                                ) {
+                                    action.onClick?.invoke()
+                                    state.hide()
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            MsIcon(
+                                name = action.icon,
+                                contentDescription = action.contentDescription,
+                                tint = contentColor
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5962,6 +6181,38 @@ private fun Md2OutlinedField(
 }
 
 @Composable
+private fun rememberTopEndDropdownPopupPositionProvider(verticalMargin: Dp = 4.dp): PopupPositionProvider {
+    val density = LocalDensity.current
+    return remember(density, verticalMargin) {
+        object : PopupPositionProvider {
+            private val verticalMarginPx = with(density) { verticalMargin.roundToPx() }
+
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val preferredX = when (layoutDirection) {
+                    LayoutDirection.Ltr -> anchorBounds.right - popupContentSize.width
+                    LayoutDirection.Rtl -> anchorBounds.left
+                }
+                val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+                val x = preferredX.coerceIn(0, maxX)
+                val belowY = anchorBounds.bottom + verticalMarginPx
+                val aboveY = anchorBounds.top - verticalMarginPx - popupContentSize.height
+                val y = if (belowY + popupContentSize.height <= windowSize.height) {
+                    belowY
+                } else {
+                    aboveY.coerceAtLeast(0)
+                }
+                return IntOffset(x, y)
+            }
+        }
+    }
+}
+
+@Composable
 private fun Md2AnimatedOptionMenu(
     expanded: Boolean,
     onDismissRequest: () -> Unit,
@@ -5969,6 +6220,17 @@ private fun Md2AnimatedOptionMenu(
     content: @Composable ColumnScope.() -> Unit
 ) {
     var rendered by remember { mutableStateOf(expanded) }
+    val popupPositionProvider = rememberTopEndDropdownPopupPositionProvider()
+    val menuAlpha by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "md2_option_menu_alpha"
+    )
+    val menuScale by animateFloatAsState(
+        targetValue = if (expanded) 1f else 0.94f,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "md2_option_menu_scale"
+    )
     LaunchedEffect(expanded) {
         if (expanded) {
             rendered = true
@@ -5977,27 +6239,33 @@ private fun Md2AnimatedOptionMenu(
             rendered = false
         }
     }
-    DropdownMenu(
-        expanded = rendered,
+    if (!rendered) return
+    Popup(
+        popupPositionProvider = popupPositionProvider,
         onDismissRequest = onDismissRequest,
-        modifier = modifier
+        properties = PopupProperties(focusable = true)
     ) {
-        AnimatedVisibility(
-            visible = expanded,
-            enter = fadeIn(animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)) +
-                scaleIn(
-                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-                    initialScale = 0.94f,
+        Box(
+            modifier = Modifier
+                .padding(8.dp)
+                .graphicsLayer {
+                    alpha = menuAlpha
+                    scaleX = menuScale
+                    scaleY = menuScale
                     transformOrigin = TransformOrigin(1f, 0f)
-                ),
-            exit = fadeOut(animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)) +
-                scaleOut(
-                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
-                    targetScale = 0.94f,
-                    transformOrigin = TransformOrigin(1f, 0f)
-                )
+                    clip = false
+                },
         ) {
-            Column(content = content)
+            Card(
+                modifier = Modifier
+                    .widthIn(min = 196.dp, max = 216.dp)
+                    .then(modifier),
+                shape = RoundedCornerShape(4.dp),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.MenuElevation
+            ) {
+                Column(content = content)
+            }
         }
     }
 }
@@ -6114,8 +6382,7 @@ private fun Md2SettingDropdownRow(
         }
         Md2AnimatedOptionMenu(
             expanded = expanded,
-            onDismissRequest = { onExpandedChange(false) },
-            modifier = Modifier.fillMaxWidth(0.96f)
+            onDismissRequest = { onExpandedChange(false) }
         ) {
             menuContent()
         }
@@ -13434,25 +13701,28 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                 )
                 AnimatedContent(
                     targetState = selectedCategory,
+                    modifier = Modifier.padding(vertical = 4.dp),
                     transitionSpec = {
                         val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
                         ContentTransform(
-                            targetContentEnter = fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)) +
+                            targetContentEnter = fadeIn(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
                                 slideInHorizontally(
-                                    animationSpec = tween(220, easing = FastOutSlowInEasing),
-                                    initialOffsetX = { direction * (it / 8) }
+                                    animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                    initialOffsetX = { direction * (it / 6) }
                                 ),
-                            initialContentExit = fadeOut(animationSpec = tween(180, easing = LinearEasing)) +
+                            initialContentExit = fadeOut(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
                                 slideOutHorizontally(
-                                    animationSpec = tween(180, easing = LinearEasing),
-                                    targetOffsetX = { -direction * (it / 10) }
+                                    animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                    targetOffsetX = { -direction * (it / 7) }
                                 ),
-                            sizeTransform = null
+                            sizeTransform = androidx.compose.animation.SizeTransform(clip = false)
                         )
                     },
                     label = "settings_tabs_content_compact"
                 ) { category ->
-                    SettingsCategoryContent(category)
+                    CompositionLocalProvider(LocalSuppressStaggeredFloatIn provides true) {
+                        SettingsCategoryContent(category)
+                    }
                 }
                 Spacer(Modifier.height(UiTokens.PageBottomBlank))
             }
@@ -13490,25 +13760,28 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         Spacer(Modifier.height(UiTokens.PageTopBlank))
                         AnimatedContent(
                             targetState = selectedCategory,
+                            modifier = Modifier.padding(vertical = 4.dp),
                             transitionSpec = {
                                 val direction = if (targetState.ordinal >= initialState.ordinal) 1 else -1
                                 ContentTransform(
-                                    targetContentEnter = fadeIn(animationSpec = tween(220, easing = FastOutSlowInEasing)) +
-                                        slideInHorizontally(
-                                            animationSpec = tween(220, easing = FastOutSlowInEasing),
-                                            initialOffsetX = { direction * (it / 10) }
+                                    targetContentEnter = fadeIn(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
+                                        slideInVertically(
+                                            animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                            initialOffsetY = { direction * (it / 6) }
                                         ),
-                                    initialContentExit = fadeOut(animationSpec = tween(180, easing = LinearEasing)) +
-                                        slideOutHorizontally(
-                                            animationSpec = tween(180, easing = LinearEasing),
-                                            targetOffsetX = { -direction * (it / 12) }
+                                    initialContentExit = fadeOut(animationSpec = tween(240, easing = FastOutSlowInEasing)) +
+                                        slideOutVertically(
+                                            animationSpec = tween(240, easing = FastOutSlowInEasing),
+                                            targetOffsetY = { -direction * (it / 7) }
                                         ),
-                                    sizeTransform = null
+                                    sizeTransform = androidx.compose.animation.SizeTransform(clip = false)
                                 )
                             },
                             label = "settings_tabs_content_rail"
                         ) { category ->
-                            SettingsCategoryContent(category)
+                            CompositionLocalProvider(LocalSuppressStaggeredFloatIn provides true) {
+                                SettingsCategoryContent(category)
+                            }
                         }
                         Spacer(Modifier.height(UiTokens.PageBottomBlank))
                     }
