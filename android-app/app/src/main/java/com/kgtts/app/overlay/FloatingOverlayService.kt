@@ -8,6 +8,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
 import android.content.pm.LauncherApps
 import android.content.pm.ResolveInfo
@@ -188,19 +189,12 @@ class FloatingOverlayService : Service() {
     private var leftActionButton: FrameLayout? = null
     private var rightActionButton: FrameLayout? = null
 
-    private var running = false
     private var pttPressed = false
     private var pttTemporaryStart = false
-    private var pttSessionLastText = ""
-    private var pttStreamingText = ""
-    private var latestRecognizedText = ""
+    private var overlayHintText = ""
     private var currentDragAction = OverlayReleaseAction.SendToSubtitle
     private var overlayDarkTheme = false
     private var overlayStatusExpanded = false
-    private var overlayInputLevel = 0f
-    private var overlayPlaybackProgress = 0f
-    private var overlayInputDeviceLabel = ""
-    private var overlayOutputDeviceLabel = ""
     private var fabSnapAnimator: ValueAnimator? = null
     private var fabIdleDockJob: Job? = null
     private var fabIdleDocked = false
@@ -870,7 +864,15 @@ class FloatingOverlayService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
             .build()
-        startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -896,7 +898,7 @@ class FloatingOverlayService : Service() {
                 LinearLayout.LayoutParams(dp(220), ViewGroup.LayoutParams.WRAP_CONTENT)
             )
             setOnClickListener {
-                val text = latestRecognizedText.trim()
+                val text = effectiveLatestRecognizedText().trim()
                 if (text.isNotEmpty()) {
                     launchQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, text)
                 }
@@ -2393,8 +2395,7 @@ class FloatingOverlayService : Service() {
     private fun beginPttSession() {
         pttPressed = true
         pttTemporaryStart = !effectiveRunningState()
-        pttSessionLastText = ""
-        pttStreamingText = ""
+        overlayHintText = ""
         currentDragAction = OverlayReleaseAction.SendToSubtitle
         updateFabUi()
         if (settings.pushToTalkConfirmInput) showConfirmOverlay()
@@ -2404,7 +2405,7 @@ class FloatingOverlayService : Service() {
                 pttPressed = false
                 pttTemporaryStart = false
                 hideConfirmOverlay()
-                latestRecognizedText = "请先打开主界面"
+                overlayHintText = "请先打开主界面"
                 updateFabUi()
                 return@launch
             }
@@ -2419,8 +2420,6 @@ class FloatingOverlayService : Service() {
         val shouldStop = pttTemporaryStart
         pttPressed = false
         pttTemporaryStart = false
-        pttSessionLastText = ""
-        pttStreamingText = ""
         hideConfirmOverlay()
         scope.launch {
             val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
@@ -2428,16 +2427,8 @@ class FloatingOverlayService : Service() {
                 appDelegate.commitPushToTalkSession(mapCommitAction(action))
                 appDelegate.setPushToTalkPressed(false)
                 if (shouldStop) appDelegate.stopRealtime()
-            } else if (text.isNotEmpty()) {
-                when (action) {
-                    OverlayReleaseAction.SendToSubtitle -> {
-                        launchQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, text)
-                    }
-                    OverlayReleaseAction.SendToInput -> {
-                        launchQuickSubtitle(OverlayBridge.TARGET_INPUT, text)
-                    }
-                    OverlayReleaseAction.Cancel -> Unit
-                }
+            } else {
+                overlayHintText = "请先打开主界面"
             }
         }
         if (action == OverlayReleaseAction.SendToInput && text.isNotEmpty()) {
@@ -2449,7 +2440,7 @@ class FloatingOverlayService : Service() {
     private fun submitQuickSubtitleText(text: String) {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
-        latestRecognizedText = normalized
+        overlayHintText = ""
         quickSubtitleCurrentText = normalized
         saveQuickSubtitleConfig()
         refreshQuickSubtitleUi()
@@ -2467,13 +2458,13 @@ class FloatingOverlayService : Service() {
         val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
         if (appDelegate == null) {
             if (showFailureInBubble) {
-                latestRecognizedText = "请先打开主界面"
+                overlayHintText = "请先打开主界面"
                 updateFabUi()
             }
             return false
         }
+        overlayHintText = ""
         appDelegate.startRealtime()
-        running = true
         updateFabUi()
         return true
     }
@@ -2483,7 +2474,6 @@ class FloatingOverlayService : Service() {
         if (appDelegate != null) {
             appDelegate.stopRealtime()
         }
-        running = false
         updateFabUi()
     }
 
@@ -6444,21 +6434,21 @@ class FloatingOverlayService : Service() {
         if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().running
         } else {
-            running
+            false
         }
 
     private fun effectiveLatestRecognizedText(): String =
         if (usesAppRealtimeBridge()) {
-            RealtimeRuntimeBridge.currentSnapshot().latestRecognizedText.ifBlank { latestRecognizedText }
+            RealtimeRuntimeBridge.currentSnapshot().latestRecognizedText
         } else {
-            latestRecognizedText
+            overlayHintText
         }
 
     private fun effectivePttStreamingText(): String =
         if (usesAppRealtimeBridge()) {
-            RealtimeRuntimeBridge.currentSnapshot().pushToTalkStreamingText.ifBlank { pttStreamingText }
+            RealtimeRuntimeBridge.currentSnapshot().pushToTalkStreamingText
         } else {
-            pttStreamingText
+            ""
         }
 
     private fun effectivePttPressedState(): Boolean =
@@ -6472,14 +6462,14 @@ class FloatingOverlayService : Service() {
         if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().inputLevel.coerceIn(0f, 1f)
         } else {
-            overlayInputLevel.coerceIn(0f, 1f)
+            0f
         }
 
     private fun effectivePlaybackProgress(): Float =
         if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().playbackProgress.coerceIn(0f, 1f)
         } else {
-            overlayPlaybackProgress.coerceIn(0f, 1f)
+            0f
         }
 
     private fun effectiveInputDeviceLabel(): String =
@@ -6488,7 +6478,7 @@ class FloatingOverlayService : Service() {
                 preferredInputTypeLabel(settings.preferredInputType)
             }
         } else {
-            overlayInputDeviceLabel.ifBlank { preferredInputTypeLabel(settings.preferredInputType) }
+            preferredInputTypeLabel(settings.preferredInputType)
         }
 
     private fun effectiveOutputDeviceLabel(): String =
@@ -6497,7 +6487,7 @@ class FloatingOverlayService : Service() {
                 preferredOutputTypeLabel(settings.preferredOutputType)
             }
         } else {
-            overlayOutputDeviceLabel.ifBlank { preferredOutputTypeLabel(settings.preferredOutputType) }
+            preferredOutputTypeLabel(settings.preferredOutputType)
         }
 
     private fun dp(value: Int): Int = (resources.displayMetrics.density * value).roundToInt()
