@@ -109,6 +109,11 @@ class ModelRepository(private val context: Context) {
 
     fun systemTtsVirtualDir(): File = File(root, SYSTEM_TTS_VIRTUAL_DIR_NAME)
 
+    fun resolveAsr(name: String): File? {
+        val dir = File(asrRoot, name)
+        return if (dir.isDirectory) dir else null
+    }
+
     fun resolveVoicePack(name: String): File? {
         val dir = File(voiceRoot, name)
         return if (dir.isDirectory) dir else null

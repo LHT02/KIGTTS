@@ -83,6 +83,9 @@
             android:exported="false"
             android:foregroundServiceType="microphone|mediaPlayback" />
         <service
+            android:name=".service.RealtimeHostService"
+            android:exported="false" />
+        <service
             android:name=".overlay.FloatingOverlayService"
             android:exported="false"
             android:foregroundServiceType="specialUse">

@@ -24,6 +24,7 @@ object UserPrefs {
     const val DRAWER_MODE_PERMANENT = 1
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
 
+    private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
     private val KEY_SYSTEM_TTS_ORDER = longPreferencesKey("system_tts_order")
     private val KEY_MUTE_WHILE_PLAYING = booleanPreferencesKey("mute_while_playing")
@@ -102,6 +103,27 @@ object UserPrefs {
         val speakerVerifyProfileCsv: String = "",
         val allowSystemAecWithAec3: Boolean = true
     )
+
+    suspend fun getLastAsrName(context: Context): String? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_LAST_ASR]?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun setLastAsrName(context: Context, name: String) {
+        context.dataStore.edit { prefs ->
+            if (name.isBlank()) {
+                prefs.remove(KEY_LAST_ASR)
+            } else {
+                prefs[KEY_LAST_ASR] = name
+            }
+        }
+    }
+
+    suspend fun clearLastAsrName(context: Context) {
+        context.dataStore.edit { prefs ->
+            prefs.remove(KEY_LAST_ASR)
+        }
+    }
 
     suspend fun getLastVoiceName(context: Context): String? {
         val prefs = context.dataStore.data.first()
