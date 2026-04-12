@@ -1,4 +1,4 @@
-package com.kgtts.app.ui
+package com.lhtstudio.kigtts.app.ui
 
 import android.Manifest
 import android.content.Context

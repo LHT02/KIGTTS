@@ -1,4 +1,4 @@
-package com.kgtts.app.service
+package com.lhtstudio.kigtts.app.service
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -11,7 +11,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import com.kgtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.AppLogger
 
 class KeepAliveService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null

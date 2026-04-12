@@ -1,13 +1,18 @@
-package com.kgtts.app.audio
+package com.lhtstudio.kigtts.app.audio
 
 import android.content.Context
+import android.content.Intent
 import android.media.*
 import android.media.audiofx.AcousticEchoCanceler
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -17,8 +22,9 @@ import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
-import com.kgtts.app.data.EspeakData
-import com.kgtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.data.EspeakData
+import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
+import com.lhtstudio.kigtts.app.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,7 +46,12 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.ln
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import java.util.Locale
 
 object AudioRoutePreference {
     const val INPUT_AUTO = 0
@@ -81,7 +92,13 @@ interface SpeechModuleFactory {
 
 object DefaultSpeechModuleFactory : SpeechModuleFactory {
     override fun createAsr(context: Context, modelDir: File): AsrModule = AsrEngine(context, modelDir)
-    override fun createTts(context: Context, packDir: File): TtsModule = PiperTtsEngine(context, packDir)
+    override fun createTts(context: Context, packDir: File): TtsModule {
+        return if (isSystemTtsVoiceDir(packDir)) {
+            SystemTtsEngine(context)
+        } else {
+            PiperTtsEngine(context, packDir)
+        }
+    }
 }
 
 class AsrEngine(private val context: Context, private val modelDir: File) : AsrModule {
@@ -481,6 +498,336 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
         val out = FloatArray(samples.size + silenceSamples)
         System.arraycopy(samples, 0, out, 0, samples.size)
         return out
+    }
+}
+
+private data class PendingSystemUtterance(
+    val file: File,
+    val doneLatch: CountDownLatch = CountDownLatch(1),
+    @Volatile var success: Boolean = false
+)
+
+class SystemTtsEngine(context: Context) : TtsModule {
+    companion object {
+        private const val INIT_STATUS_PENDING = Int.MIN_VALUE
+        private const val INIT_TIMEOUT_MS = 4000L
+    }
+
+    private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val initLatch = CountDownLatch(1)
+    private val synthLock = Any()
+    private val pendingUtterances = ConcurrentHashMap<String, PendingSystemUtterance>()
+    private val initStatus = AtomicInteger(INIT_STATUS_PENDING)
+    private val initFinalized = AtomicBoolean(false)
+    @Volatile private var initSuccess = false
+    @Volatile private var sentenceSilenceSec: Float = 0.0f
+    @Volatile private var speechRate: Float = 1.0f
+    @Volatile private var currentSampleRate: Int = 22050
+    @Volatile private var tts: TextToSpeech? = null
+    @Volatile private var selectedEnginePackage: String? = null
+
+    init {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            initializeOnMainThread()
+        } else {
+            val posted = mainHandler.post {
+                initializeOnMainThread()
+            }
+            if (!posted) {
+                initLatch.countDown()
+                throw IllegalStateException("系统 TTS 初始化失败")
+            }
+        }
+        waitForInit()
+    }
+
+    override val sampleRate: Int
+        get() = currentSampleRate
+
+    override fun setSynthesisTuning(
+        noiseScale: Float,
+        lengthScale: Float,
+        noiseW: Float,
+        sentenceSilenceSec: Float
+    ) {
+        this.sentenceSilenceSec = sentenceSilenceSec.coerceIn(0f, 2f)
+        this.speechRate = (1f / lengthScale.coerceIn(0.1f, 5f)).coerceIn(0.2f, 4f)
+    }
+
+    override fun synthesize(text: String): FloatArray = synthesizeInternal(text, null)
+
+    override fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray {
+        return synthesizeInternal(text, sentenceSilenceSec.coerceAtLeast(0f))
+    }
+
+    private fun synthesizeInternal(text: String, sentenceSilenceOverride: Float?): FloatArray {
+        val content = text.trim()
+        if (content.isEmpty()) return FloatArray(0)
+        waitForInit()
+        val currentTts = tts ?: throw IllegalStateException("系统 TTS 不可用")
+        synchronized(synthLock) {
+            currentTts.setSpeechRate(speechRate)
+            val outFile = File.createTempFile("system_tts_", ".wav", appContext.cacheDir)
+            val utteranceId = "system-tts-${System.nanoTime()}"
+            val pending = PendingSystemUtterance(outFile)
+            pendingUtterances[utteranceId] = pending
+            val result = currentTts.synthesizeToFile(content, Bundle(), outFile, utteranceId)
+            if (result != TextToSpeech.SUCCESS) {
+                pendingUtterances.remove(utteranceId)
+                outFile.delete()
+                throw IllegalStateException("系统 TTS 合成失败")
+            }
+            if (!pending.doneLatch.await(20, TimeUnit.SECONDS) || !pending.success) {
+                pendingUtterances.remove(utteranceId)
+                outFile.delete()
+                throw IllegalStateException("系统 TTS 合成超时")
+            }
+            val (sr, samples) = readWavToMonoFloat(outFile)
+            outFile.delete()
+            currentSampleRate = sr
+            val silenceSec = sentenceSilenceOverride ?: sentenceSilenceSec
+            return appendSentenceSilence(samples, silenceSec, sr)
+        }
+    }
+
+    private fun waitForInit() {
+        if (!initLatch.await(5, TimeUnit.SECONDS) || !initSuccess) {
+            throw IllegalStateException("系统 TTS 初始化失败")
+        }
+    }
+
+    private fun initializeOnMainThread() {
+        if (!initFinalized.compareAndSet(false, true)) return
+        try {
+            val candidates = buildEngineCandidates()
+            AppLogger.i(
+                "SystemTtsEngine candidates=" +
+                    candidates.joinToString(prefix = "[", postfix = "]") { it ?: "<default>" }
+            )
+            tryCreateEngineAsync(candidates, 0)
+        } catch (e: Throwable) {
+            finishInit(false)
+            AppLogger.e("SystemTtsEngine create failed", e)
+        }
+    }
+
+    private fun buildEngineCandidates(): List<String?> {
+        val candidates = LinkedHashSet<String?>()
+        val configured = runCatching {
+            Settings.Secure.getString(appContext.contentResolver, Settings.Secure.TTS_DEFAULT_SYNTH)
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+        }.getOrNull()
+        if (configured != null) {
+            candidates += configured
+        }
+        candidates += null
+        val services = runCatching {
+            @Suppress("DEPRECATION")
+            appContext.packageManager.queryIntentServices(
+                Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE),
+                0
+            )
+        }.getOrNull().orEmpty()
+        services.mapNotNullTo(candidates) { it.serviceInfo?.packageName?.takeIf(String::isNotBlank) }
+        return candidates.toList()
+    }
+
+    private fun finishInit(success: Boolean) {
+        if (initLatch.count == 0L) return
+        initSuccess = success
+        initLatch.countDown()
+    }
+
+    private fun tryCreateEngineAsync(candidates: List<String?>, index: Int) {
+        if (index >= candidates.size) {
+            finishInit(false)
+            return
+        }
+        val enginePackage = candidates[index]
+        val finished = AtomicBoolean(false)
+        var instance: TextToSpeech? = null
+        lateinit var timeoutRunnable: Runnable
+
+        fun tryNextOrFinish() {
+            tryCreateEngineAsync(candidates, index + 1)
+        }
+
+        fun handleResult(status: Int) {
+            if (!finished.compareAndSet(false, true)) return
+            mainHandler.removeCallbacks(timeoutRunnable)
+            val currentInstance = instance
+            if (status != TextToSpeech.SUCCESS || currentInstance == null) {
+                AppLogger.e("SystemTtsEngine init status=$status engine=${enginePackage ?: "<default>"}")
+                currentInstance?.shutdown()
+                tryNextOrFinish()
+                return
+            }
+            selectedEnginePackage = enginePackage
+            initStatus.set(status)
+            tts = currentInstance
+            val configured = configureInitializedEngine(currentInstance)
+            if (configured) {
+                AppLogger.i(
+                    "SystemTtsEngine init success engine=${selectedEnginePackage ?: "<default>"}"
+                )
+                finishInit(true)
+            } else {
+                currentInstance.shutdown()
+                tts = null
+                tryNextOrFinish()
+            }
+        }
+
+        timeoutRunnable = Runnable {
+            if (!finished.compareAndSet(false, true)) return@Runnable
+            AppLogger.e("SystemTtsEngine init timeout engine=${enginePackage ?: "<default>"}")
+            instance?.shutdown()
+            tryNextOrFinish()
+        }
+
+        val statusCallback: (Int) -> Unit = { status ->
+            mainHandler.post {
+                if (instance == null) {
+                    mainHandler.post { handleResult(status) }
+                } else {
+                    handleResult(status)
+                }
+            }
+        }
+
+        try {
+            instance = if (enginePackage.isNullOrBlank()) {
+                TextToSpeech(appContext) { status ->
+                    statusCallback(status)
+                }
+            } else {
+                TextToSpeech(appContext, { status ->
+                    statusCallback(status)
+                }, enginePackage)
+            }
+            mainHandler.postDelayed(timeoutRunnable, INIT_TIMEOUT_MS)
+        } catch (e: Throwable) {
+            AppLogger.e(
+                "SystemTtsEngine create failed engine=${enginePackage ?: "<default>"}",
+                e
+            )
+            tryNextOrFinish()
+        }
+    }
+
+    private fun configureInitializedEngine(currentTts: TextToSpeech): Boolean {
+        return try {
+            val targetLocale = Locale.getDefault()
+            if (currentTts.isLanguageAvailable(targetLocale) >= TextToSpeech.LANG_AVAILABLE) {
+                currentTts.language = targetLocale
+            }
+            currentTts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) = Unit
+
+                override fun onDone(utteranceId: String?) {
+                    utteranceId?.let { id ->
+                        pendingUtterances.remove(id)?.apply {
+                            success = true
+                            doneLatch.countDown()
+                        }
+                    }
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    utteranceId?.let { id ->
+                        pendingUtterances.remove(id)?.doneLatch?.countDown()
+                    }
+                }
+
+                override fun onError(utteranceId: String?, errorCode: Int) {
+                    utteranceId?.let { id ->
+                        pendingUtterances.remove(id)?.doneLatch?.countDown()
+                    }
+                }
+            })
+            true
+        } catch (e: Throwable) {
+            AppLogger.e("SystemTtsEngine init failed", e)
+            false
+        }
+    }
+
+    private fun appendSentenceSilence(samples: FloatArray, sec: Float, sampleRate: Int): FloatArray {
+        val silenceSec = sec.coerceAtLeast(0f)
+        if (silenceSec <= 0f || samples.isEmpty()) return samples
+        val silenceSamples = (sampleRate * silenceSec).roundToInt()
+        if (silenceSamples <= 0) return samples
+        val out = FloatArray(samples.size + silenceSamples)
+        System.arraycopy(samples, 0, out, 0, samples.size)
+        return out
+    }
+
+    private fun readWavToMonoFloat(file: File): Pair<Int, FloatArray> {
+        val bytes = file.readBytes()
+        fun leInt(offset: Int): Int {
+            return (bytes[offset].toInt() and 0xff) or
+                    ((bytes[offset + 1].toInt() and 0xff) shl 8) or
+                    ((bytes[offset + 2].toInt() and 0xff) shl 16) or
+                    ((bytes[offset + 3].toInt() and 0xff) shl 24)
+        }
+        fun leShort(offset: Int): Int {
+            return (bytes[offset].toInt() and 0xff) or
+                    ((bytes[offset + 1].toInt() and 0xff) shl 8)
+        }
+
+        if (bytes.size < 44 || String(bytes, 0, 4) != "RIFF" || String(bytes, 8, 4) != "WAVE") {
+            throw IllegalStateException("系统 TTS 输出格式不支持")
+        }
+
+        var offset = 12
+        var sampleRate = 22050
+        var channels = 1
+        var bitsPerSample = 16
+        var format = 1
+        var dataOffset = -1
+        var dataSize = 0
+        while (offset + 8 <= bytes.size) {
+            val chunkId = String(bytes, offset, 4)
+            val chunkSize = leInt(offset + 4)
+            val chunkData = offset + 8
+            if (chunkData + chunkSize > bytes.size) break
+            when (chunkId) {
+                "fmt " -> {
+                    format = leShort(chunkData)
+                    channels = leShort(chunkData + 2).coerceAtLeast(1)
+                    sampleRate = leInt(chunkData + 4).coerceAtLeast(8000)
+                    bitsPerSample = leShort(chunkData + 14)
+                }
+                "data" -> {
+                    dataOffset = chunkData
+                    dataSize = chunkSize
+                }
+            }
+            offset = chunkData + chunkSize + (chunkSize and 1)
+        }
+        if (dataOffset < 0 || dataSize <= 0) {
+            throw IllegalStateException("系统 TTS 输出无音频数据")
+        }
+        if (format != 1 || bitsPerSample != 16) {
+            throw IllegalStateException("系统 TTS 输出格式不支持")
+        }
+        val frameCount = dataSize / (channels * 2)
+        val out = FloatArray(frameCount)
+        var cursor = dataOffset
+        for (i in 0 until frameCount) {
+            var mixed = 0f
+            repeat(channels) {
+                val sample = leShort(cursor)
+                val signed = if (sample >= 0x8000) sample - 0x10000 else sample
+                mixed += (signed / 32768f)
+                cursor += 2
+            }
+            out[i] = (mixed / channels.toFloat()).coerceIn(-1f, 1f)
+        }
+        return sampleRate to out
     }
 }
 
@@ -1442,7 +1789,13 @@ class RealtimeController(
                 }
             } catch (e: Throwable) {
                 AppLogger.e("TTS load failed", e)
-                notifyError("TTS 加载失败: ${e.message}")
+                notifyError(
+                    if (isSystemTtsVoiceDir(voiceDir)) {
+                        "系统 TTS 初始化失败，请先完成系统 TTS 设置"
+                    } else {
+                        "TTS 加载失败: ${e.message}"
+                    }
+                )
                 return@withLock false
             }
             true

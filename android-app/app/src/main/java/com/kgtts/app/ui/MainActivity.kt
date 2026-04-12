@@ -1,11 +1,13 @@
-package com.kgtts.app.ui
+package com.lhtstudio.kigtts.app.ui
 
 import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.res.Configuration
@@ -19,11 +21,13 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
@@ -86,9 +90,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.Camera
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.TorchState
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.animateFloatAsState
@@ -134,6 +140,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
@@ -191,39 +198,52 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.kgtts.app.R
+import com.lhtstudio.kigtts.app.R
 import com.canhub.cropper.CropImageContract
 import com.canhub.cropper.CropImageContractOptions
 import com.canhub.cropper.CropImageOptions
 import com.canhub.cropper.CropImageView
-import com.kgtts.app.audio.AudioRoutePreference
-import com.kgtts.app.audio.AudioDenoiserMode
-import com.kgtts.app.audio.AudioLoopbackTester
-import com.kgtts.app.audio.AudioTestConfig
-import com.kgtts.app.audio.RealtimeController
-import com.kgtts.app.audio.SpeakerEnrollResult
-import com.kgtts.app.data.ModelRepository
-import com.kgtts.app.data.VoicePackInfo
-import com.kgtts.app.data.UserPrefs
-import com.kgtts.app.overlay.FloatingOverlayService
-import com.kgtts.app.overlay.OverlayBridge
-import com.kgtts.app.overlay.RealtimeOwnerGate
-import com.kgtts.app.overlay.RealtimeRuntimeBridge
-import com.kgtts.app.service.KeepAliveService
-import com.kgtts.app.util.AppLogger
-import com.kgtts.app.util.QuickCardRenderCache
+import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
+import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
+import com.lhtstudio.kigtts.app.audio.AudioLoopbackTester
+import com.lhtstudio.kigtts.app.audio.AudioTestConfig
+import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
+import com.lhtstudio.kigtts.app.data.ModelRepository
+import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
+import com.lhtstudio.kigtts.app.data.VoicePackInfo
+import com.lhtstudio.kigtts.app.data.UserPrefs
+import com.lhtstudio.kigtts.app.data.VoicePackMeta
+import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
+import com.lhtstudio.kigtts.app.overlay.FloatingOverlayService
+import com.lhtstudio.kigtts.app.overlay.OverlayBridge
+import com.lhtstudio.kigtts.app.overlay.RealtimeOwnerGate
+import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
+import com.lhtstudio.kigtts.app.service.KeepAliveService
+import com.lhtstudio.kigtts.app.service.RealtimeHostService
+import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
+import com.google.android.gms.tasks.Task
+import com.google.mlkit.vision.barcode.BarcodeScanner
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.common.InputImage
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
+import com.google.zxing.InvertedLuminanceSource
+import com.google.zxing.LuminanceSource
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -248,6 +268,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.atan2
@@ -279,6 +300,65 @@ private fun softInputModeSummary(mode: Int): String {
     return "adjust=$adjust,state=$state,raw=0x${mode.toString(16)}"
 }
 
+private val qrDecodeHints: Map<DecodeHintType, Any> = mapOf(
+    DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+    DecodeHintType.TRY_HARDER to true
+)
+
+private fun createQrMlKitScanner(): BarcodeScanner {
+    val options = BarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+        .enableAllPotentialBarcodes()
+        .build()
+    return BarcodeScanning.getClient(options)
+}
+
+private fun Iterable<Barcode>.decodedQrTexts(): List<String> {
+    return mapNotNull { barcode ->
+        barcode.rawValue?.trim()?.takeIf { it.isNotEmpty() }
+            ?: barcode.displayValue?.trim()?.takeIf { it.isNotEmpty() }
+    }.distinct()
+}
+
+private fun Iterable<Barcode>.firstDecodedQrText(): String? {
+    return decodedQrTexts().firstOrNull()
+}
+
+private fun decodeQrWithZxing(source: LuminanceSource): String? {
+    val variants = arrayOf(
+        BinaryBitmap(HybridBinarizer(source)),
+        BinaryBitmap(GlobalHistogramBinarizer(source)),
+        BinaryBitmap(HybridBinarizer(InvertedLuminanceSource(source))),
+        BinaryBitmap(GlobalHistogramBinarizer(InvertedLuminanceSource(source)))
+    )
+    for (bitmap in variants) {
+        val reader = MultiFormatReader().apply { setHints(qrDecodeHints) }
+        val text = runCatching { reader.decodeWithState(bitmap)?.text }
+            .getOrNull()
+            ?.trim()
+            .takeIf { !it.isNullOrEmpty() }
+        reader.reset()
+        if (text != null) return text
+    }
+    return null
+}
+
+private suspend fun <T> awaitTask(task: Task<T>): T? = suspendCancellableCoroutine { cont ->
+    task.addOnSuccessListener { result ->
+        if (cont.isActive) cont.resume(result)
+    }
+    task.addOnFailureListener {
+        if (cont.isActive) cont.resume(null)
+    }
+    task.addOnCanceledListener {
+        if (cont.isActive) cont.resume(null)
+    }
+}
+
+private const val WECHAT_PACKAGE_NAME = "com.tencent.mm"
+private const val WECHAT_LAUNCHER_ACTIVITY = "com.tencent.mm.ui.LauncherUI"
+private const val WECHAT_BROWSER_FALLBACK_URL = "https://weixin.qq.com/"
+
 private fun normalizeQrTextToWebUrl(raw: String): String? {
     val text = raw.trim()
     if (text.isEmpty()) return null
@@ -288,6 +368,71 @@ private fun normalizeQrTextToWebUrl(raw: String): String? {
     if (scheme.isNotEmpty()) return null
     if (text.contains(Regex("\\s"))) return null
     return "https://$text"
+}
+
+private fun isWeChatQrContent(raw: String): Boolean {
+    val text = raw.trim()
+    if (text.isEmpty()) return false
+    val parsed = runCatching { Uri.parse(text) }.getOrNull()
+    val scheme = parsed?.scheme?.lowercase(Locale.US).orEmpty()
+    val host = parsed?.host?.lowercase(Locale.US).orEmpty()
+    if (scheme == "weixin" || scheme == "wxp" || scheme == "wxpay") return true
+    if (host == "weixin.qq.com" || host.endsWith(".weixin.qq.com")) return true
+    if (host == "u.wechat.com" || host.endsWith(".u.wechat.com")) return true
+    if (host == "wx.tenpay.com" || host.endsWith(".wx.tenpay.com")) return true
+    if (host == "payapp.weixin.qq.com" || host.endsWith(".payapp.weixin.qq.com")) return true
+    val lower = text.lowercase(Locale.US)
+    return lower.startsWith("https://u.wechat.com/") ||
+        lower.startsWith("http://u.wechat.com/") ||
+        lower.startsWith("https://weixin.qq.com/") ||
+        lower.startsWith("http://weixin.qq.com/") ||
+        lower.startsWith("https://wx.tenpay.com/") ||
+        lower.startsWith("http://wx.tenpay.com/")
+}
+
+private fun isPackageInstalled(context: Context, packageName: String): Boolean {
+    return runCatching {
+        @Suppress("DEPRECATION")
+        context.packageManager.getPackageInfo(packageName, 0)
+        true
+    }.getOrElse { false }
+}
+
+private fun launchWeChatScanner(context: Context): Boolean {
+    val explicit = Intent().apply {
+        setClassName(WECHAT_PACKAGE_NAME, WECHAT_LAUNCHER_ACTIVITY)
+        putExtra("LauncherUI.From.Scaner.Shortcut", true)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    if (runCatching {
+            context.startActivity(explicit)
+            true
+        }.getOrDefault(false)
+    ) {
+        return true
+    }
+    val launchIntent = context.packageManager.getLaunchIntentForPackage(WECHAT_PACKAGE_NAME)?.apply {
+        putExtra("LauncherUI.From.Scaner.Shortcut", true)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return runCatching {
+        if (launchIntent != null) {
+            context.startActivity(launchIntent)
+            true
+        } else {
+            false
+        }
+    }.getOrDefault(false)
+}
+
+private fun openExternalBrowser(context: Context, url: String): Boolean {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    return runCatching {
+        context.startActivity(intent)
+        true
+    }.getOrDefault(false)
 }
 
 private fun normalizeDrawingSaveRelativePath(raw: String): String {
@@ -342,6 +487,17 @@ private fun drawingRelativePathFromTreeUri(uri: android.net.Uri): String? {
 
 private const val QUICK_SUBTITLE_CLEARED_HINT = "我不太方便说话，请等我一下……"
 
+private const val SYSTEM_TTS_DEFAULT_LABEL = "系统 TTS"
+private const val SYSTEM_TTS_DEFAULT_REMARK = "使用 Android 系统语音服务"
+
+private fun sortVoicePacks(items: List<VoicePackInfo>): List<VoicePackInfo> {
+    return items.sortedWith(
+        compareByDescending<VoicePackInfo> { it.meta.pinned }
+            .thenBy { it.meta.order }
+            .thenBy { it.meta.name }
+    )
+}
+
 data class UiState(
     val asrDir: File? = null,
     val voiceDir: File? = null,
@@ -365,7 +521,7 @@ data class UiState(
     val piperLengthScale: Float = 1.0f,
     val piperNoiseW: Float = 0.8f,
     val piperSentenceSilence: Float = 0.2f,
-    val keepAlive: Boolean = false,
+    val keepAlive: Boolean = true,
     val numberReplaceMode: Int = 0,
     val landscapeDrawerMode: Int = UserPrefs.DRAWER_MODE_PERMANENT,
     val solidTopBar: Boolean = true,
@@ -409,7 +565,18 @@ data class RecognizedItem(
 data class ExternalQuickSubtitleRequest(
     val requestId: Long,
     val target: String,
-    val text: String
+    val text: String,
+    val navigateToPage: Boolean = true
+)
+
+data class ExternalRecordAudioPermissionRequest(
+    val requestId: Long,
+    val startRealtimeOnGrant: Boolean = false
+)
+
+data class ExternalVoicePackInstallRequest(
+    val requestId: Long,
+    val message: String
 )
 
 private fun isOverlayOpenTarget(target: String): Boolean {
@@ -541,8 +708,18 @@ class MainViewModel(
         private set
     var pendingQuickSubtitleLaunchRequest by mutableStateOf<ExternalQuickSubtitleRequest?>(null)
         private set
+    var pendingVoicePackInstallRequest by mutableStateOf<ExternalVoicePackInstallRequest?>(null)
+        private set
+    var pendingRecordAudioPermissionRequest by mutableStateOf<ExternalRecordAudioPermissionRequest?>(null)
+        private set
 
-    private var controller: RealtimeController? = null
+    private var realtimeHost: RealtimeHostService? = null
+    private var hostStateJob: Job? = null
+    private var hostQuickSubtitleJob: Job? = null
+    private var pendingHostAsrDir: File? = null
+    private var pendingHostVoiceDir: File? = null
+    private var pendingHostStartRequest = false
+
     private val audioTest = AudioLoopbackTester(appContext, viewModelScope) { snapshot ->
         viewModelScope.launch(Dispatchers.Main) {
             uiState = uiState.copy(
@@ -700,6 +877,74 @@ class MainViewModel(
         observeSettingsChanges()
     }
 
+    fun attachRealtimeHost(service: RealtimeHostService) {
+        if (realtimeHost === service) return
+        detachRealtimeHost()
+        realtimeHost = service
+        service.setQuickSubtitlePlayOnSend(quickSubtitlePlayOnSend)
+        hostStateJob = viewModelScope.launch {
+            service.stateFlow().collectLatest { snapshot ->
+                realtimeRecognized = snapshot.recognized
+                realtimeInputLevel = snapshot.inputLevel.coerceIn(0f, 1f)
+                realtimePlaybackProgress = snapshot.playbackProgress.coerceIn(0f, 1f)
+                uiState = uiState.copy(
+                    asrDir = snapshot.asrDir,
+                    voiceDir = snapshot.voiceDir,
+                    recognized = snapshot.recognized,
+                    running = snapshot.running,
+                    status = if (snapshot.status.isNotBlank()) snapshot.status else uiState.status,
+                    aec3Status = snapshot.aec3Status,
+                    aec3Diag = snapshot.aec3Diag,
+                    pushToTalkPressed = snapshot.pushToTalkPressed,
+                    pushToTalkStreamingText = snapshot.pushToTalkStreamingText,
+                    speakerLastSimilarity = snapshot.speakerLastSimilarity,
+                    inputDeviceLabel = snapshot.inputDeviceLabel.ifBlank { uiState.inputDeviceLabel },
+                    outputDeviceLabel = snapshot.outputDeviceLabel.ifBlank { uiState.outputDeviceLabel }
+                )
+            }
+        }
+        hostQuickSubtitleJob = viewModelScope.launch {
+            service.quickSubtitleRequestFlow().collectLatest { request ->
+                pendingQuickSubtitleLaunchRequest = request
+            }
+        }
+        pendingHostAsrDir?.let { dir ->
+            viewModelScope.launch {
+                service.updateSelectedAsrDir(dir, preload = true)
+                pendingHostAsrDir = null
+            }
+        }
+        pendingHostVoiceDir?.let { dir ->
+            viewModelScope.launch {
+                service.updateSelectedVoiceDir(dir, preload = true)
+                pendingHostVoiceDir = null
+            }
+        }
+        if (pendingHostStartRequest) {
+            pendingHostStartRequest = false
+            service.startRealtime()
+        }
+        refreshVoicePacks()
+    }
+
+    fun detachRealtimeHost() {
+        hostStateJob?.cancel()
+        hostStateJob = null
+        hostQuickSubtitleJob?.cancel()
+        hostQuickSubtitleJob = null
+        realtimeHost = null
+    }
+
+    private fun requestRealtimeHost(status: String? = null): RealtimeHostService? {
+        val host = realtimeHost
+        if (host != null) return host
+        RealtimeHostService.ensureStarted(appContext)
+        if (status != null) {
+            uiState = uiState.copy(status = status)
+        }
+        return null
+    }
+
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
         speakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv)
             .take(MAX_SPEAKER_PROFILES)
@@ -789,7 +1034,7 @@ class MainViewModel(
         for (i in 0 until groupsArr.length()) {
             val g = groupsArr.optJSONObject(i) ?: continue
             val id = g.optLong("id", i.toLong() + 1L).coerceAtLeast(1L)
-            val title = g.optString("title", "未命名分组").ifBlank { "未命名分组" }
+            val title = g.optString("title", "").trim()
             val icon = g.optString("icon", "sentiment_satisfied").ifBlank { "sentiment_satisfied" }
             val itemsArr = g.optJSONArray("items") ?: JSONArray()
             val items = mutableListOf<String>()
@@ -916,7 +1161,8 @@ class MainViewModel(
     fun handleQuickSubtitleLaunchRequest(
         requestId: Long,
         target: String,
-        text: String
+        text: String,
+        navigateToPage: Boolean = true
     ) {
         val normalized = text.trim()
         if (requestId == lastHandledQuickSubtitleLaunchRequestId) return
@@ -925,13 +1171,41 @@ class MainViewModel(
         pendingQuickSubtitleLaunchRequest = ExternalQuickSubtitleRequest(
             requestId = requestId,
             target = target,
-            text = normalized
+            text = normalized,
+            navigateToPage = navigateToPage
         )
     }
 
     fun consumeQuickSubtitleLaunchRequest(requestId: Long) {
         if (pendingQuickSubtitleLaunchRequest?.requestId == requestId) {
             pendingQuickSubtitleLaunchRequest = null
+        }
+        realtimeHost?.consumeQuickSubtitleRequest(requestId)
+    }
+
+    private fun requestVoicePackInstallNavigation(message: String) {
+        pendingVoicePackInstallRequest = ExternalVoicePackInstallRequest(
+            requestId = SystemClock.uptimeMillis(),
+            message = message
+        )
+    }
+
+    fun consumeVoicePackInstallRequest(requestId: Long) {
+        if (pendingVoicePackInstallRequest?.requestId == requestId) {
+            pendingVoicePackInstallRequest = null
+        }
+    }
+
+    fun requestRecordAudioPermission(startRealtimeOnGrant: Boolean = false) {
+        pendingRecordAudioPermissionRequest = ExternalRecordAudioPermissionRequest(
+            requestId = SystemClock.uptimeMillis(),
+            startRealtimeOnGrant = startRealtimeOnGrant
+        )
+    }
+
+    fun consumeRecordAudioPermissionRequest(requestId: Long) {
+        if (pendingRecordAudioPermissionRequest?.requestId == requestId) {
+            pendingRecordAudioPermissionRequest = null
         }
     }
 
@@ -943,20 +1217,14 @@ class MainViewModel(
             }
             OverlayBridge.TARGET_INPUT -> {
                 if (normalized.isEmpty()) return
-                appendRecognizedHistory(normalized)
                 quickSubtitleInputCollapsed = false
                 quickSubtitleInputText = normalized
                 saveQuickSubtitleConfig()
             }
             else -> {
                 if (normalized.isEmpty()) return
-                if (!quickSubtitlePlayOnSend) {
-                    appendRecognizedHistory(normalized)
-                    applyQuickSubtitleText(normalized, enqueueSpeak = false)
-                } else {
-                    applyQuickSubtitleText(normalized, enqueueSpeak = false)
-                    enqueuePttSpeakAndAppendHistory(normalized)
-                }
+                quickSubtitleCurrentText = normalized
+                saveQuickSubtitleConfig()
             }
         }
     }
@@ -976,6 +1244,7 @@ class MainViewModel(
 
     fun updateQuickSubtitlePlayOnSend(enabled: Boolean) {
         quickSubtitlePlayOnSend = enabled
+        realtimeHost?.setQuickSubtitlePlayOnSend(enabled)
         saveQuickSubtitleConfig()
     }
 
@@ -1007,7 +1276,7 @@ class MainViewModel(
         val next = quickSubtitleGroups.toMutableList()
         val prev = next[index]
         next[index] = prev.copy(
-            title = title.trim().ifEmpty { "未命名分组" },
+            title = title.trim(),
             icon = icon.ifBlank { "sentiment_satisfied" }
         )
         quickSubtitleGroups = next
@@ -1436,176 +1705,153 @@ class MainViewModel(
             val pixels = IntArray(width * height)
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
             val source = RGBLuminanceSource(width, height, pixels)
-            val binary = BinaryBitmap(HybridBinarizer(source))
-            val hints = mapOf(
-                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)
-            )
-            MultiFormatReader().decode(binary, hints)?.text
+            decodeQrWithZxing(source)
         }.getOrNull()
     }
 
     suspend fun decodeQrContentFromBitmap(bitmap: Bitmap): String? = withContext(Dispatchers.IO) {
+        val mlKit = createQrMlKitScanner()
+        try {
+            val mlResult = awaitTask(mlKit.process(InputImage.fromBitmap(bitmap, 0)))
+                ?.firstDecodedQrText()
+            if (!mlResult.isNullOrEmpty()) {
+                return@withContext mlResult
+            }
+        } finally {
+            runCatching { mlKit.close() }
+        }
         decodeQrContentFromBitmapInternal(bitmap)
     }
 
     suspend fun decodeQrContentFromImage(uri: android.net.Uri): String? = withContext(Dispatchers.IO) {
+        val mlKit = createQrMlKitScanner()
+        try {
+            val inputImage = runCatching { InputImage.fromFilePath(appContext, uri) }.getOrNull()
+            if (inputImage != null) {
+                val mlResult = awaitTask(mlKit.process(inputImage))?.firstDecodedQrText()
+                if (!mlResult.isNullOrEmpty()) {
+                    return@withContext mlResult
+                }
+            }
+        } finally {
+            runCatching { mlKit.close() }
+        }
         val bmp = runCatching {
             appContext.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
         }.getOrNull() ?: return@withContext null
         decodeQrContentFromBitmapInternal(bmp)
     }
 
-    private fun ensureController(): RealtimeController {
-        controller?.let { return it }
-        val created = RealtimeController(
-            appContext,
-            viewModelScope,
-            onResult = { id, text ->
-                val normalized = text.trim()
-                val isPttConfirmPressed =
-                    uiState.pushToTalkMode &&
-                    uiState.pushToTalkConfirmInputMode &&
-                    uiState.pushToTalkPressed
-                // PTT确认模式下彻底解耦：
-                // - 流式/最终识别只更新PTT会话文本
-                // - 主历史与任务只在松手提交
-                if (!isPttConfirmPressed && normalized.isNotEmpty()) {
-                    appendRecognizedHistory(normalized, id)
-                }
-                if (uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode) {
-                    if (uiState.pushToTalkPressed && normalized.isNotEmpty()) {
-                        // 合并“流式片段 + 最终片段”，避免覆盖导致丢字。
-                        appendPttFinalTranscript(normalized)
-                    }
-                } else if (uiState.asrSendToQuickSubtitle) {
-                    if (normalized.isNotEmpty() && normalized != quickSubtitleCurrentText) {
-                        quickSubtitleCurrentText = normalized
-                    }
-                }
-            },
-            onStreamingResult = { text ->
-                val normalized = text.trim()
-                if (normalized.isEmpty()) return@RealtimeController
-                if (uiState.pushToTalkMode &&
-                    uiState.pushToTalkConfirmInputMode &&
-                    uiState.pushToTalkPressed
-                ) {
-                    // 流式阶段只刷新预览，不直接累加到最终会话文本，
-                    // 避免同一片段被反复拼接。
-                    updatePttPreviewTranscript(normalized)
-                }
-            },
-            onProgress = { id, progress ->
-                val items = realtimeRecognized
-                val idx = items.indexOfFirst { it.id == id }
-                if (idx >= 0) {
-                    val current = items[idx]
-                    val nextProgress = maxOf(current.progress, progress.coerceIn(0f, 1f))
-                    val progressDelta = nextProgress - current.progress
-                    val now = SystemClock.elapsedRealtime()
-                    val last = lastProgressUpdateAtMs[id] ?: 0L
-                    val intervalReady = (now - last) >= PROGRESS_UPDATE_INTERVAL_MS || nextProgress >= 0.99f
-                    if (progressDelta >= PROGRESS_UPDATE_DELTA && intervalReady) {
-                        lastProgressUpdateAtMs[id] = now
-                        val updated = current.copy(progress = nextProgress)
-                        val next = items.toMutableList()
-                        next[idx] = updated
-                        realtimeRecognized = next
-                    }
-                }
-                realtimePlaybackProgress = progress.coerceIn(0f, 1f)
-            },
-            onLevel = { level ->
-                val next = level.coerceIn(0f, 1f)
-                val now = SystemClock.elapsedRealtime()
-                val prev = realtimeInputLevel
-                val delta = kotlin.math.abs(prev - next)
-                val intervalReady = (now - lastLevelUpdateAtMs) >= LEVEL_UPDATE_INTERVAL_MS
-                if (delta >= LEVEL_UPDATE_DELTA || intervalReady) {
-                    realtimeInputLevel = next
-                    lastLevelUpdateAtMs = now
-                }
-            },
-            onInputDevice = { label ->
-                if (label != uiState.inputDeviceLabel) {
-                    uiState = uiState.copy(inputDeviceLabel = label)
-                }
-            },
-            onOutputDevice = { label ->
-                if (label != uiState.outputDeviceLabel) {
-                    uiState = uiState.copy(outputDeviceLabel = label)
-                }
-            },
-            onAec3Status = { status ->
-                if (status != uiState.aec3Status) {
-                    uiState = uiState.copy(aec3Status = status)
-                }
-            },
-            onAec3Diag = { diag ->
-                if (diag != uiState.aec3Diag) {
-                    uiState = uiState.copy(aec3Diag = diag)
-                }
-            },
-            onSpeakerVerify = { similarity, passed ->
-                uiState = uiState.copy(speakerLastSimilarity = similarity)
-                if (!passed && uiState.speakerVerifyEnabled) {
-                    val msg = "说话人验证未通过(${String.format("%.2f", similarity)})"
-                    if (uiState.status != msg) {
-                        uiState = uiState.copy(status = msg)
-                    }
-                }
-            },
-            onError = { msg -> uiState = uiState.copy(status = msg, running = false) },
-            initialSuppressWhilePlaying = uiState.muteWhilePlaying,
-            initialUseVoiceCommunication = uiState.echoSuppression,
-            initialCommunicationMode = uiState.communicationMode,
-            initialMinVolumePercent = uiState.minVolumePercent,
-            initialPlaybackGainPercent = uiState.playbackGainPercent,
-            initialPiperNoiseScale = uiState.piperNoiseScale,
-            initialPiperLengthScale = uiState.piperLengthScale,
-            initialPiperNoiseW = 0.8f,
-            initialPiperSentenceSilenceSec = uiState.piperSentenceSilence,
-            initialSuppressDelaySec = uiState.muteWhilePlayingDelaySec,
-            initialPreferredInputType = uiState.preferredInputType,
-            initialPreferredOutputType = uiState.preferredOutputType,
-            initialUseAec3 = uiState.aec3Enabled,
-            initialDenoiserMode = uiState.denoiserMode,
-            initialNumberReplaceMode = uiState.numberReplaceMode,
-            initialAllowSystemAecWithAec3 = true,
-            initialSpeakerVerifyEnabled = uiState.speakerVerifyEnabled,
-            initialSpeakerVerifyThreshold = uiState.speakerVerifyThreshold,
-            initialSpeakerProfiles = speakerProfiles.map { it.vector.copyOf() }
-        )
-        created.setPushToTalkStreamingEnabled(
-            uiState.pushToTalkMode &&
-                    uiState.pushToTalkConfirmInputMode &&
-                    uiState.pushToTalkPressed
-        )
-        created.setSuppressAsrAutoSpeak(
-            uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode
-        )
-        controller = created
-        return created
-    }
-
     private fun preloadAsr(asrDir: File?) {
         if (asrDir == null) return
-        val activeController = ensureController()
+        val host = realtimeHost
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                activeController.loadAsr(asrDir)
+            if (host != null) {
+                host.updateSelectedAsrDir(asrDir, preload = true)
+            } else {
+                pendingHostAsrDir = asrDir
+                requestRealtimeHost()
             }
         }
     }
 
     private fun preloadTts(voiceDir: File?) {
         if (voiceDir == null) return
-        val activeController = ensureController()
+        val host = realtimeHost
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                activeController.loadTts(voiceDir)
+            val loaded = if (host != null) {
+                host.updateSelectedVoiceDir(voiceDir, preload = true)
+                true
+            } else {
+                pendingHostVoiceDir = voiceDir
+                requestRealtimeHost()
+                true
+            }
+            if (!loaded && uiState.voiceDir?.absolutePath == voiceDir.absolutePath) {
+                uiState = uiState.copy(
+                    status = if (isSystemTtsVoiceDir(voiceDir)) {
+                        "系统 TTS 初始化失败，请先完成系统 TTS 设置"
+                    } else {
+                        "音色包加载失败"
+                    }
+                )
             }
         }
+    }
+
+    fun openSystemTtsSetup(context: Context) {
+        val intents = listOf(
+            android.content.Intent(android.speech.tts.TextToSpeech.Engine.ACTION_CHECK_TTS_DATA),
+            android.content.Intent("com.android.settings.TTS_SETTINGS")
+        )
+        for (intent in intents) {
+            val resolved = runCatching {
+                context.packageManager.resolveActivity(intent, 0)
+            }.getOrNull()
+            if (resolved != null) {
+                runCatching {
+                    context.startActivity(intent.apply {
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    })
+                }.onSuccess { return }.onFailure {
+                    AppLogger.e("openSystemTtsSetup failed action=${intent.action}", it)
+                }
+            }
+        }
+        toast(context, "无法打开系统 TTS 设置")
+    }
+
+    private fun systemTtsVoiceDir(): File = repo.systemTtsVirtualDir()
+
+    private fun isSystemTtsVoicePack(pack: VoicePackInfo): Boolean = isSystemTtsVoiceDir(pack.dir)
+
+    private suspend fun loadSystemTtsVoicePackInfo(existing: List<VoicePackInfo>): VoicePackInfo {
+        val defaultOrder = (existing.maxOfOrNull { it.meta.order } ?: -1L) + 1L
+        val order = UserPrefs.getSystemTtsOrder(appContext) ?: defaultOrder.also {
+            UserPrefs.setSystemTtsOrder(appContext, it)
+        }
+        return VoicePackInfo(
+            dir = systemTtsVoiceDir(),
+            meta = VoicePackMeta(
+                name = SYSTEM_TTS_DEFAULT_LABEL,
+                remark = SYSTEM_TTS_DEFAULT_REMARK,
+                avatar = "avatar.png",
+                pinned = false,
+                order = order
+            )
+        )
+    }
+
+    private suspend fun loadVoicePackList(): List<VoicePackInfo> {
+        val physical = withContext(Dispatchers.IO) { repo.listVoicePacks() }
+        val system = loadSystemTtsVoicePackInfo(physical)
+        return sortVoicePacks(physical + system)
+    }
+
+    private suspend fun findFallbackVoicePack(excludingDir: File): File? {
+        val excludedPath = excludingDir.absolutePath
+        val listed = loadVoicePackList()
+            .firstOrNull { it.dir.absolutePath != excludedPath }
+            ?.dir
+        if (listed != null) return listed
+        return systemTtsVoiceDir().takeIf { it.absolutePath != excludedPath }
+    }
+
+    private suspend fun stopRealtimeImmediatelyForVoicePackDeletion() {
+        realtimeHost?.let { host ->
+            host.stopForVoicePackDeletion()
+            return
+        }
+        RealtimeOwnerGate.release(APP_REALTIME_OWNER_TAG)
+        KeepAliveService.stop(appContext)
+        realtimeInputLevel = 0f
+        realtimePlaybackProgress = 0f
+        uiState = uiState.copy(
+            running = false,
+            status = "当前语音包已删除，麦克风已停止",
+            pushToTalkPressed = false,
+            pushToTalkStreamingText = ""
+        )
     }
 
     fun loadBundledAsr() {
@@ -1613,8 +1859,13 @@ class MainViewModel(
         viewModelScope.launch {
             val dir = withContext(Dispatchers.IO) { repo.ensureBundledAsr() }
             if (dir != null) {
-                uiState = uiState.copy(asrDir = dir, status = "已加载内置 ASR 模型")
-                preloadAsr(dir)
+                val host = realtimeHost
+                if (host != null) {
+                    host.updateSelectedAsrDir(dir, status = "已加载内置 ASR 模型", preload = true)
+                } else {
+                    uiState = uiState.copy(asrDir = dir, status = "已加载内置 ASR 模型")
+                    preloadAsr(dir)
+                }
             } else {
                 uiState = uiState.copy(status = "未找到内置 ASR 模型")
             }
@@ -1624,17 +1875,34 @@ class MainViewModel(
     fun loadLastVoice() {
         viewModelScope.launch {
             val lastName = UserPrefs.getLastVoiceName(appContext)
-            val lastDir = lastName?.let { repo.resolveVoicePack(it) }
+            val lastDir = when (lastName) {
+                SYSTEM_TTS_VOICE_NAME -> systemTtsVoiceDir()
+                null -> null
+                else -> repo.resolveVoicePack(lastName)
+            }
             if (lastDir != null) {
-                uiState = uiState.copy(voiceDir = lastDir, status = "已加载上次音色包")
+                uiState = uiState.copy(
+                    voiceDir = lastDir,
+                    status = if (isSystemTtsVoiceDir(lastDir)) "已加载系统 TTS" else "已加载上次音色包"
+                )
             } else {
                 val bundledDir = withContext(Dispatchers.IO) { repo.ensureBundledVoice() }
+                val selected = bundledDir ?: systemTtsVoiceDir()
                 uiState = uiState.copy(
-                    voiceDir = bundledDir ?: uiState.voiceDir,
-                    status = if (bundledDir != null) "已加载内置音色包" else uiState.status
+                    voiceDir = selected,
+                    status = if (bundledDir != null) "已加载内置音色包" else "已切换到系统 TTS"
                 )
+                if (bundledDir == null) {
+                    UserPrefs.setLastVoiceName(appContext, SYSTEM_TTS_VOICE_NAME)
+                }
             }
-            preloadTts(lastDir)
+            val selectedVoice = uiState.voiceDir
+            val host = realtimeHost
+            if (host != null && selectedVoice != null) {
+                host.updateSelectedVoiceDir(selectedVoice, status = uiState.status, preload = true)
+            } else {
+                preloadTts(selectedVoice)
+            }
             refreshVoicePacks()
         }
     }
@@ -1649,21 +1917,37 @@ class MainViewModel(
     fun importAsr(uri: android.net.Uri) {
         viewModelScope.launch {
             val dir = withContext(Dispatchers.IO) { repo.importAsr(uri, appContext.contentResolver) }
-            uiState = uiState.copy(asrDir = dir, status = "ASR 模型导入完成")
-            preloadAsr(dir)
+            val host = realtimeHost
+            if (host != null) {
+                host.updateSelectedAsrDir(dir, status = "ASR 模型导入完成", preload = true)
+            } else {
+                uiState = uiState.copy(asrDir = dir, status = "ASR 模型导入完成")
+                preloadAsr(dir)
+            }
         }
     }
 
-    fun importVoice(uri: android.net.Uri) {
+    fun importVoice(
+        uri: android.net.Uri,
+        openVoicePackPageOnSuccess: Boolean = false
+    ) {
         viewModelScope.launch {
             try {
                 val dir = withContext(Dispatchers.IO) { repo.importVoice(uri, appContext.contentResolver) }
                 UserPrefs.setLastVoiceName(appContext, dir.name)
-                uiState = uiState.copy(voiceDir = dir, status = "音色包导入完成")
-                preloadTts(dir)
+                val host = realtimeHost
+                if (host != null) {
+                    host.updateSelectedVoiceDir(dir, status = "音色包导入完成", preload = true)
+                } else {
+                    uiState = uiState.copy(voiceDir = dir, status = "音色包导入完成")
+                    preloadTts(dir)
+                }
                 refreshVoicePacks()
                 if (uiState.floatingOverlayEnabled) {
                     FloatingOverlayService.refresh(appContext)
+                }
+                if (openVoicePackPageOnSuccess) {
+                    requestVoicePackInstallNavigation("语音包安装完成")
                 }
             } catch (e: Exception) {
                 uiState = uiState.copy(status = e.message ?: "音色包导入失败")
@@ -1674,9 +1958,21 @@ class MainViewModel(
 
     fun selectVoice(dir: File) {
         viewModelScope.launch {
-            UserPrefs.setLastVoiceName(appContext, dir.name)
-            uiState = uiState.copy(voiceDir = dir, status = "已选择音色包")
-            preloadTts(dir)
+            UserPrefs.setLastVoiceName(
+                appContext,
+                if (isSystemTtsVoiceDir(dir)) SYSTEM_TTS_VOICE_NAME else dir.name
+            )
+            val status = if (isSystemTtsVoiceDir(dir)) "已选择系统 TTS" else "已选择音色包"
+            val host = realtimeHost
+            if (host != null) {
+                host.updateSelectedVoiceDir(dir, status = status, preload = true)
+            } else {
+                uiState = uiState.copy(
+                    voiceDir = dir,
+                    status = status
+                )
+                preloadTts(dir)
+            }
             refreshVoicePacks()
             if (uiState.floatingOverlayEnabled) {
                 FloatingOverlayService.refresh(appContext)
@@ -1686,12 +1982,13 @@ class MainViewModel(
 
     fun refreshVoicePacks() {
         viewModelScope.launch {
-            val packs = withContext(Dispatchers.IO) { repo.listVoicePacks() }
+            val packs = loadVoicePackList()
             uiState = uiState.copy(voicePacks = packs)
         }
     }
 
     fun updateVoiceMeta(pack: VoicePackInfo, name: String, remark: String) {
+        if (isSystemTtsVoicePack(pack)) return
         val trimmedName = name.trim().ifEmpty { "未命名" }
         val trimmedRemark = remark.trim()
         viewModelScope.launch {
@@ -1703,6 +2000,7 @@ class MainViewModel(
     }
 
     fun updateVoiceAvatar(pack: VoicePackInfo, uri: android.net.Uri) {
+        if (isSystemTtsVoicePack(pack)) return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 repo.updateVoiceAvatar(pack.dir, appContext.contentResolver, uri, "avatar.png")
@@ -1712,6 +2010,7 @@ class MainViewModel(
     }
 
     fun toggleVoicePin(pack: VoicePackInfo) {
+        if (isSystemTtsVoicePack(pack)) return
         viewModelScope.launch {
             repo.updateVoiceMeta(pack.dir) { meta ->
                 meta.copy(pinned = !meta.pinned)
@@ -1730,8 +2029,16 @@ class MainViewModel(
         val b = list[newIdx]
         if (a.meta.pinned != b.meta.pinned) return
         viewModelScope.launch {
-            repo.updateVoiceMeta(a.dir) { meta -> meta.copy(order = b.meta.order) }
-            repo.updateVoiceMeta(b.dir) { meta -> meta.copy(order = a.meta.order) }
+            if (isSystemTtsVoiceDir(a.dir)) {
+                UserPrefs.setSystemTtsOrder(appContext, b.meta.order)
+            } else {
+                repo.updateVoiceMeta(a.dir) { meta -> meta.copy(order = b.meta.order) }
+            }
+            if (isSystemTtsVoiceDir(b.dir)) {
+                UserPrefs.setSystemTtsOrder(appContext, a.meta.order)
+            } else {
+                repo.updateVoiceMeta(b.dir) { meta -> meta.copy(order = a.meta.order) }
+            }
             refreshVoicePacks()
         }
     }
@@ -1742,8 +2049,12 @@ class MainViewModel(
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 newOrder.forEachIndexed { index, pack ->
-                    repo.updateVoiceMeta(pack.dir) { meta ->
-                        meta.copy(order = index.toLong())
+                    if (isSystemTtsVoiceDir(pack.dir)) {
+                        UserPrefs.setSystemTtsOrder(appContext, index.toLong())
+                    } else {
+                        repo.updateVoiceMeta(pack.dir) { meta ->
+                            meta.copy(order = index.toLong())
+                        }
                     }
                 }
             }
@@ -1752,19 +2063,87 @@ class MainViewModel(
     }
 
     fun deleteVoice(pack: VoicePackInfo) {
+        if (isSystemTtsVoicePack(pack)) {
+            uiState = uiState.copy(status = "系统 TTS 不能删除")
+            return
+        }
         val current = uiState.voiceDir?.absolutePath == pack.dir.absolutePath
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                repo.deleteVoicePack(pack.dir)
-            }
+            val host = realtimeHost
             if (current) {
-                uiState = uiState.copy(voiceDir = null)
+                val fallbackVoice = findFallbackVoicePack(pack.dir)
+                if (fallbackVoice != null) {
+                    val switched = if (host != null) {
+                        host.updateSelectedVoiceDir(
+                            fallbackVoice,
+                            status = if (isSystemTtsVoiceDir(fallbackVoice)) {
+                                "已切换到系统 TTS"
+                            } else {
+                                "已切换备用语音包：${fallbackVoice.name}"
+                            },
+                            preload = true
+                        )
+                        true
+                    } else {
+                        pendingHostVoiceDir = fallbackVoice
+                        requestRealtimeHost()
+                        true
+                    }
+                    if (!switched) {
+                        uiState = uiState.copy(status = "切换备用语音包失败，已取消删除")
+                        return@launch
+                    }
+                    UserPrefs.setLastVoiceName(
+                        appContext,
+                        if (isSystemTtsVoiceDir(fallbackVoice)) SYSTEM_TTS_VOICE_NAME else fallbackVoice.name
+                    )
+                    uiState = uiState.copy(
+                        voiceDir = fallbackVoice,
+                        status = if (isSystemTtsVoiceDir(fallbackVoice)) {
+                            "已切换到系统 TTS"
+                        } else {
+                            "已切换备用语音包：${fallbackVoice.name}"
+                        }
+                    )
+                } else {
+                    if (uiState.running || host?.isMicActive() == true) {
+                        stopRealtimeImmediatelyForVoicePackDeletion()
+                    }
+                    UserPrefs.clearLastVoiceName(appContext)
+                    if (host != null) {
+                        host.updateSelectedVoiceDir(null, preload = false)
+                    }
+                    uiState = uiState.copy(voiceDir = null)
+                }
+            }
+            try {
+                withContext(Dispatchers.IO) {
+                    repo.deleteVoicePack(pack.dir)
+                }
+            } catch (e: SecurityException) {
+                uiState = uiState.copy(status = e.message ?: "语音包删除失败")
+                AppLogger.e("deleteVoice failed", e)
+                return@launch
+            }
+            if (!current) {
+                uiState = uiState.copy(status = "语音包已删除")
+            } else if (uiState.voiceDir != null) {
+                uiState = uiState.copy(status = "语音包已删除并切换到备用语音包")
+            } else if (uiState.status.isBlank() || !uiState.status.contains("麦克风已停止")) {
+                uiState = uiState.copy(status = "语音包已删除")
             }
             refreshVoicePacks()
+            if (uiState.floatingOverlayEnabled) {
+                FloatingOverlayService.refresh(appContext)
+            }
         }
     }
 
     fun shareVoice(pack: VoicePackInfo) {
+        if (isSystemTtsVoicePack(pack)) {
+            uiState = uiState.copy(status = "系统 TTS 不能分享")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             val shareDir = File(appContext.cacheDir, "share")
             val fileName = "${repo.sanitizeVoicePackShareName(pack.meta.name, pack.dir.name)}.kigvpk"
@@ -1788,7 +2167,7 @@ class MainViewModel(
 
     fun setMuteWhilePlaying(enabled: Boolean) {
         uiState = uiState.copy(muteWhilePlaying = enabled)
-        controller?.setSuppressWhilePlaying(enabled)
+        realtimeHost?.setSuppressWhilePlaying(enabled)
         viewModelScope.launch {
             UserPrefs.setMuteWhilePlaying(appContext, enabled)
         }
@@ -1797,7 +2176,7 @@ class MainViewModel(
     fun setMuteWhilePlayingDelay(seconds: Float) {
         val clamped = seconds.coerceIn(0f, 5f)
         uiState = uiState.copy(muteWhilePlayingDelaySec = clamped)
-        controller?.setSuppressDelaySec(clamped)
+        realtimeHost?.setSuppressDelaySec(clamped)
         viewModelScope.launch {
             UserPrefs.setMuteWhilePlayingDelaySec(appContext, clamped)
         }
@@ -1805,7 +2184,7 @@ class MainViewModel(
 
     fun setMinVolumePercent(percent: Int) {
         uiState = uiState.copy(minVolumePercent = percent)
-        controller?.setMinVolumePercent(percent)
+        realtimeHost?.setMinVolumePercent(percent)
         viewModelScope.launch {
             UserPrefs.setMinVolumePercent(appContext, percent)
         }
@@ -1814,7 +2193,7 @@ class MainViewModel(
     fun setPlaybackGainPercent(percent: Int) {
         val clamped = snapPlaybackGainPercent(percent)
         uiState = uiState.copy(playbackGainPercent = clamped)
-        controller?.setPlaybackGainPercent(clamped)
+        realtimeHost?.setPlaybackGainPercent(clamped)
         viewModelScope.launch {
             UserPrefs.setPlaybackGainPercent(appContext, clamped)
         }
@@ -1823,7 +2202,7 @@ class MainViewModel(
     fun setPiperNoiseScale(value: Float) {
         val clamped = value.coerceIn(0f, 2f)
         uiState = uiState.copy(piperNoiseScale = clamped)
-        controller?.setPiperNoiseScale(clamped)
+        realtimeHost?.setPiperNoiseScale(clamped)
         viewModelScope.launch {
             UserPrefs.setPiperNoiseScale(appContext, clamped)
         }
@@ -1832,7 +2211,7 @@ class MainViewModel(
     fun setPiperLengthScale(value: Float) {
         val clamped = value.coerceIn(0.1f, 5f)
         uiState = uiState.copy(piperLengthScale = clamped)
-        controller?.setPiperLengthScale(clamped)
+        realtimeHost?.setPiperLengthScale(clamped)
         viewModelScope.launch {
             UserPrefs.setPiperLengthScale(appContext, clamped)
         }
@@ -1841,7 +2220,7 @@ class MainViewModel(
     fun setPiperNoiseW(value: Float) {
         val clamped = value.coerceIn(0f, 2f)
         uiState = uiState.copy(piperNoiseW = clamped)
-        controller?.setPiperNoiseW(clamped)
+        realtimeHost?.setPiperNoiseW(clamped)
         viewModelScope.launch {
             UserPrefs.setPiperNoiseW(appContext, clamped)
         }
@@ -1850,7 +2229,7 @@ class MainViewModel(
     fun setPiperSentenceSilence(value: Float) {
         val clamped = value.coerceIn(0f, 2f)
         uiState = uiState.copy(piperSentenceSilence = clamped)
-        controller?.setPiperSentenceSilenceSec(clamped)
+        realtimeHost?.setPiperSentenceSilenceSec(clamped)
         viewModelScope.launch {
             UserPrefs.setPiperSentenceSilence(appContext, clamped)
         }
@@ -1874,7 +2253,7 @@ class MainViewModel(
     fun setNumberReplaceMode(mode: Int) {
         val clamped = mode.coerceIn(0, 2)
         uiState = uiState.copy(numberReplaceMode = clamped)
-        controller?.setNumberReplaceMode(clamped)
+        realtimeHost?.setNumberReplaceMode(clamped)
         viewModelScope.launch {
             UserPrefs.setNumberReplaceMode(appContext, clamped)
         }
@@ -1895,8 +2274,8 @@ class MainViewModel(
             pushToTalkPressed = false,
             pushToTalkStreamingText = ""
         )
-        controller?.setPushToTalkStreamingEnabled(false)
-        controller?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkConfirmInputMode)
+        realtimeHost?.setPushToTalkStreamingEnabled(false)
+        realtimeHost?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkConfirmInputMode)
         viewModelScope.launch {
             UserPrefs.setPushToTalkMode(appContext, enabled)
         }
@@ -1909,10 +2288,9 @@ class MainViewModel(
             pushToTalkConfirmInputMode = enabled,
             pushToTalkStreamingText = if (enabled) uiState.pushToTalkStreamingText else ""
         )
-        controller?.setPushToTalkStreamingEnabled(
-            enabled && uiState.pushToTalkMode && uiState.pushToTalkPressed
-        )
-        controller?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkMode)
+        val streamingEnabled = enabled && uiState.pushToTalkMode && uiState.pushToTalkPressed
+        realtimeHost?.setPushToTalkStreamingEnabled(streamingEnabled)
+        realtimeHost?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkMode)
         viewModelScope.launch {
             UserPrefs.setPushToTalkConfirmInput(appContext, enabled)
         }
@@ -1938,9 +2316,13 @@ class MainViewModel(
             pushToTalkPressed = pressed,
             pushToTalkStreamingText = if (!pressed) "" else uiState.pushToTalkStreamingText
         )
-        controller?.setPushToTalkStreamingEnabled(
-            uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode && pressed
-        )
+        val enabled = uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode && pressed
+        val host = requestRealtimeHost()
+        if (host != null) {
+            host.setPushToTalkPressed(pressed)
+        } else if (enabled) {
+            pendingHostStartRequest = true
+        }
     }
 
     fun beginPushToTalkSession() {
@@ -1949,11 +2331,24 @@ class MainViewModel(
         pttSessionCommitConsumed = false
         resetPttHistoryDedup()
         uiState = uiState.copy(pushToTalkStreamingText = "")
+        realtimeHost?.beginPushToTalkSession()
     }
 
     fun commitPushToTalkSession(action: PttConfirmReleaseAction) {
         if (!uiState.pushToTalkConfirmInputMode) return
         if (pttSessionCommitConsumed) return
+        realtimeHost?.let { host ->
+            pttSessionCommitConsumed = true
+            val mappedAction = when (action) {
+                PttConfirmReleaseAction.SendToSubtitle -> RealtimeRuntimeBridge.PttCommitAction.SendToSubtitle
+                PttConfirmReleaseAction.SendToInput -> RealtimeRuntimeBridge.PttCommitAction.SendToInput
+                PttConfirmReleaseAction.Cancel -> RealtimeRuntimeBridge.PttCommitAction.Cancel
+            }
+            host.commitPushToTalkSession(mappedAction)
+            pttSessionLastText = ""
+            resetPttHistoryDedup()
+            return
+        }
         pttSessionCommitConsumed = true
         val text = uiState.pushToTalkStreamingText.trim().ifBlank { pttSessionLastText.trim() }
         when (action) {
@@ -1992,22 +2387,13 @@ class MainViewModel(
     private fun enqueuePttSpeakAndAppendHistory(text: String) {
         val message = text.trim()
         if (message.isEmpty()) return
-        val voice = uiState.voiceDir
-        if (voice == null) {
-            appendRecognizedHistory(message)
-            uiState = uiState.copy(status = "请先选择语音包")
-            return
-        }
-        val activeController = ensureController()
         viewModelScope.launch {
-            val queuedId = withContext(Dispatchers.IO) {
-                if (!activeController.loadTts(voice)) return@withContext null
-                activeController.enqueueSpeakText(message)
-            }
+            val host = requestRealtimeHost("音频宿主初始化中")
+            val queuedId = host?.speakText(message)
             if (queuedId != null) {
                 appendRecognizedHistory(message, queuedId)
                 uiState = uiState.copy(status = "已加入朗读队列")
-            } else {
+            } else if (host != null) {
                 appendRecognizedHistory(message)
             }
         }
@@ -2027,7 +2413,7 @@ class MainViewModel(
 
     fun setSpeakerVerifyEnabled(enabled: Boolean) {
         uiState = uiState.copy(speakerVerifyEnabled = enabled)
-        controller?.setSpeakerVerifyEnabled(enabled)
+        realtimeHost?.setSpeakerVerifyEnabled(enabled)
         viewModelScope.launch {
             UserPrefs.setSpeakerVerifyEnabled(appContext, enabled)
         }
@@ -2039,7 +2425,7 @@ class MainViewModel(
     fun setSpeakerVerifyThreshold(threshold: Float) {
         val clamped = threshold.coerceIn(0.4f, 0.95f)
         uiState = uiState.copy(speakerVerifyThreshold = clamped)
-        controller?.setSpeakerVerifyThreshold(clamped)
+        realtimeHost?.setSpeakerVerifyThreshold(clamped)
         viewModelScope.launch {
             UserPrefs.setSpeakerVerifyThreshold(appContext, clamped)
         }
@@ -2054,8 +2440,10 @@ class MainViewModel(
             speakerLastSimilarity = -1f,
             status = "已清除说话人注册信息"
         )
-        controller?.setSpeakerVerifyEnabled(false)
-        controller?.clearSpeakerProfiles()
+        realtimeHost?.let { host ->
+            host.setSpeakerVerifyEnabled(false)
+            host.clearSpeakerProfiles()
+        }
         viewModelScope.launch {
             UserPrefs.setSpeakerVerifyEnabled(appContext, false)
             UserPrefs.setSpeakerVerifyProfiles(appContext, emptyList())
@@ -2074,8 +2462,10 @@ class MainViewModel(
             speakerLastSimilarity = if (hasProfiles) uiState.speakerLastSimilarity else -1f,
             status = if (hasProfiles) "已移除说话人" else "已清除说话人注册信息"
         )
-        controller?.setSpeakerVerifyEnabled(keepVerify)
-        controller?.setSpeakerProfiles(speakerProfileVectors())
+        realtimeHost?.let { host ->
+            host.setSpeakerVerifyEnabled(keepVerify)
+            host.setSpeakerProfiles(speakerProfileVectors())
+        }
         viewModelScope.launch {
             UserPrefs.setSpeakerVerifyEnabled(appContext, keepVerify)
             UserPrefs.setSpeakerVerifyProfiles(appContext, speakerProfiles)
@@ -2093,7 +2483,7 @@ class MainViewModel(
             vector = profile.copyOf()
         )
         speakerProfiles = speakerProfiles.toMutableList().apply { add(item) }
-        controller?.setSpeakerProfiles(speakerProfileVectors())
+        realtimeHost?.setSpeakerProfiles(speakerProfileVectors())
         uiState = uiState.copy(
             speakerProfileReady = true,
             speakerProfiles = speakerProfileUiItems(),
@@ -2116,17 +2506,13 @@ class MainViewModel(
             uiState = uiState.copy(status = msg)
             return SpeakerEnrollResult(success = false, message = msg)
         }
-        val activeController = ensureController()
         uiState = uiState.copy(status = "说话人注册中（请持续说话约${durationSec.toInt()}秒）...")
-        val result = withContext(Dispatchers.IO) {
-            activeController.enrollSpeaker(durationSec) { progress, level ->
-                if (onCapture != null) {
-                    viewModelScope.launch(Dispatchers.Main) {
-                        onCapture(progress, level)
-                    }
-                }
-            }
-        }
+        val host = requestRealtimeHost("音频宿主初始化中，请稍后重试")
+            ?: return SpeakerEnrollResult(
+                success = false,
+                message = "音频宿主初始化中，请稍后重试"
+            )
+        val result = host.enrollSpeaker(durationSec, onCapture)
         if (result.success && result.profile != null) {
             if (persist) {
                 val applied = applySpeakerProfile(result.profile)
@@ -2351,16 +2737,14 @@ class MainViewModel(
     fun setEchoSuppression(enabled: Boolean) {
         val wasRunning = uiState.running
         uiState = uiState.copy(echoSuppression = enabled)
-        controller?.setUseVoiceCommunication(enabled)
+        realtimeHost?.setUseVoiceCommunication(enabled)
         viewModelScope.launch {
             UserPrefs.setEchoSuppression(appContext, enabled)
         }
         if (wasRunning) {
             restartJob?.cancel()
             restartJob = viewModelScope.launch {
-                withContext(Dispatchers.IO) {
-                    controller?.restartRecorder()
-                }
+                realtimeHost?.restartRecorder()
             }
         }
     }
@@ -2368,16 +2752,14 @@ class MainViewModel(
     fun setCommunicationMode(enabled: Boolean) {
         val wasRunning = uiState.running
         uiState = uiState.copy(communicationMode = enabled)
-        controller?.setCommunicationMode(enabled)
+        realtimeHost?.setCommunicationMode(enabled)
         viewModelScope.launch {
             UserPrefs.setCommunicationMode(appContext, enabled)
         }
         if (wasRunning) {
             restartJob?.cancel()
             restartJob = viewModelScope.launch {
-                withContext(Dispatchers.IO) {
-                    controller?.restartRecorder()
-                }
+                realtimeHost?.restartRecorder()
             }
         }
     }
@@ -2385,16 +2767,14 @@ class MainViewModel(
     fun setPreferredOutputType(type: Int) {
         val wasRunning = uiState.running
         uiState = uiState.copy(preferredOutputType = type)
-        controller?.setPreferredOutputType(type)
+        realtimeHost?.setPreferredOutputType(type)
         viewModelScope.launch {
             UserPrefs.setPreferredOutputType(appContext, type)
         }
         if (wasRunning) {
             restartJob?.cancel()
             restartJob = viewModelScope.launch {
-                withContext(Dispatchers.IO) {
-                    controller?.restartRecorder()
-                }
+                realtimeHost?.restartRecorder()
             }
         }
     }
@@ -2402,16 +2782,14 @@ class MainViewModel(
     fun setPreferredInputType(type: Int) {
         val wasRunning = uiState.running
         uiState = uiState.copy(preferredInputType = type)
-        controller?.setPreferredInputType(type)
+        realtimeHost?.setPreferredInputType(type)
         viewModelScope.launch {
             UserPrefs.setPreferredInputType(appContext, type)
         }
         if (wasRunning) {
             restartJob?.cancel()
             restartJob = viewModelScope.launch {
-                withContext(Dispatchers.IO) {
-                    controller?.restartRecorder()
-                }
+                realtimeHost?.restartRecorder()
             }
         }
     }
@@ -2421,7 +2799,7 @@ class MainViewModel(
             aec3Enabled = enabled,
             aec3Status = if (enabled) "初始化中" else "未启用"
         )
-        controller?.setUseAec3(enabled)
+        realtimeHost?.setUseAec3(enabled)
         viewModelScope.launch {
             UserPrefs.setAec3Enabled(appContext, enabled)
         }
@@ -2430,7 +2808,7 @@ class MainViewModel(
     fun setDenoiserMode(mode: Int) {
         val normalized = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
         uiState = uiState.copy(denoiserMode = normalized)
-        controller?.setDenoiserMode(normalized)
+        realtimeHost?.setDenoiserMode(normalized)
         viewModelScope.launch {
             UserPrefs.setDenoiserMode(appContext, normalized)
         }
@@ -2450,7 +2828,7 @@ class MainViewModel(
     }
 
     fun startAudioTestRecording() {
-        if (uiState.running || controller?.isMicActive() == true || RealtimeOwnerGate.currentOwner() != null) {
+        if (uiState.running || realtimeHost?.isMicActive() == true || RealtimeOwnerGate.currentOwner() != null) {
             uiState = uiState.copy(audioTestStatus = "请先停止语音转换再测试录音")
             return
         }
@@ -2482,17 +2860,13 @@ class MainViewModel(
     fun speakText(text: String) {
         val message = text.trim()
         if (message.isEmpty()) return
-        val voice = uiState.voiceDir
-        if (voice == null) {
+        if (uiState.voiceDir == null) {
             uiState = uiState.copy(status = "请先选择语音包")
             return
         }
-        val activeController = ensureController()
         viewModelScope.launch {
-            val queuedId = withContext(Dispatchers.IO) {
-                if (!activeController.loadTts(voice)) return@withContext null
-                activeController.enqueueSpeakText(message)
-            }
+            val host = requestRealtimeHost("音频宿主初始化中")
+            val queuedId = host?.speakText(message)
             if (queuedId != null) {
                 // 便捷字幕的快速文本/输入框触发朗读时，也要进入历史记录。
                 // 使用队列ID绑定，避免与 onResult 回调重复插入。
@@ -2503,124 +2877,88 @@ class MainViewModel(
     }
 
     fun start() {
+        val host = requestRealtimeHost("音频宿主初始化中")
         val asr = uiState.asrDir
         val voice = uiState.voiceDir
         if (asr == null || voice == null) {
             uiState = uiState.copy(status = "请先导入 ASR 模型和 voicepack")
             return
         }
-        if (!RealtimeOwnerGate.acquire(APP_REALTIME_OWNER_TAG)) {
-            uiState = uiState.copy(status = "麦克风已被悬浮窗占用")
+        if (host != null) {
+            restartJob?.cancel()
+            restartJob = null
+            host.startRealtime()
             return
         }
-        restartJob?.cancel()
-        restartJob = null
-        val activeController = ensureController()
-        realtimeInputLevel = 0f
-        realtimePlaybackProgress = 0f
-        lastProgressUpdateAtMs.clear()
-        lastLevelUpdateAtMs = 0L
-        uiState = uiState.copy(running = true, status = "启动麦克风中")
-        viewModelScope.launch {
-            val started = withContext(Dispatchers.IO) {
-                if (!activeController.loadAsr(asr)) return@withContext false
-                if (!activeController.loadTts(voice)) return@withContext false
-                activeController.startMic()
-            }
-            if (started && uiState.running) {
-                uiState = uiState.copy(status = "运行中")
-                if (uiState.keepAlive) {
-                    KeepAliveService.start(appContext)
-                }
-            } else {
-                RealtimeOwnerGate.release(APP_REALTIME_OWNER_TAG)
-                realtimeInputLevel = 0f
-                realtimePlaybackProgress = 0f
-                KeepAliveService.stop(appContext)
-                if (uiState.running) {
-                    uiState = uiState.copy(running = false, status = "麦克风启动失败")
-                }
-            }
-        }
+        pendingHostStartRequest = true
     }
 
     fun stop() {
+        realtimeHost?.let { host ->
+            restartJob?.cancel()
+            restartJob = null
+            pttSessionLastText = ""
+            resetPttHistoryDedup()
+            pendingHostStartRequest = false
+            host.stopRealtime()
+            return
+        }
         restartJob?.cancel()
         restartJob = null
         pttSessionLastText = ""
         resetPttHistoryDedup()
-        val activeController = controller ?: run {
-            RealtimeOwnerGate.release(APP_REALTIME_OWNER_TAG)
-            uiState = uiState.copy(
-                running = false,
-                status = "麦克风已停止",
-                pushToTalkPressed = false,
-                pushToTalkStreamingText = ""
-            )
-            return
-        }
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                activeController.stopMic()
-            }
-            RealtimeOwnerGate.release(APP_REALTIME_OWNER_TAG)
-            KeepAliveService.stop(appContext)
-            realtimeInputLevel = 0f
-            realtimePlaybackProgress = 0f
-            uiState = uiState.copy(
-                running = false,
-                status = "麦克风已停止",
-                pushToTalkPressed = false,
-                pushToTalkStreamingText = ""
-            )
-        }
+        pendingHostStartRequest = false
+        RealtimeOwnerGate.release(APP_REALTIME_OWNER_TAG)
+        KeepAliveService.stop(appContext)
+        realtimeInputLevel = 0f
+        realtimePlaybackProgress = 0f
+        uiState = uiState.copy(
+            running = false,
+            status = "麦克风已停止",
+            pushToTalkPressed = false,
+            pushToTalkStreamingText = ""
+        )
     }
 
     override fun onCleared() {
-        val activeController = controller
-        controller = null
+        detachRealtimeHost()
         audioTest.release()
         settingsObserveJob?.cancel()
         settingsObserveJob = null
-        if (activeController != null) {
-            runCatching {
-                kotlinx.coroutines.runBlocking(Dispatchers.IO) {
-                    activeController.stop()
-                }
-            }
-        }
         RealtimeOwnerGate.release(APP_REALTIME_OWNER_TAG)
         super.onCleared()
     }
 
     private fun applySettingsToController(settings: UserPrefs.AppSettings) {
-        controller?.setSuppressWhilePlaying(settings.muteWhilePlaying)
-        controller?.setSuppressDelaySec(settings.muteWhilePlayingDelaySec)
-        controller?.setMinVolumePercent(settings.minVolumePercent)
-        controller?.setPlaybackGainPercent(settings.playbackGainPercent)
-        controller?.setPiperNoiseScale(settings.piperNoiseScale)
-        controller?.setPiperLengthScale(settings.piperLengthScale)
-        controller?.setPiperNoiseW(0.8f)
-        controller?.setPiperSentenceSilenceSec(settings.piperSentenceSilence)
-        controller?.setUseAec3(settings.aec3Enabled)
-        controller?.setUseVoiceCommunication(settings.echoSuppression)
-        controller?.setCommunicationMode(settings.communicationMode)
-        controller?.setPreferredInputType(settings.preferredInputType)
-        controller?.setPreferredOutputType(settings.preferredOutputType)
-        controller?.setDenoiserMode(settings.denoiserMode)
-        controller?.setNumberReplaceMode(settings.numberReplaceMode)
-        controller?.setAllowSystemAecWithAec3(true)
-        controller?.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
-        controller?.setSpeakerVerifyThreshold(settings.speakerVerifyThreshold)
-        controller?.setSpeakerProfiles(speakerProfileVectors())
-        controller?.setSuppressAsrAutoSpeak(
-            uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode
-        )
-        controller?.setPushToTalkStreamingEnabled(
-            uiState.pushToTalkMode &&
-                    uiState.pushToTalkConfirmInputMode &&
-                    uiState.pushToTalkPressed
-        )
+        realtimeHost?.let { host ->
+            host.setSuppressWhilePlaying(settings.muteWhilePlaying)
+            host.setSuppressDelaySec(settings.muteWhilePlayingDelaySec)
+            host.setMinVolumePercent(settings.minVolumePercent)
+            host.setPlaybackGainPercent(settings.playbackGainPercent)
+            host.setPiperNoiseScale(settings.piperNoiseScale)
+            host.setPiperLengthScale(settings.piperLengthScale)
+            host.setPiperNoiseW(0.8f)
+            host.setPiperSentenceSilenceSec(settings.piperSentenceSilence)
+            host.setUseAec3(settings.aec3Enabled)
+            host.setUseVoiceCommunication(settings.echoSuppression)
+            host.setCommunicationMode(settings.communicationMode)
+            host.setPreferredInputType(settings.preferredInputType)
+            host.setPreferredOutputType(settings.preferredOutputType)
+            host.setDenoiserMode(settings.denoiserMode)
+            host.setNumberReplaceMode(settings.numberReplaceMode)
+            host.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
+            host.setSpeakerVerifyThreshold(settings.speakerVerifyThreshold)
+            host.setSpeakerProfiles(speakerProfileVectors())
+            host.setSuppressAsrAutoSpeak(
+                uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode
+            )
+            host.setPushToTalkStreamingEnabled(
+                uiState.pushToTalkMode &&
+                        uiState.pushToTalkConfirmInputMode &&
+                        uiState.pushToTalkPressed
+            )
+            return
+        }
     }
 }
 
@@ -2942,6 +3280,40 @@ private fun QuickCardNavHost(
     onNavReady: () -> Unit,
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
 ) {
+    val context = LocalContext.current
+    val navigateDecodedQrResult: (String, String) -> Unit = { decoded, popRoute ->
+        if (isWeChatQrContent(decoded)) {
+            if (isPackageInstalled(context, WECHAT_PACKAGE_NAME)) {
+                toast(context, "该二维码为微信二维码，需要使用微信进行扫描")
+                if (!launchWeChatScanner(context)) {
+                    toast(context, "打开微信失败，请手动打开微信扫一扫")
+                }
+            } else {
+                toast(context, "该二维码为微信二维码，需要安装微信")
+                val browserTarget = normalizeQrTextToWebUrl(decoded) ?: WECHAT_BROWSER_FALLBACK_URL
+                if (!openExternalBrowser(context, browserTarget)) {
+                    toast(context, "无法打开系统浏览器")
+                }
+            }
+            navController.popBackStack(popRoute, inclusive = true)
+        } else {
+            val url = normalizeQrTextToWebUrl(decoded)
+            if (url.isNullOrEmpty()) {
+                navController.navigate(QuickCardRoutes.scanText(decoded)) {
+                    popUpTo(popRoute) { inclusive = true }
+                    launchSingleTop = true
+                }
+            } else {
+                navController.navigate(QuickCardRoutes.web(url)) {
+                    popUpTo(popRoute) { inclusive = true }
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
+    val handleDecodedQrResult: (String) -> Unit = { decoded ->
+        navigateDecodedQrResult(decoded, QuickCardRoutes.Scanner)
+    }
     NavHost(
         navController = navController,
         startDestination = QuickCardRoutes.Main,
@@ -3039,19 +3411,32 @@ private fun QuickCardNavHost(
             QuickCardScannerScreen(
                 onTopBarActionsChange = onTopBarActionsChange,
                 onOpenFailed = { navController.popBackStack() },
-                onResult = { decoded ->
-                    val url = normalizeQrTextToWebUrl(decoded)
-                    if (url.isNullOrEmpty()) {
-                        navController.navigate(QuickCardRoutes.scanText(decoded)) {
-                            popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
-                            launchSingleTop = true
-                        }
-                    } else {
-                        navController.navigate(QuickCardRoutes.web(url)) {
-                            popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
-                            launchSingleTop = true
-                        }
+                onResult = handleDecodedQrResult,
+                onCandidates = { items ->
+                    navController.navigate(QuickCardRoutes.scanCandidates(items)) {
+                        popUpTo(QuickCardRoutes.Scanner) { inclusive = true }
+                        launchSingleTop = true
                     }
+                }
+            )
+        }
+        composable(
+            route = QuickCardRoutes.ScanCandidates,
+            arguments = listOf(navArgument("items") { type = NavType.StringType })
+        ) { entry ->
+            val items = remember(entry) {
+                runCatching {
+                    val raw = Uri.decode(entry.arguments?.getString("items").orEmpty())
+                    val arr = JSONArray(raw)
+                    List(arr.length()) { idx -> arr.optString(idx).trim() }
+                        .filter { it.isNotEmpty() }
+                }.getOrDefault(emptyList())
+            }
+            QuickCardScanCandidatesScreen(
+                items = items,
+                onTopBarActionsChange = onTopBarActionsChange,
+                onSelect = { decoded ->
+                    navigateDecodedQrResult(decoded, QuickCardRoutes.ScanCandidates)
                 }
             )
         }
@@ -3709,23 +4094,62 @@ private fun QuickCardSortRow(
 private fun QuickCardScannerScreen(
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
     onOpenFailed: () -> Unit,
-    onResult: (String) -> Unit
+    onResult: (String) -> Unit,
+    onCandidates: (List<String>) -> Unit
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val previewView = remember(context) {
         PreviewView(context).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
     }
+    val scanner = remember { createQrMlKitScanner() }
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
     val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
     val scanned = remember { AtomicBoolean(false) }
+    val analyzing = remember { AtomicBoolean(false) }
+    val onResultState = rememberUpdatedState(onResult)
+    val onCandidatesState = rememberUpdatedState(onCandidates)
     var cameraReady by remember { mutableStateOf(false) }
+    var boundCamera by remember { mutableStateOf<Camera?>(null) }
+    var minZoomRatio by remember { mutableStateOf(1f) }
+    var maxZoomRatio by remember { mutableStateOf(1f) }
+    var zoomRatio by remember { mutableStateOf(1f) }
+    var torchEnabled by remember { mutableStateOf(false) }
+    var flashAvailable by remember { mutableStateOf(false) }
+    val scaleDetector = remember(context) {
+        ScaleGestureDetector(
+            context,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val camera = boundCamera ?: return false
+                    val target = (zoomRatio * detector.scaleFactor)
+                        .coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
+                    if (kotlin.math.abs(target - zoomRatio) < 0.01f) return false
+                    camera.cameraControl.setZoomRatio(target)
+                    zoomRatio = target
+                    return true
+                }
+            }
+        )
+    }
 
     LaunchedEffect(Unit) {
         onTopBarActionsChange(null)
+    }
+
+    DisposableEffect(previewView, scaleDetector) {
+        previewView.setOnTouchListener { _, event ->
+            scaleDetector.onTouchEvent(event)
+            false
+        }
+        onDispose {
+            previewView.setOnTouchListener(null)
+        }
     }
 
     DisposableEffect(previewView, lifecycleOwner) {
@@ -3743,36 +4167,65 @@ private fun QuickCardScannerScreen(
             val analysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            val reader = MultiFormatReader().apply {
-                setHints(
-                    mapOf(
-                        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-                        DecodeHintType.TRY_HARDER to true
-                    )
-                )
-            }
 
             analysis.setAnalyzer(analyzerExecutor) { imageProxy ->
-                try {
-                    if (!scanned.get()) {
-                        val text = decodeQrFromImageProxy(imageProxy, reader)?.trim().orEmpty()
-                        if (text.isNotEmpty() && scanned.compareAndSet(false, true)) {
-                            mainExecutor.execute { onResult(text) }
+                if (scanned.get() || !analyzing.compareAndSet(false, true)) {
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
+                val mediaImage = imageProxy.image
+                if (mediaImage == null) {
+                    analyzing.set(false)
+                    imageProxy.close()
+                    return@setAnalyzer
+                }
+                val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                scanner.process(inputImage)
+                    .addOnSuccessListener(analyzerExecutor) { barcodes ->
+                        val mlTexts = barcodes.decodedQrTexts()
+                        when {
+                            mlTexts.size > 1 && scanned.compareAndSet(false, true) -> {
+                                mainExecutor.execute { onCandidatesState.value(mlTexts) }
+                            }
+                            mlTexts.size == 1 && scanned.compareAndSet(false, true) -> {
+                                mainExecutor.execute { onResultState.value(mlTexts.first()) }
+                            }
+                            else -> {
+                                val zxingText = decodeQrFromImageProxy(imageProxy)?.trim().orEmpty()
+                                if (zxingText.isNotEmpty() && scanned.compareAndSet(false, true)) {
+                                    mainExecutor.execute { onResultState.value(zxingText) }
+                                }
+                            }
                         }
                     }
-                } finally {
-                    imageProxy.close()
-                }
+                    .addOnFailureListener(analyzerExecutor) {
+                        val zxingText = decodeQrFromImageProxy(imageProxy)?.trim().orEmpty()
+                        if (zxingText.isNotEmpty() && scanned.compareAndSet(false, true)) {
+                            mainExecutor.execute { onResultState.value(zxingText) }
+                        }
+                    }
+                    .addOnCompleteListener(analyzerExecutor) {
+                        analyzing.set(false)
+                        imageProxy.close()
+                    }
             }
 
             runCatching {
                 provider.unbindAll()
-                provider.bindToLifecycle(
+                val camera = provider.bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     analysis
                 )
+                boundCamera = camera
+                flashAvailable = camera.cameraInfo.hasFlashUnit()
+                torchEnabled = camera.cameraInfo.torchState.value == TorchState.ON
+                camera.cameraInfo.zoomState.value?.let { state ->
+                    minZoomRatio = state.minZoomRatio
+                    maxZoomRatio = state.maxZoomRatio.coerceAtLeast(state.minZoomRatio)
+                    zoomRatio = state.zoomRatio.coerceIn(minZoomRatio, maxZoomRatio)
+                }
                 cameraReady = true
             }.onFailure {
                 AppLogger.e("quickCard scanner bind failed", it)
@@ -3782,11 +4235,14 @@ private fun QuickCardScannerScreen(
         }
         providerFuture.addListener(listener, mainExecutor)
         onDispose {
+            boundCamera = null
             runCatching {
                 if (providerFuture.isDone) {
                     providerFuture.get().unbindAll()
                 }
             }
+            analyzing.set(false)
+            runCatching { scanner.close() }
             analyzerExecutor.shutdown()
         }
     }
@@ -3801,7 +4257,7 @@ private fun QuickCardScannerScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        val finderSize = 260.dp
+        val finderSize = if (isLandscape) 214.dp else 260.dp
         val outerMaskColor = Color.Black.copy(alpha = 0.62f)
 
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -3844,7 +4300,7 @@ private fun QuickCardScannerScreen(
                 textAlign = TextAlign.Center,
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .offset(y = -(finderSize / 2f) - 24.dp)
+                    .offset(y = -(finderSize / 2f) - if (isLandscape) 18.dp else 24.dp)
                     .padding(horizontal = 16.dp)
             )
 
@@ -3857,6 +4313,141 @@ private fun QuickCardScannerScreen(
                     modifier = Modifier.fillMaxSize(),
                     color = Color.White
                 )
+            }
+
+            if (isLandscape) {
+                val sliderHeight = finderSize
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .offset(x = finderSize / 2f + 34.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp
+                    ) {
+                        CompositionLocalProvider(
+                            LocalContentColor provides if (cameraReady && flashAvailable) {
+                                Color.White
+                            } else {
+                                Color.White.copy(alpha = 0.42f)
+                            }
+                        ) {
+                            Box(modifier = Modifier.padding(6.dp)) {
+                                Md2IconButton(
+                                    icon = if (torchEnabled) "flash_on" else "flash_off",
+                                    contentDescription = "手电筒",
+                                    onClick = {
+                                        val camera = boundCamera ?: return@Md2IconButton
+                                        val enabled = !torchEnabled
+                                        camera.cameraControl.enableTorch(enabled)
+                                        torchEnabled = enabled
+                                    },
+                                    enabled = cameraReady && flashAvailable
+                                )
+                            }
+                        }
+                    }
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            MsIcon("zoom_in", contentDescription = "放大", tint = Color.White)
+                            Md2VerticalSlider(
+                                value = zoomRatio,
+                                onValueChange = { target ->
+                                    val camera = boundCamera ?: return@Md2VerticalSlider
+                                    val resolved = target.coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
+                                    camera.cameraControl.setZoomRatio(resolved)
+                                    zoomRatio = resolved
+                                },
+                                valueRange = minZoomRatio..maxZoomRatio.coerceAtLeast(minZoomRatio),
+                                modifier = Modifier
+                                    .height(sliderHeight)
+                                    .width(32.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .offset(y = finderSize / 2f + 32.dp)
+                        .padding(horizontal = 28.dp)
+                        .fillMaxWidth(0.78f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            MsIcon("zoom_in", contentDescription = "放大", tint = Color.White)
+                            Slider(
+                                value = zoomRatio,
+                                onValueChange = { target ->
+                                    val camera = boundCamera ?: return@Slider
+                                    val resolved = target.coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
+                                    camera.cameraControl.setZoomRatio(resolved)
+                                    zoomRatio = resolved
+                                },
+                                valueRange = minZoomRatio..maxZoomRatio.coerceAtLeast(minZoomRatio),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = MaterialTheme.colors.primary,
+                                    activeTrackColor = MaterialTheme.colors.primary,
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.35f)
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    Card(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        backgroundColor = Color.White.copy(alpha = 0.14f),
+                        elevation = 0.dp
+                    ) {
+                        CompositionLocalProvider(
+                            LocalContentColor provides if (cameraReady && flashAvailable) {
+                                Color.White
+                            } else {
+                                Color.White.copy(alpha = 0.42f)
+                            }
+                        ) {
+                            Box(modifier = Modifier.padding(6.dp)) {
+                                Md2IconButton(
+                                    icon = if (torchEnabled) "flash_on" else "flash_off",
+                                    contentDescription = "手电筒",
+                                    onClick = {
+                                        val camera = boundCamera ?: return@Md2IconButton
+                                        val enabled = !torchEnabled
+                                        camera.cameraControl.enableTorch(enabled)
+                                        torchEnabled = enabled
+                                    },
+                                    enabled = cameraReady && flashAvailable
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -3918,6 +4509,82 @@ private fun QrScannerFinderFrame(
         vSeg(right, top, top + cornerH, thick)
         vSeg(right, top + cornerH, bottom - cornerH, thin)
         vSeg(right, bottom - cornerH, bottom, thick)
+    }
+}
+
+@Composable
+private fun QuickCardScanCandidatesScreen(
+    items: List<String>,
+    onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val scroll = rememberScrollState()
+
+    LaunchedEffect(Unit) {
+        onTopBarActionsChange(null)
+    }
+
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(vertical = 16.dp),
+        scroll = scroll,
+        horizontalPadding = 20.dp,
+        contentSpacing = 12.dp
+    ) {
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "检测到多个二维码",
+            style = MaterialTheme.typography.h6
+        )
+        Text(
+            text = "请选择要打开的二维码内容",
+            style = MaterialTheme.typography.body2,
+            color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
+        )
+        if (items.isEmpty()) {
+            Card(
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = MaterialTheme.colors.surface,
+                elevation = UiTokens.CardElevation
+            ) {
+                Text(
+                    text = "没有可用候选项",
+                    modifier = Modifier.padding(18.dp),
+                    style = MaterialTheme.typography.body1
+                )
+            }
+        } else {
+            items.forEachIndexed { index, item ->
+                Card(
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = MaterialTheme.colors.surface,
+                    elevation = UiTokens.CardElevation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(item) }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "候选 ${index + 1}",
+                            style = MaterialTheme.typography.overline,
+                            color = MaterialTheme.colors.primary
+                        )
+                        Text(
+                            text = item,
+                            style = MaterialTheme.typography.body1,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(12.dp))
     }
 }
 
@@ -4070,8 +4737,7 @@ private fun QuickCardWebViewScreen(
 }
 
 private fun decodeQrFromImageProxy(
-    imageProxy: ImageProxy,
-    reader: MultiFormatReader
+    imageProxy: ImageProxy
 ): String? {
     val width = imageProxy.width
     val height = imageProxy.height
@@ -4115,10 +4781,7 @@ private fun decodeQrFromImageProxy(
         height,
         false
     )
-    val bitmap = BinaryBitmap(HybridBinarizer(source))
-    return runCatching { reader.decodeWithState(bitmap)?.text }
-        .getOrNull()
-        .also { reader.reset() }
+    return decodeQrWithZxing(source)
 }
 
 @Composable
@@ -5590,11 +6253,15 @@ private object QuickCardRoutes {
     const val Editor = "quick_card/editor"
     const val Sort = "quick_card/sort"
     const val Scanner = "quick_card/scanner"
+    private const val ScanCandidatesArg = "items"
+    const val ScanCandidates = "quick_card/scan_candidates/{$ScanCandidatesArg}"
     private const val ScanTextArg = "text"
     const val ScanText = "quick_card/scan_text/{$ScanTextArg}"
     private const val WebArg = "url"
     const val Web = "quick_card/web/{$WebArg}"
 
+    fun scanCandidates(items: List<String>): String =
+        "quick_card/scan_candidates/${Uri.encode(JSONArray(items).toString())}"
     fun scanText(text: String): String = "quick_card/scan_text/${Uri.encode(text)}"
     fun web(url: String): String = "quick_card/web/${Uri.encode(url)}"
 }
@@ -5609,6 +6276,19 @@ class MainActivity : ComponentActivity() {
     private var pendingBackgroundReturnFix: Boolean = false
     private var delayedResumeFixRunnable: Runnable? = null
     private var lastHandledExternalVoicePackIntentKey: String? = null
+    private var realtimeHostBound = false
+    private val realtimeHostConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as? RealtimeHostService.LocalBinder ?: return
+            realtimeHostBound = true
+            viewModel.attachRealtimeHost(binder.getService())
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            realtimeHostBound = false
+            viewModel.detachRealtimeHost()
+        }
+    }
 
     private val viewModel: MainViewModel by viewModels {
         val repo = ModelRepository(this@MainActivity)
@@ -5632,8 +6312,12 @@ class MainActivity : ComponentActivity() {
         applyWindowInsetPolicyForMode()
         AppLogger.init(this)
         AppLogger.i("MainActivity.onCreate")
-        viewModel.loadBundledAsr()
-        viewModel.loadLastVoice()
+        RealtimeHostService.ensureStarted(this)
+        bindService(
+            Intent(this, RealtimeHostService::class.java),
+            realtimeHostConnection,
+            Context.BIND_AUTO_CREATE
+        )
         viewModel.loadSettings()
         setContent {
             val dark = isSystemInDarkTheme()
@@ -5661,6 +6345,15 @@ class MainActivity : ComponentActivity() {
             }
         }
         handleLaunchIntent(intent)
+    }
+
+    override fun onDestroy() {
+        if (realtimeHostBound) {
+            unbindService(realtimeHostConnection)
+            realtimeHostBound = false
+        }
+        viewModel.detachRealtimeHost()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -5743,7 +6436,14 @@ class MainActivity : ComponentActivity() {
                 if (requestId == Long.MIN_VALUE) return
                 val target = intent.getStringExtra(OverlayBridge.EXTRA_TARGET) ?: OverlayBridge.TARGET_SUBTITLE
                 val text = intent.getStringExtra(OverlayBridge.EXTRA_TEXT).orEmpty()
-                viewModel.handleQuickSubtitleLaunchRequest(requestId, target, text)
+                val navigateToPage = intent.getBooleanExtra(OverlayBridge.EXTRA_NAVIGATE_TO_PAGE, true)
+                viewModel.handleQuickSubtitleLaunchRequest(requestId, target, text, navigateToPage)
+            }
+
+            OverlayBridge.ACTION_REQUEST_RECORD_AUDIO_PERMISSION -> {
+                val startRealtimeOnGrant =
+                    intent.getBooleanExtra(OverlayBridge.EXTRA_START_REALTIME_ON_GRANT, false)
+                viewModel.requestRecordAudioPermission(startRealtimeOnGrant)
             }
 
             Intent.ACTION_VIEW,
@@ -5757,7 +6457,7 @@ class MainActivity : ComponentActivity() {
                 val key = "${intent.action}|$uri|${resolveExternalFileName(uri).orEmpty()}"
                 if (lastHandledExternalVoicePackIntentKey == key) return
                 lastHandledExternalVoicePackIntentKey = key
-                viewModel.importVoice(uri)
+                viewModel.importVoice(uri, openVoicePackPageOnSuccess = true)
                 setIntent(Intent())
             }
         }
@@ -6662,60 +7362,8 @@ fun AppScaffold(viewModel: MainViewModel) {
         DrawerItem(pageSettings, "设置", "tune")
     )
     val pendingQuickSubtitleLaunchRequest = viewModel.pendingQuickSubtitleLaunchRequest
+    val pendingVoicePackInstallRequest = viewModel.pendingVoicePackInstallRequest
     val drawerSelectedPage = basePage
-    DisposableEffect(viewModel) {
-        val delegate = object : RealtimeRuntimeBridge.AppDelegate {
-            override fun startRealtime() {
-                viewModel.start()
-            }
-
-            override fun stopRealtime() {
-                viewModel.stop()
-            }
-
-            override fun submitQuickSubtitle(target: String, text: String) {
-                viewModel.applyExternalQuickSubtitleRequest(target, text)
-            }
-
-            override fun beginPushToTalkSession() {
-                viewModel.beginPushToTalkSession()
-            }
-
-            override fun setPushToTalkPressed(pressed: Boolean) {
-                viewModel.setPushToTalkPressed(pressed)
-            }
-
-            override fun commitPushToTalkSession(action: RealtimeRuntimeBridge.PttCommitAction) {
-                val mapped = when (action) {
-                    RealtimeRuntimeBridge.PttCommitAction.SendToSubtitle ->
-                        PttConfirmReleaseAction.SendToSubtitle
-                    RealtimeRuntimeBridge.PttCommitAction.SendToInput ->
-                        PttConfirmReleaseAction.SendToInput
-                    RealtimeRuntimeBridge.PttCommitAction.Cancel ->
-                        PttConfirmReleaseAction.Cancel
-                }
-                viewModel.commitPushToTalkSession(mapped)
-            }
-        }
-        RealtimeRuntimeBridge.registerAppDelegate(delegate)
-        onDispose {
-            RealtimeRuntimeBridge.unregisterAppDelegate(delegate)
-        }
-    }
-    SideEffect {
-        RealtimeRuntimeBridge.updateAppSnapshot(
-            RealtimeRuntimeBridge.Snapshot(
-                running = state.running,
-                latestRecognizedText = viewModel.realtimeRecognized.firstOrNull()?.text.orEmpty(),
-                inputLevel = topMicLevel.coerceIn(0f, 1f),
-                playbackProgress = topPlaybackProgress.coerceIn(0f, 1f),
-                inputDeviceLabel = state.inputDeviceLabel,
-                outputDeviceLabel = state.outputDeviceLabel,
-                pushToTalkPressed = state.pushToTalkPressed,
-                pushToTalkStreamingText = state.pushToTalkStreamingText
-            )
-        )
-    }
     LaunchedEffect(drawerItems.size) {
         val validPages = drawerItems.map { it.page }.toSet()
         if (page !in validPages) {
@@ -6790,17 +7438,28 @@ fun AppScaffold(viewModel: MainViewModel) {
                 }
             }
             else -> {
-                quickSubtitleFullscreen = false
-                if (page != pageQuickSubtitle) {
-                    page = pageQuickSubtitle
-                }
-                if (quickSubtitleRoute != QuickSubtitleRoutes.Main) {
-                    quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+                if (request.navigateToPage) {
+                    quickSubtitleFullscreen = false
+                    if (page != pageQuickSubtitle) {
+                        page = pageQuickSubtitle
+                    }
+                    if (quickSubtitleRoute != QuickSubtitleRoutes.Main) {
+                        quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+                    }
                 }
                 viewModel.applyExternalQuickSubtitleRequest(request.target, request.text)
             }
         }
         viewModel.consumeQuickSubtitleLaunchRequest(request.requestId)
+        if (!usePermanentDrawer) {
+            drawerState.close()
+        }
+    }
+    LaunchedEffect(pendingVoicePackInstallRequest?.requestId) {
+        val request = pendingVoicePackInstallRequest ?: return@LaunchedEffect
+        page = pageVoicePack
+        toast(context, request.message)
+        viewModel.consumeVoicePackInstallRequest(request.requestId)
         if (!usePermanentDrawer) {
             drawerState.close()
         }
@@ -6930,8 +7589,24 @@ fun AppScaffold(viewModel: MainViewModel) {
         )
     }
 
+    var startRealtimeAfterPermissionGrant by remember { mutableStateOf(false) }
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) viewModel.start() else toast(context, "需要麦克风权限")
+        val shouldStartRealtime = startRealtimeAfterPermissionGrant
+        startRealtimeAfterPermissionGrant = false
+        if (granted) {
+            if (shouldStartRealtime) {
+                viewModel.start()
+            }
+        } else {
+            toast(context, "需要麦克风权限")
+        }
+    }
+    val pendingRecordAudioPermissionRequest = viewModel.pendingRecordAudioPermissionRequest
+    LaunchedEffect(pendingRecordAudioPermissionRequest?.requestId) {
+        val request = pendingRecordAudioPermissionRequest ?: return@LaunchedEffect
+        startRealtimeAfterPermissionGrant = request.startRealtimeOnGrant
+        permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        viewModel.consumeRecordAudioPermissionRequest(request.requestId)
     }
     val voicePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.importVoice(uri) else toast(context, "未选择文件")
@@ -6942,38 +7617,47 @@ fun AppScaffold(viewModel: MainViewModel) {
         if (state.running) {
             viewModel.stop()
         } else {
+            startRealtimeAfterPermissionGrant = true
             permLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
     var pttConfirmOwnedByMainPanel by remember { mutableStateOf(false) }
+    var pttTemporaryStartByMainPanel by remember { mutableStateOf(false) }
 
     val onPushToTalkPressStart = {
         pttConfirmOwnedByMainPanel = true
-        viewModel.setPushToTalkPressed(true)
-        viewModel.beginPushToTalkSession()
-        if (!state.running) {
-            val granted = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-            if (granted) {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            pttConfirmOwnedByMainPanel = false
+            pttTemporaryStartByMainPanel = false
+            startRealtimeAfterPermissionGrant = false
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            pttTemporaryStartByMainPanel = !state.running
+            if (pttTemporaryStartByMainPanel) {
                 viewModel.start()
-            } else {
-                permLauncher.launch(Manifest.permission.RECORD_AUDIO)
             }
+            viewModel.beginPushToTalkSession()
+            viewModel.setPushToTalkPressed(true)
         }
     }
     val onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit = { releaseAction ->
+        val shouldStop = pttTemporaryStartByMainPanel
         viewModel.commitPushToTalkSession(releaseAction)
         viewModel.setPushToTalkPressed(false)
         pttConfirmOwnedByMainPanel = false
-        if (state.running) {
+        pttTemporaryStartByMainPanel = false
+        if (shouldStop) {
             viewModel.stop()
         }
     }
     LaunchedEffect(state.pushToTalkPressed) {
         if (!state.pushToTalkPressed) {
             pttConfirmOwnedByMainPanel = false
+            pttTemporaryStartByMainPanel = false
         }
     }
     if (showBuiltinVoicePicker) {
@@ -8095,7 +8779,13 @@ fun ModelScreen(viewModel: MainViewModel, state: UiState) {
                 Text("请前往“语音包”页面顶部文件夹按钮导入语音包。")
                 Spacer(Modifier.height(8.dp))
                 Text("当前语音包路径：", style = MaterialTheme.typography.labelSmall)
-                Text(state.voiceDir?.absolutePath ?: "未选择")
+                Text(
+                    when {
+                        isSystemTtsVoiceDir(state.voiceDir) -> SYSTEM_TTS_DEFAULT_LABEL
+                        state.voiceDir != null -> state.voiceDir.absolutePath
+                        else -> "未选择"
+                    }
+                )
             }
         }
         Text("状态：${state.status}")
@@ -8775,6 +9465,7 @@ private fun VoicePackCardContent(
     onDelete: () -> Unit,
     onStartDrag: () -> Unit
 ) {
+    val isSystemPack = isSystemTtsVoiceDir(pack.dir)
     val avatarFile = File(pack.dir, pack.meta.avatar)
     val avatarBitmap = rememberAvatarBitmap(avatarFile)
     val cardElevation by animateDpAsState(
@@ -8820,6 +9511,10 @@ private fun VoicePackCardContent(
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(pack.meta.name, fontWeight = FontWeight.SemiBold)
+                            if (isSystemPack) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("系统", style = MaterialTheme.typography.bodySmall)
+                            }
                             if (pack.meta.pinned) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("置顶", style = MaterialTheme.typography.bodySmall)
@@ -8868,22 +9563,26 @@ private fun VoicePackCardContent(
                     Md2IconButton(
                         icon = if (pack.meta.pinned) "keep_off" else "push_pin",
                         contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
-                        onClick = onTogglePin
+                        onClick = onTogglePin,
+                        enabled = !isSystemPack
                     )
                     Md2IconButton(
                         icon = "info",
                         contentDescription = "语音包详细信息",
-                        onClick = onDetail
+                        onClick = onDetail,
+                        enabled = !isSystemPack
                     )
                     Md2IconButton(
                         icon = "share",
                         contentDescription = "分享语音包",
-                        onClick = onShare
+                        onClick = onShare,
+                        enabled = !isSystemPack
                     )
                     Md2IconButton(
                         icon = "delete",
                         contentDescription = "删除语音包",
-                        onClick = onDelete
+                        onClick = onDelete,
+                        enabled = !isSystemPack
                     )
                 }
             }
@@ -9902,7 +10601,10 @@ fun QuickSubtitleScreen(
                                                         .clickable { viewModel.selectQuickSubtitleGroup(index) },
                                                     contentAlignment = Alignment.Center
                                                 ) {
-                                                    MsIcon(group.icon, contentDescription = group.title)
+                                                    MsIcon(
+                                                        group.icon,
+                                                        contentDescription = group.title.ifBlank { "未命名分组" }
+                                                    )
                                                 }
                                             }
                                         }
@@ -10227,8 +10929,9 @@ fun QuickSubtitleScreen(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                MsIcon(group.icon, contentDescription = group.title)
-                                                Text(group.title, maxLines = 1)
+                                                val displayTitle = group.title.ifBlank { "未命名分组" }
+                                                MsIcon(group.icon, contentDescription = displayTitle)
+                                                Text(displayTitle, maxLines = 1)
                                             }
                                         }
                                     }
@@ -10276,8 +10979,9 @@ fun QuickSubtitleScreen(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                MsIcon(group.icon, contentDescription = group.title)
-                                                Text(group.title, maxLines = 1)
+                                                val displayTitle = group.title.ifBlank { "未命名分组" }
+                                                MsIcon(group.icon, contentDescription = displayTitle)
+                                                Text(displayTitle, maxLines = 1)
                                             }
                                             if (index != groups.lastIndex) {
                                                 Spacer(Modifier.width(2.dp))
@@ -11043,8 +11747,9 @@ private fun QuickSubtitleEditorScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                MsIcon(group.icon, contentDescription = group.title)
-                                Text(group.title)
+                                val displayTitle = group.title.ifBlank { "未命名分组" }
+                                MsIcon(group.icon, contentDescription = displayTitle)
+                                Text(displayTitle)
                                 Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
                             }
                         }
@@ -11783,10 +12488,6 @@ fun FloatingOverlayScreen(
                         else if (state.pushToTalkMode) "未开启"
                         else "按住说话未开启"
                     }",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Text(
-                    "保持后台运行：${if (state.keepAlive) "已开启" else "未开启"}",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
@@ -13219,6 +13920,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     val selectedCategory = remember(selectedCategoryName) { SettingsCategory.valueOf(selectedCategoryName) }
     val numberReplaceOptions = remember { listOf("不替换", "数字替换为中文字符", "数字替换为中文表达") }
     var numberReplaceExpanded by remember { mutableStateOf(false) }
+    val isSystemTtsSelected = isSystemTtsVoiceDir(state.voiceDir)
 
     LaunchedEffect(selectedCategory) {
         scroll.animateScrollTo(0)
@@ -13431,6 +14133,10 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
 
             Md2StaggeredFloatIn(index = 1) {
                 Md2SettingsCard(title = "播放与合成") {
+                    Text(
+                        "当前朗读后端：${if (isSystemTtsSelected) SYSTEM_TTS_DEFAULT_LABEL else "语音包"}",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = state.playbackGainPercent.toFloat(),
@@ -13438,19 +14144,47 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         valueRange = 0f..1000f
                     )
                     Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
-                    Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
-                    Slider(
-                        value = state.piperNoiseScale,
-                        onValueChange = { viewModel.setPiperNoiseScale(it) },
-                        valueRange = 0f..2f
+                    if (isSystemTtsSelected) {
+                        Text(
+                            "系统 TTS 使用设备已安装的语音引擎与音色。音色随机度等 Piper 专属参数在系统 TTS 下不生效。",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Md2Button(
+                            onClick = {
+                                viewModel.openSystemTtsSetup(context)
+                            }
+                        ) {
+                            Text("打开系统 TTS 设置")
+                        }
+                    } else {
+                        Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = state.piperNoiseScale,
+                            onValueChange = { viewModel.setPiperNoiseScale(it) },
+                            valueRange = 0f..2f
+                        )
+                    }
+                    Text(
+                        if (isSystemTtsSelected) {
+                            "系统语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}"
+                        } else {
+                            "语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}"
+                        },
+                        style = MaterialTheme.typography.bodySmall
                     )
-                    Text("语速倍率（越大越慢）：${String.format("%.3f", state.piperLengthScale)}", style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = state.piperLengthScale,
                         onValueChange = { viewModel.setPiperLengthScale(it) },
                         valueRange = 0.1f..5f
                     )
-                    Text("句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (isSystemTtsSelected) {
+                            "系统 TTS 句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s"
+                        } else {
+                            "句末停顿时长：${String.format("%.2f", state.piperSentenceSilence)}s"
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                     Slider(
                         value = state.piperSentenceSilence,
                         onValueChange = { viewModel.setPiperSentenceSilence(it) },
@@ -13670,12 +14404,6 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         checked = state.useBuiltinGallery,
                         onCheckedChange = { viewModel.setUseBuiltinGallery(it) },
                         supportingText = "关闭时使用系统图库选择器。"
-                    )
-                    Md2SettingSwitchRow(
-                        title = "保持后台运行",
-                        checked = state.keepAlive,
-                        onCheckedChange = { viewModel.setKeepAlive(it) },
-                        supportingText = "开启后启用前台服务，锁屏/息屏也持续工作"
                     )
                 }
             }

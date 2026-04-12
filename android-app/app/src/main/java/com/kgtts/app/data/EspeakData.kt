@@ -1,7 +1,7 @@
-package com.kgtts.app.data
+package com.lhtstudio.kigtts.app.data
 
 import android.content.Context
-import com.kgtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.AppLogger
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipInputStream

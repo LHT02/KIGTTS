@@ -31,7 +31,7 @@ inline float int16ToFloat(spx_int16_t value) {
 }  // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_kgtts_app_audio_SpeexNative_nativeCreate(
+Java_com_lhtstudio_kigtts_app_audio_SpeexNative_nativeCreate(
     JNIEnv*,
     jclass,
     jint frameSize,
@@ -58,7 +58,7 @@ Java_com_kgtts_app_audio_SpeexNative_nativeCreate(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_kgtts_app_audio_SpeexNative_nativeDestroy(JNIEnv*, jclass, jlong handlePtr) {
+Java_com_lhtstudio_kigtts_app_audio_SpeexNative_nativeDestroy(JNIEnv*, jclass, jlong handlePtr) {
     auto* handle = fromHandle(handlePtr);
     if (handle == nullptr) {
         return;
@@ -71,7 +71,7 @@ Java_com_kgtts_app_audio_SpeexNative_nativeDestroy(JNIEnv*, jclass, jlong handle
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_kgtts_app_audio_SpeexNative_nativeProcessFrame(
+Java_com_lhtstudio_kigtts_app_audio_SpeexNative_nativeProcessFrame(
     JNIEnv* env,
     jclass,
     jlong handlePtr,

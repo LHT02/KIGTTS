@@ -1,4 +1,4 @@
-package com.kgtts.app.util
+package com.lhtstudio.kigtts.app.util
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory

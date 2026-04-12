@@ -21,7 +21,7 @@ RnNoiseHandle* fromHandle(jlong handle) {
 }  // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_kgtts_app_audio_RnNoiseNative_nativeCreate(JNIEnv*, jclass) {
+Java_com_lhtstudio_kigtts_app_audio_RnNoiseNative_nativeCreate(JNIEnv*, jclass) {
     auto* handle = new (std::nothrow) RnNoiseHandle();
     if (handle == nullptr) {
         return 0;
@@ -35,7 +35,7 @@ Java_com_kgtts_app_audio_RnNoiseNative_nativeCreate(JNIEnv*, jclass) {
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_kgtts_app_audio_RnNoiseNative_nativeDestroy(JNIEnv*, jclass, jlong handlePtr) {
+Java_com_lhtstudio_kigtts_app_audio_RnNoiseNative_nativeDestroy(JNIEnv*, jclass, jlong handlePtr) {
     auto* handle = fromHandle(handlePtr);
     if (handle == nullptr) {
         return;
@@ -48,12 +48,12 @@ Java_com_kgtts_app_audio_RnNoiseNative_nativeDestroy(JNIEnv*, jclass, jlong hand
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_kgtts_app_audio_RnNoiseNative_nativeFrameSize(JNIEnv*, jclass) {
+Java_com_lhtstudio_kigtts_app_audio_RnNoiseNative_nativeFrameSize(JNIEnv*, jclass) {
     return kRnNoiseFrameSize;
 }
 
 extern "C" JNIEXPORT jfloat JNICALL
-Java_com_kgtts_app_audio_RnNoiseNative_nativeProcessFrame(
+Java_com_lhtstudio_kigtts_app_audio_RnNoiseNative_nativeProcessFrame(
     JNIEnv* env,
     jclass,
     jlong handlePtr,

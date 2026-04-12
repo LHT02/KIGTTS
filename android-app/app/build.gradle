@@ -10,11 +10,11 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace "com.kgtts.app"
+    namespace "com.lhtstudio.kigtts.app"
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.kgtts.app"
+        applicationId "com.lhtstudio.kigtts.app"
         minSdk 26
         targetSdk 34
         versionCode 1
@@ -118,6 +118,7 @@ dependencies {
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
     implementation "com.vanniktech:android-image-cropper:4.7.0"
     implementation "com.google.zxing:core:3.5.3"
+    implementation "com.google.mlkit:barcode-scanning:17.3.0"
 
     testImplementation "junit:junit:4.13.2"
     androidTestImplementation "androidx.test.ext:junit:1.1.5"
