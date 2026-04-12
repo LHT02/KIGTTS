@@ -521,7 +521,7 @@ data class UiState(
     val piperLengthScale: Float = 1.0f,
     val piperNoiseW: Float = 0.8f,
     val piperSentenceSilence: Float = 0.2f,
-    val keepAlive: Boolean = false,
+    val keepAlive: Boolean = true,
     val numberReplaceMode: Int = 0,
     val landscapeDrawerMode: Int = UserPrefs.DRAWER_MODE_PERMANENT,
     val solidTopBar: Boolean = true,
@@ -1034,7 +1034,7 @@ class MainViewModel(
         for (i in 0 until groupsArr.length()) {
             val g = groupsArr.optJSONObject(i) ?: continue
             val id = g.optLong("id", i.toLong() + 1L).coerceAtLeast(1L)
-            val title = g.optString("title", "未命名分组").ifBlank { "未命名分组" }
+            val title = g.optString("title", "").trim()
             val icon = g.optString("icon", "sentiment_satisfied").ifBlank { "sentiment_satisfied" }
             val itemsArr = g.optJSONArray("items") ?: JSONArray()
             val items = mutableListOf<String>()
@@ -1276,7 +1276,7 @@ class MainViewModel(
         val next = quickSubtitleGroups.toMutableList()
         val prev = next[index]
         next[index] = prev.copy(
-            title = title.trim().ifEmpty { "未命名分组" },
+            title = title.trim(),
             icon = icon.ifBlank { "sentiment_satisfied" }
         )
         quickSubtitleGroups = next
@@ -10601,7 +10601,10 @@ fun QuickSubtitleScreen(
                                                         .clickable { viewModel.selectQuickSubtitleGroup(index) },
                                                     contentAlignment = Alignment.Center
                                                 ) {
-                                                    MsIcon(group.icon, contentDescription = group.title)
+                                                    MsIcon(
+                                                        group.icon,
+                                                        contentDescription = group.title.ifBlank { "未命名分组" }
+                                                    )
                                                 }
                                             }
                                         }
@@ -10926,8 +10929,9 @@ fun QuickSubtitleScreen(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                MsIcon(group.icon, contentDescription = group.title)
-                                                Text(group.title, maxLines = 1)
+                                                val displayTitle = group.title.ifBlank { "未命名分组" }
+                                                MsIcon(group.icon, contentDescription = displayTitle)
+                                                Text(displayTitle, maxLines = 1)
                                             }
                                         }
                                     }
@@ -10975,8 +10979,9 @@ fun QuickSubtitleScreen(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
-                                                MsIcon(group.icon, contentDescription = group.title)
-                                                Text(group.title, maxLines = 1)
+                                                val displayTitle = group.title.ifBlank { "未命名分组" }
+                                                MsIcon(group.icon, contentDescription = displayTitle)
+                                                Text(displayTitle, maxLines = 1)
                                             }
                                             if (index != groups.lastIndex) {
                                                 Spacer(Modifier.width(2.dp))
@@ -11742,8 +11747,9 @@ private fun QuickSubtitleEditorScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                MsIcon(group.icon, contentDescription = group.title)
-                                Text(group.title)
+                                val displayTitle = group.title.ifBlank { "未命名分组" }
+                                MsIcon(group.icon, contentDescription = displayTitle)
+                                Text(displayTitle)
                                 Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
                             }
                         }
@@ -12482,10 +12488,6 @@ fun FloatingOverlayScreen(
                         else if (state.pushToTalkMode) "未开启"
                         else "按住说话未开启"
                     }",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Text(
-                    "保持后台运行：${if (state.keepAlive) "已开启" else "未开启"}",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
@@ -14402,12 +14404,6 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         checked = state.useBuiltinGallery,
                         onCheckedChange = { viewModel.setUseBuiltinGallery(it) },
                         supportingText = "关闭时使用系统图库选择器。"
-                    )
-                    Md2SettingSwitchRow(
-                        title = "保持后台运行",
-                        checked = state.keepAlive,
-                        onCheckedChange = { viewModel.setKeepAlive(it) },
-                        supportingText = "开启后启用前台服务，锁屏/息屏也持续工作"
                     )
                 }
             }

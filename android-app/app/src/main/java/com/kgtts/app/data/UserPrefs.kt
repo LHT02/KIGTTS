@@ -85,7 +85,7 @@ object UserPrefs {
         val piperLengthScale: Float = 1.0f,
         val piperNoiseW: Float = 0.8f,
         val piperSentenceSilence: Float = 0.2f,
-        val keepAlive: Boolean = false,
+        val keepAlive: Boolean = true,
         val numberReplaceMode: Int = 0,
         val landscapeDrawerMode: Int = DRAWER_MODE_PERMANENT,
         val solidTopBar: Boolean = true,
@@ -187,7 +187,7 @@ object UserPrefs {
             piperLengthScale = (this[KEY_PIPER_LENGTH_SCALE] ?: 1.0f).coerceIn(0.1f, 5f),
             piperNoiseW = (this[KEY_PIPER_NOISE_W] ?: 0.8f).coerceIn(0f, 2f),
             piperSentenceSilence = (this[KEY_PIPER_SENTENCE_SILENCE] ?: 0.2f).coerceIn(0f, 2f),
-            keepAlive = this[KEY_KEEP_ALIVE] ?: false,
+            keepAlive = true,
             numberReplaceMode = this[KEY_NUMBER_REPLACE_MODE] ?: 0,
             landscapeDrawerMode = (this[KEY_LANDSCAPE_DRAWER_MODE] ?: DRAWER_MODE_PERMANENT)
                 .coerceIn(DRAWER_MODE_HIDDEN, DRAWER_MODE_PERMANENT),
