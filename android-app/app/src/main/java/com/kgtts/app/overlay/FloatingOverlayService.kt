@@ -115,6 +115,8 @@ class FloatingOverlayService : Service() {
     private var fabParams: WindowManager.LayoutParams? = null
     private var bubbleRow: LinearLayout? = null
     private var bubbleTextView: TextView? = null
+    private var fabSpacerView: View? = null
+    private var fabButtonHost: FrameLayout? = null
     private var fabButton: FrameLayout? = null
     private var fabIconView: TextView? = null
     private var panelRoot: FrameLayout? = null
@@ -643,13 +645,67 @@ class FloatingOverlayService : Service() {
         return max(byButton, byRootHalf)
     }
 
+    private fun fabDockVisibleWidthPx(): Int {
+        val buttonWidth =
+            fabButton?.measuredWidth?.takeIf { it > 0 }
+                ?: fabButton?.width?.takeIf { it > 0 }
+                ?: dp(FAB_SIZE_DP)
+        return max(1, buttonWidth / 2)
+    }
+
     private fun dockedFabXForEdge(edge: String, screenWidth: Int): Int {
-        val exposure = fabButtonHalfExposureOffset()
+        val visibleWidth = fabDockVisibleWidthPx()
         return if (edge == FAB_EDGE_LEFT) {
-            -exposure
+            0
         } else {
-            screenWidth - exposure
+            max(0, screenWidth - visibleWidth)
         }
+    }
+
+    private fun updateFabDockLayout(edge: String) {
+        val root = fabRoot ?: return
+        val host = fabButtonHost ?: return
+        val button = fabButton ?: return
+        val spacer = fabSpacerView
+        val rootLayoutParams = root.layoutParams as? ViewGroup.MarginLayoutParams
+        val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return
+        val buttonLayoutParams = button.layoutParams as? FrameLayout.LayoutParams ?: return
+        if (fabIdleDocked) {
+            val visibleWidth = fabDockVisibleWidthPx()
+            root.clipChildren = false
+            root.clipToPadding = false
+            root.gravity = if (edge == FAB_EDGE_LEFT) Gravity.START else Gravity.END
+            root.setPadding(0, dp(10), 0, dp(10))
+            rootLayoutParams?.width = ViewGroup.LayoutParams.WRAP_CONTENT
+            spacer?.visibility = View.GONE
+            host.clipChildren = true
+            host.clipToPadding = true
+            hostLayoutParams.width = visibleWidth
+            hostLayoutParams.height = dp(FAB_SIZE_DP)
+            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            button.translationX =
+                if (edge == FAB_EDGE_LEFT) -(dp(FAB_SIZE_DP) - visibleWidth).toFloat() else 0f
+        } else {
+            root.clipChildren = false
+            root.clipToPadding = false
+            root.gravity = Gravity.END
+            root.setPadding(dp(14), dp(14), dp(14), dp(14))
+            rootLayoutParams?.width = ViewGroup.LayoutParams.WRAP_CONTENT
+            spacer?.visibility = View.VISIBLE
+            host.clipChildren = false
+            host.clipToPadding = false
+            hostLayoutParams.width = dp(FAB_SIZE_DP)
+            hostLayoutParams.height = dp(FAB_SIZE_DP)
+            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            button.translationX = 0f
+        }
+        host.layoutParams = hostLayoutParams
+        button.layoutParams = buttonLayoutParams
+        if (rootLayoutParams != null) {
+            root.layoutParams = rootLayoutParams
+        }
+        host.requestLayout()
+        root.requestLayout()
     }
 
     private fun restoreFabFromIdleDock() {
@@ -663,6 +719,7 @@ class FloatingOverlayService : Service() {
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
         applyFabAnchor(params, anchor, displayWidth(), displayHeight())
         fabIdleDocked = false
+        updateFabDockLayout(anchor.edge)
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
     }
@@ -671,8 +728,10 @@ class FloatingOverlayService : Service() {
         val root = fabRoot ?: return
         if (fabIdleDocked) {
             bubbleRow?.visibility = View.GONE
+            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
             root.alpha = fabIdleDockAlpha
         } else {
+            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
             root.alpha = 1f
         }
     }
@@ -694,6 +753,7 @@ class FloatingOverlayService : Service() {
         root.post {
             val liveParams = fabParams ?: return@post
             val liveRoot = fabRoot ?: return@post
+            updateFabDockLayout(anchor.edge)
             val targetX = dockedFabXForEdge(anchor.edge, displayWidth())
             val targetY = liveParams.y
             val startX = liveParams.x
@@ -977,6 +1037,15 @@ class FloatingOverlayService : Service() {
             )
             setOnTouchListener { _, event -> handleFabTouch(event) }
         }
+        fabButtonHost = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(
+                fabButton,
+                FrameLayout.LayoutParams(dp(FAB_SIZE_DP), dp(FAB_SIZE_DP), Gravity.START or Gravity.CENTER_VERTICAL)
+            )
+        }
+        fabSpacerView = spaceView(1, dp(12))
 
         fabRoot = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -991,9 +1060,9 @@ class FloatingOverlayService : Service() {
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
-            addView(spaceView(1, dp(12)))
+            addView(fabSpacerView)
             addView(
-                fabButton,
+                fabButtonHost,
                 LinearLayout.LayoutParams(dp(FAB_SIZE_DP), dp(FAB_SIZE_DP))
             )
         }
@@ -2308,6 +2377,8 @@ class FloatingOverlayService : Service() {
         fabRoot?.let { runCatching { windowManager.removeView(it) } }
         fabRoot = null
         fabButton = null
+        fabButtonHost = null
+        fabSpacerView = null
         fabIconView = null
         bubbleRow = null
         bubbleTextView = null
