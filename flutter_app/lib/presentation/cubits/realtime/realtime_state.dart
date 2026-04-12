@@ -8,6 +8,7 @@ part 'realtime_state.freezed.dart';
 abstract class RealtimeState with _$RealtimeState {
   const factory RealtimeState({
     @Default(false) bool running,
+    @Default(false) bool ttsOnly,                // true = TTS only (no mic/ASR)
     @Default(false) bool recording,              // PTT recording state
     @Default(true) bool pttMode,                 // Push-to-talk mode flag
     @Default('待命') String status,
@@ -18,8 +19,10 @@ abstract class RealtimeState with _$RealtimeState {
     @Default('未知') String inputDeviceLabel,
     @Default('未知') String outputDeviceLabel,
     @Default('未启用') String aec3Status,
+    @Default(false) bool pttConfirmInputMode,
     @Default(false) bool pttPressed,
     @Default('') String pttStreamingText,
+    @Default('') String pttDragTarget,  // SendToSubtitle / SendToInput / Cancel
     @Default(-1.0) double speakerLastSimilarity,
     @Default(false) bool loading,
     String? error,

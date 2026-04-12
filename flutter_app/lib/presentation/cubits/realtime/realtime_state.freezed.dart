@@ -18,6 +18,8 @@ final _privateConstructorUsedError = UnsupportedError(
 /// @nodoc
 mixin _$RealtimeState {
   bool get running => throw _privateConstructorUsedError;
+  bool get ttsOnly =>
+      throw _privateConstructorUsedError; // true = TTS only (no mic/ASR)
   bool get recording =>
       throw _privateConstructorUsedError; // PTT recording state
   bool get pttMode =>
@@ -30,8 +32,11 @@ mixin _$RealtimeState {
   String get inputDeviceLabel => throw _privateConstructorUsedError;
   String get outputDeviceLabel => throw _privateConstructorUsedError;
   String get aec3Status => throw _privateConstructorUsedError;
+  bool get pttConfirmInputMode => throw _privateConstructorUsedError;
   bool get pttPressed => throw _privateConstructorUsedError;
   String get pttStreamingText => throw _privateConstructorUsedError;
+  String get pttDragTarget =>
+      throw _privateConstructorUsedError; // SendToSubtitle / SendToInput / Cancel
   double get speakerLastSimilarity => throw _privateConstructorUsedError;
   bool get loading => throw _privateConstructorUsedError;
   String? get error => throw _privateConstructorUsedError;
@@ -54,6 +59,7 @@ abstract class $RealtimeStateCopyWith<$Res> {
   @useResult
   $Res call({
     bool running,
+    bool ttsOnly,
     bool recording,
     bool pttMode,
     String status,
@@ -64,8 +70,10 @@ abstract class $RealtimeStateCopyWith<$Res> {
     String inputDeviceLabel,
     String outputDeviceLabel,
     String aec3Status,
+    bool pttConfirmInputMode,
     bool pttPressed,
     String pttStreamingText,
+    String pttDragTarget,
     double speakerLastSimilarity,
     bool loading,
     String? error,
@@ -90,6 +98,7 @@ class _$RealtimeStateCopyWithImpl<$Res, $Val extends RealtimeState>
   @override
   $Res call({
     Object? running = null,
+    Object? ttsOnly = null,
     Object? recording = null,
     Object? pttMode = null,
     Object? status = null,
@@ -100,8 +109,10 @@ class _$RealtimeStateCopyWithImpl<$Res, $Val extends RealtimeState>
     Object? inputDeviceLabel = null,
     Object? outputDeviceLabel = null,
     Object? aec3Status = null,
+    Object? pttConfirmInputMode = null,
     Object? pttPressed = null,
     Object? pttStreamingText = null,
+    Object? pttDragTarget = null,
     Object? speakerLastSimilarity = null,
     Object? loading = null,
     Object? error = freezed,
@@ -113,6 +124,10 @@ class _$RealtimeStateCopyWithImpl<$Res, $Val extends RealtimeState>
             running: null == running
                 ? _value.running
                 : running // ignore: cast_nullable_to_non_nullable
+                      as bool,
+            ttsOnly: null == ttsOnly
+                ? _value.ttsOnly
+                : ttsOnly // ignore: cast_nullable_to_non_nullable
                       as bool,
             recording: null == recording
                 ? _value.recording
@@ -154,6 +169,10 @@ class _$RealtimeStateCopyWithImpl<$Res, $Val extends RealtimeState>
                 ? _value.aec3Status
                 : aec3Status // ignore: cast_nullable_to_non_nullable
                       as String,
+            pttConfirmInputMode: null == pttConfirmInputMode
+                ? _value.pttConfirmInputMode
+                : pttConfirmInputMode // ignore: cast_nullable_to_non_nullable
+                      as bool,
             pttPressed: null == pttPressed
                 ? _value.pttPressed
                 : pttPressed // ignore: cast_nullable_to_non_nullable
@@ -161,6 +180,10 @@ class _$RealtimeStateCopyWithImpl<$Res, $Val extends RealtimeState>
             pttStreamingText: null == pttStreamingText
                 ? _value.pttStreamingText
                 : pttStreamingText // ignore: cast_nullable_to_non_nullable
+                      as String,
+            pttDragTarget: null == pttDragTarget
+                ? _value.pttDragTarget
+                : pttDragTarget // ignore: cast_nullable_to_non_nullable
                       as String,
             speakerLastSimilarity: null == speakerLastSimilarity
                 ? _value.speakerLastSimilarity
@@ -199,6 +222,7 @@ abstract class _$$RealtimeStateImplCopyWith<$Res>
   @useResult
   $Res call({
     bool running,
+    bool ttsOnly,
     bool recording,
     bool pttMode,
     String status,
@@ -209,8 +233,10 @@ abstract class _$$RealtimeStateImplCopyWith<$Res>
     String inputDeviceLabel,
     String outputDeviceLabel,
     String aec3Status,
+    bool pttConfirmInputMode,
     bool pttPressed,
     String pttStreamingText,
+    String pttDragTarget,
     double speakerLastSimilarity,
     bool loading,
     String? error,
@@ -234,6 +260,7 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
   @override
   $Res call({
     Object? running = null,
+    Object? ttsOnly = null,
     Object? recording = null,
     Object? pttMode = null,
     Object? status = null,
@@ -244,8 +271,10 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
     Object? inputDeviceLabel = null,
     Object? outputDeviceLabel = null,
     Object? aec3Status = null,
+    Object? pttConfirmInputMode = null,
     Object? pttPressed = null,
     Object? pttStreamingText = null,
+    Object? pttDragTarget = null,
     Object? speakerLastSimilarity = null,
     Object? loading = null,
     Object? error = freezed,
@@ -257,6 +286,10 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
         running: null == running
             ? _value.running
             : running // ignore: cast_nullable_to_non_nullable
+                  as bool,
+        ttsOnly: null == ttsOnly
+            ? _value.ttsOnly
+            : ttsOnly // ignore: cast_nullable_to_non_nullable
                   as bool,
         recording: null == recording
             ? _value.recording
@@ -298,6 +331,10 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
             ? _value.aec3Status
             : aec3Status // ignore: cast_nullable_to_non_nullable
                   as String,
+        pttConfirmInputMode: null == pttConfirmInputMode
+            ? _value.pttConfirmInputMode
+            : pttConfirmInputMode // ignore: cast_nullable_to_non_nullable
+                  as bool,
         pttPressed: null == pttPressed
             ? _value.pttPressed
             : pttPressed // ignore: cast_nullable_to_non_nullable
@@ -305,6 +342,10 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
         pttStreamingText: null == pttStreamingText
             ? _value.pttStreamingText
             : pttStreamingText // ignore: cast_nullable_to_non_nullable
+                  as String,
+        pttDragTarget: null == pttDragTarget
+            ? _value.pttDragTarget
+            : pttDragTarget // ignore: cast_nullable_to_non_nullable
                   as String,
         speakerLastSimilarity: null == speakerLastSimilarity
             ? _value.speakerLastSimilarity
@@ -336,6 +377,7 @@ class __$$RealtimeStateImplCopyWithImpl<$Res>
 class _$RealtimeStateImpl implements _RealtimeState {
   const _$RealtimeStateImpl({
     this.running = false,
+    this.ttsOnly = false,
     this.recording = false,
     this.pttMode = true,
     this.status = '待命',
@@ -346,8 +388,10 @@ class _$RealtimeStateImpl implements _RealtimeState {
     this.inputDeviceLabel = '未知',
     this.outputDeviceLabel = '未知',
     this.aec3Status = '未启用',
+    this.pttConfirmInputMode = false,
     this.pttPressed = false,
     this.pttStreamingText = '',
+    this.pttDragTarget = '',
     this.speakerLastSimilarity = -1.0,
     this.loading = false,
     this.error,
@@ -358,6 +402,10 @@ class _$RealtimeStateImpl implements _RealtimeState {
   @override
   @JsonKey()
   final bool running;
+  @override
+  @JsonKey()
+  final bool ttsOnly;
+  // true = TTS only (no mic/ASR)
   @override
   @JsonKey()
   final bool recording;
@@ -398,10 +446,17 @@ class _$RealtimeStateImpl implements _RealtimeState {
   final String aec3Status;
   @override
   @JsonKey()
+  final bool pttConfirmInputMode;
+  @override
+  @JsonKey()
   final bool pttPressed;
   @override
   @JsonKey()
   final String pttStreamingText;
+  @override
+  @JsonKey()
+  final String pttDragTarget;
+  // SendToSubtitle / SendToInput / Cancel
   @override
   @JsonKey()
   final double speakerLastSimilarity;
@@ -417,7 +472,7 @@ class _$RealtimeStateImpl implements _RealtimeState {
 
   @override
   String toString() {
-    return 'RealtimeState(running: $running, recording: $recording, pttMode: $pttMode, status: $status, recognized: $recognized, inputLevel: $inputLevel, playbackProgress: $playbackProgress, playingId: $playingId, inputDeviceLabel: $inputDeviceLabel, outputDeviceLabel: $outputDeviceLabel, aec3Status: $aec3Status, pttPressed: $pttPressed, pttStreamingText: $pttStreamingText, speakerLastSimilarity: $speakerLastSimilarity, loading: $loading, error: $error, currentAsrDir: $currentAsrDir, currentVoiceDir: $currentVoiceDir)';
+    return 'RealtimeState(running: $running, ttsOnly: $ttsOnly, recording: $recording, pttMode: $pttMode, status: $status, recognized: $recognized, inputLevel: $inputLevel, playbackProgress: $playbackProgress, playingId: $playingId, inputDeviceLabel: $inputDeviceLabel, outputDeviceLabel: $outputDeviceLabel, aec3Status: $aec3Status, pttConfirmInputMode: $pttConfirmInputMode, pttPressed: $pttPressed, pttStreamingText: $pttStreamingText, pttDragTarget: $pttDragTarget, speakerLastSimilarity: $speakerLastSimilarity, loading: $loading, error: $error, currentAsrDir: $currentAsrDir, currentVoiceDir: $currentVoiceDir)';
   }
 
   @override
@@ -426,6 +481,7 @@ class _$RealtimeStateImpl implements _RealtimeState {
         (other.runtimeType == runtimeType &&
             other is _$RealtimeStateImpl &&
             (identical(other.running, running) || other.running == running) &&
+            (identical(other.ttsOnly, ttsOnly) || other.ttsOnly == ttsOnly) &&
             (identical(other.recording, recording) ||
                 other.recording == recording) &&
             (identical(other.pttMode, pttMode) || other.pttMode == pttMode) &&
@@ -446,10 +502,14 @@ class _$RealtimeStateImpl implements _RealtimeState {
                 other.outputDeviceLabel == outputDeviceLabel) &&
             (identical(other.aec3Status, aec3Status) ||
                 other.aec3Status == aec3Status) &&
+            (identical(other.pttConfirmInputMode, pttConfirmInputMode) ||
+                other.pttConfirmInputMode == pttConfirmInputMode) &&
             (identical(other.pttPressed, pttPressed) ||
                 other.pttPressed == pttPressed) &&
             (identical(other.pttStreamingText, pttStreamingText) ||
                 other.pttStreamingText == pttStreamingText) &&
+            (identical(other.pttDragTarget, pttDragTarget) ||
+                other.pttDragTarget == pttDragTarget) &&
             (identical(other.speakerLastSimilarity, speakerLastSimilarity) ||
                 other.speakerLastSimilarity == speakerLastSimilarity) &&
             (identical(other.loading, loading) || other.loading == loading) &&
@@ -461,9 +521,10 @@ class _$RealtimeStateImpl implements _RealtimeState {
   }
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
     runtimeType,
     running,
+    ttsOnly,
     recording,
     pttMode,
     status,
@@ -474,14 +535,16 @@ class _$RealtimeStateImpl implements _RealtimeState {
     inputDeviceLabel,
     outputDeviceLabel,
     aec3Status,
+    pttConfirmInputMode,
     pttPressed,
     pttStreamingText,
+    pttDragTarget,
     speakerLastSimilarity,
     loading,
     error,
     currentAsrDir,
     currentVoiceDir,
-  );
+  ]);
 
   /// Create a copy of RealtimeState
   /// with the given fields replaced by the non-null parameter values.
@@ -495,6 +558,7 @@ class _$RealtimeStateImpl implements _RealtimeState {
 abstract class _RealtimeState implements RealtimeState {
   const factory _RealtimeState({
     final bool running,
+    final bool ttsOnly,
     final bool recording,
     final bool pttMode,
     final String status,
@@ -505,8 +569,10 @@ abstract class _RealtimeState implements RealtimeState {
     final String inputDeviceLabel,
     final String outputDeviceLabel,
     final String aec3Status,
+    final bool pttConfirmInputMode,
     final bool pttPressed,
     final String pttStreamingText,
+    final String pttDragTarget,
     final double speakerLastSimilarity,
     final bool loading,
     final String? error,
@@ -516,6 +582,8 @@ abstract class _RealtimeState implements RealtimeState {
 
   @override
   bool get running;
+  @override
+  bool get ttsOnly; // true = TTS only (no mic/ASR)
   @override
   bool get recording; // PTT recording state
   @override
@@ -537,9 +605,13 @@ abstract class _RealtimeState implements RealtimeState {
   @override
   String get aec3Status;
   @override
+  bool get pttConfirmInputMode;
+  @override
   bool get pttPressed;
   @override
   String get pttStreamingText;
+  @override
+  String get pttDragTarget; // SendToSubtitle / SendToInput / Cancel
   @override
   double get speakerLastSimilarity;
   @override
