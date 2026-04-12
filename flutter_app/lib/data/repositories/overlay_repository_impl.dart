@@ -8,6 +8,13 @@ class OverlayRepositoryImpl implements OverlayRepository {
   final OverlayChannelDataSource dataSource;
 
   @override
+  Future<bool> hasPermission() => dataSource.canDrawOverlays();
+
+  @override
+  Future<void> openPermissionSettings() =>
+      dataSource.openOverlayPermissionSettings();
+
+  @override
   Future<void> show() => dataSource.show();
 
   @override

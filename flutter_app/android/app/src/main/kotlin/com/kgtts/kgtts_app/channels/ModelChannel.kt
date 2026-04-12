@@ -214,6 +214,29 @@ class ModelChannel(
                 prefs.edit().putString("flutter.last_voice_name", name).apply()
                 result.success(null)
             }
+            "getLastAsrName" -> {
+                val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                result.success(prefs.getString("flutter.last_asr_name", null))
+            }
+            "setLastAsrName" -> {
+                val name = call.argument<String>("name") ?: return result.error("ARGS", "missing name", null)
+                val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                prefs.edit().putString("flutter.last_asr_name", name).apply()
+                result.success(null)
+            }
+            "getSystemTtsOrder" -> {
+                val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                val key = "flutter.system_tts_order"
+                val value = if (prefs.contains(key)) prefs.getLong(key, 0L) else null
+                result.success(value)
+            }
+            "setSystemTtsOrder" -> {
+                val order = call.argument<Number>("order")?.toLong()
+                    ?: return result.error("ARGS", "missing order", null)
+                val prefs = context.getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+                prefs.edit().putLong("flutter.system_tts_order", order).apply()
+                result.success(null)
+            }
             else -> result.notImplemented()
         }
     }

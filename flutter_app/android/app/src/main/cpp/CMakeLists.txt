@@ -20,6 +20,14 @@ set(AEC3_BUILD_DIR "${CMAKE_BINARY_DIR}/aec3-build/src/aec3_external-build")
 set(AEC3_LIB "${AEC3_BUILD_DIR}/libwebrtc_aec3.a")
 set(AEC3_URL "https://github.com/khomin/AEC3_cmake/archive/d72e24514de16e92eee088abc8127dd2d86cb32c.zip")
 
+set(KIGTTS_SHARED_THIRD_PARTY_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../../../android-app/app/src/main/cpp/third_party")
+if(NOT EXISTS "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src/denoise.c")
+    message(FATAL_ERROR "Missing shared rnnoise sources at ${KIGTTS_SHARED_THIRD_PARTY_DIR}. Ensure android-app/ is present in this workspace.")
+endif()
+if(NOT EXISTS "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/libspeexdsp/mdf.c")
+    message(FATAL_ERROR "Missing shared speex sources at ${KIGTTS_SHARED_THIRD_PARTY_DIR}. Ensure android-app/ is present in this workspace.")
+endif()
+
 ExternalProject_Add(
     espeak_ng_external
     PREFIX "${CMAKE_BINARY_DIR}/espeak-ng-build"
@@ -150,3 +158,68 @@ target_link_libraries(
 )
 
 target_compile_options(aec3_jni PRIVATE -fexceptions)
+
+add_library(
+    rnnoise_jni
+    SHARED
+    rnnoise_jni.cpp
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src/denoise.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src/kiss_fft.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src/pitch.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src/celt_lpc.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src/rnn.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src/rnn_data.c"
+)
+
+target_include_directories(
+    rnnoise_jni PRIVATE
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/include"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/rnnoise/src"
+)
+
+target_compile_definitions(
+    rnnoise_jni PRIVATE
+    RNNOISE_BUILD
+)
+
+target_link_libraries(
+    rnnoise_jni
+    log
+)
+
+target_compile_options(rnnoise_jni PRIVATE -fexceptions)
+
+add_library(
+    speex_jni
+    SHARED
+    speex_jni.cpp
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/libspeexdsp/fftwrap.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/libspeexdsp/filterbank.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/libspeexdsp/mdf.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/libspeexdsp/preprocess.c"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/libspeexdsp/smallft.c"
+)
+
+target_include_directories(
+    speex_jni PRIVATE
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/include"
+    "${KIGTTS_SHARED_THIRD_PARTY_DIR}/speex/libspeexdsp"
+)
+
+target_compile_definitions(
+    speex_jni PRIVATE
+    FLOATING_POINT
+    USE_SMALLFT
+    EXPORT=
+)
+
+target_link_libraries(
+    speex_jni
+    log
+)
+
+target_compile_options(
+    speex_jni PRIVATE
+    -fexceptions
+    -Wno-error=implicit-function-declaration
+)

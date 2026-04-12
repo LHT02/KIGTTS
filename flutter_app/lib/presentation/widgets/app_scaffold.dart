@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/app_dimensions.dart';
 import 'running_strip_panel.dart';
@@ -33,8 +34,10 @@ class _AppScaffoldState extends State<AppScaffold> {
   String get _title {
     return switch (widget.currentPath) {
       AppRoutes.home => '便捷字幕',
+      AppRoutes.quickSubtitleHistory => '字幕历史',
+      AppRoutes.quickSubtitleEditor => '预设编辑',
       AppRoutes.overlay => '悬浮窗',
-      AppRoutes.cards => '快捷名片',
+      AppRoutes.cards => '快捷页面',
       AppRoutes.voicepacks => '语音包',
       AppRoutes.drawing => '画板',
       AppRoutes.settings => '设置',
@@ -44,18 +47,45 @@ class _AppScaffoldState extends State<AppScaffold> {
     };
   }
 
+  bool get _showBackButton {
+    return switch (widget.currentPath) {
+      AppRoutes.quickSubtitleHistory => true,
+      AppRoutes.quickSubtitleEditor => true,
+      AppRoutes.log => true,
+      _ => false,
+    };
+  }
+
+  Widget? _buildLeading(BuildContext context) {
+    if (!_showBackButton) return null;
+    return IconButton(
+      icon: const Icon(Icons.arrow_back_sharp),
+      tooltip: '返回',
+      onPressed: () {
+        if (context.canPop()) {
+          context.pop();
+        } else {
+          context.go(AppRoutes.home);
+        }
+      },
+    );
+  }
+
   List<Widget> get _actions {
     return switch (widget.currentPath) {
-      AppRoutes.home => const [FullscreenAction()],
+      AppRoutes.home => const [
+        QuickSubtitleQuickSettingsAction(),
+        FullscreenAction(),
+      ],
       AppRoutes.voicepacks => const [VoicePackImportAction()],
       AppRoutes.drawing => const [DrawingSaveAction()],
       AppRoutes.cards => const [QuickCardAddAction(), QuickCardScanAction()],
       AppRoutes.settings => const [LogAction()],
       AppRoutes.log => const [
-          LogRefreshAction(),
-          LogCopyAction(),
-          LogShareAction(),
-        ],
+        LogRefreshAction(),
+        LogCopyAction(),
+        LogShareAction(),
+      ],
       _ => const [],
     };
   }
@@ -85,8 +115,7 @@ class _AppScaffoldState extends State<AppScaffold> {
       offstage: !isHome,
       child: RunningStripToggle(
         expanded: _stripExpanded,
-        onToggle: () =>
-            setState(() => _stripExpanded = !_stripExpanded),
+        onToggle: () => setState(() => _stripExpanded = !_stripExpanded),
       ),
     );
 
@@ -103,8 +132,7 @@ class _AppScaffoldState extends State<AppScaffold> {
           alignment: Alignment.topCenter,
           child: _stripExpanded
               ? RunningStripPanel(
-                  onCollapse: () =>
-                      setState(() => _stripExpanded = false),
+                  onCollapse: () => setState(() => _stripExpanded = false),
                 )
               : const SizedBox.shrink(),
         ),
@@ -120,7 +148,8 @@ class _AppScaffoldState extends State<AppScaffold> {
         title: _title,
         titleTrailing: toggle,
         actions: _actions,
-        onMenuPressed: _handleMenuPress,
+        leading: _buildLeading(context),
+        onMenuPressed: _showBackButton ? null : _handleMenuPress,
       ),
       drawer: Drawer(
         width: AppDimensions.drawerWidthExpanded,
@@ -130,10 +159,7 @@ class _AppScaffoldState extends State<AppScaffold> {
           onItemTap: () => _scaffoldKey.currentState?.closeDrawer(),
         ),
       ),
-      body: SafeArea(
-        top: false,
-        child: _bodyWithStrip(widget.child),
-      ),
+      body: SafeArea(top: false, child: _bodyWithStrip(widget.child)),
     );
   }
 
@@ -145,7 +171,8 @@ class _AppScaffoldState extends State<AppScaffold> {
         title: _title,
         titleTrailing: toggle,
         actions: _actions,
-        onMenuPressed: _handleMenuPress,
+        leading: _buildLeading(context),
+        onMenuPressed: _showBackButton ? null : _handleMenuPress,
         landscapeExpanded: _landscapeExpanded,
       ),
       body: SafeArea(
@@ -176,8 +203,7 @@ class _AppScaffoldState extends State<AppScaffold> {
                   if (_landscapeExpanded) ...[
                     Positioned.fill(
                       child: GestureDetector(
-                        onTap: () =>
-                            setState(() => _landscapeExpanded = false),
+                        onTap: () => setState(() => _landscapeExpanded = false),
                         child: Container(
                           color: theme.brightness == Brightness.dark
                               ? Colors.black54

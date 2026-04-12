@@ -15,7 +15,9 @@ object UserPrefs {
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
 
     // Preference key constants (matching Flutter shared_preferences keys)
+    const val KEY_LAST_ASR = "last_asr_name"
     const val KEY_LAST_VOICE = "last_voice_name"
+    const val KEY_SYSTEM_TTS_ORDER = "system_tts_order"
     const val KEY_MUTE_WHILE_PLAYING = "mute_while_playing"
     const val KEY_MUTE_DELAY_SEC = "mute_delay_sec"
     const val KEY_ECHO_SUPPRESSION = "echo_suppression"
@@ -23,6 +25,7 @@ object UserPrefs {
     const val KEY_PREFERRED_INPUT_TYPE = "preferred_input_type"
     const val KEY_PREFERRED_OUTPUT_TYPE = "preferred_output_type"
     const val KEY_AEC3_ENABLED = "aec3_enabled"
+    const val KEY_DENOISER_MODE = "denoiser_mode"
     const val KEY_MIN_VOLUME_PERCENT = "min_volume_percent"
     const val KEY_PLAYBACK_GAIN_PERCENT = "playback_gain_percent"
     const val KEY_PIPER_NOISE_SCALE = "piper_noise_scale"

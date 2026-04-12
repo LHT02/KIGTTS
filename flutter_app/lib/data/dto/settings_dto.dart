@@ -13,6 +13,7 @@ abstract final class SettingsDto {
       PrefsKeys.preferredInputType: s.preferredInputType,
       PrefsKeys.preferredOutputType: s.preferredOutputType,
       PrefsKeys.aec3Enabled: s.aec3Enabled,
+      PrefsKeys.denoiserMode: s.denoiserMode,
       PrefsKeys.minVolumePercent: s.minVolumePercent,
       PrefsKeys.playbackGainPercent: s.playbackGainPercent,
       PrefsKeys.piperNoiseScale: s.piperNoiseScale,
@@ -22,6 +23,7 @@ abstract final class SettingsDto {
       PrefsKeys.keepAlive: s.keepAlive,
       PrefsKeys.numberReplaceMode: s.numberReplaceMode,
       PrefsKeys.pushToTalkMode: s.pushToTalkMode,
+      PrefsKeys.pushToTalkConfirmInput: s.pushToTalkConfirmInput,
       PrefsKeys.speakerVerifyEnabled: s.speakerVerifyEnabled,
       PrefsKeys.speakerVerifyThreshold: s.speakerVerifyThreshold,
     };

@@ -69,8 +69,13 @@ class ModelRepository(private val context: Context) {
     fun listVoicePacks(): List<VoicePackInfo> {
         val dirs = voiceRoot.listFiles()?.filter { it.isDirectory } ?: emptyList()
         val infos = dirs.map { dir ->
-            VoicePackInfo(dir, ensureVoiceMeta(dir))
-        }
+            normalizeVoicePackDir(dir)
+            if (!isValidVoicePackDir(dir)) {
+                null
+            } else {
+                VoicePackInfo(dir, ensureVoiceMeta(dir))
+            }
+        }.filterNotNull()
         return infos.sortedWith(
             compareByDescending<VoicePackInfo> { it.meta.pinned }
                 .thenBy { it.meta.order }
@@ -80,7 +85,9 @@ class ModelRepository(private val context: Context) {
 
     fun resolveVoicePack(name: String): File? {
         val dir = File(voiceRoot, name)
-        return if (dir.isDirectory) dir else null
+        if (!dir.isDirectory) return null
+        normalizeVoicePackDir(dir)
+        return if (isValidVoicePackDir(dir)) dir else null
     }
 
     fun readVoiceMeta(dir: File): VoicePackMeta {
@@ -166,18 +173,22 @@ class ModelRepository(private val context: Context) {
 
     fun ensureBundledVoice(): File? {
         val targetDir = File(voiceRoot, bundledVoiceName)
-        if (hasOnnx(targetDir)) {
+        normalizeVoicePackDir(targetDir)
+        if (isValidVoicePackDir(targetDir)) {
             AppLogger.i("bundledVoice already present: ${targetDir.absolutePath}")
             return targetDir
         }
+        targetDir.deleteRecursively()
         targetDir.mkdirs()
         return try {
             AppLogger.i("bundledVoice extracting asset=$bundledVoiceAsset to ${targetDir.absolutePath}")
             unzipAssetToDir(bundledVoiceAsset, targetDir)
+            normalizeVoicePackDir(targetDir)
             ensureVoiceMeta(targetDir)
-            if (hasOnnx(targetDir)) targetDir else null
+            if (isValidVoicePackDir(targetDir)) targetDir else null
         } catch (e: Exception) {
             AppLogger.e("bundledVoice extract failed", e)
+            targetDir.deleteRecursively()
             null
         }
     }
@@ -234,28 +245,85 @@ class ModelRepository(private val context: Context) {
         return dir.walkTopDown().any { it.isFile && it.extension.lowercase() == "onnx" }
     }
 
+    private fun normalizeVoicePackDir(dir: File) {
+        if (!dir.exists() || !dir.isDirectory) return
+        if (File(dir, "manifest.json").exists()) return
+        val children = dir.listFiles()?.toList() ?: return
+        if (children.size != 1) return
+        val nested = children.firstOrNull { it.isDirectory } ?: return
+        if (!File(nested, "manifest.json").exists()) return
+
+        nested.listFiles()?.forEach { child ->
+            val target = File(dir, child.name)
+            if (target.exists()) {
+                target.deleteRecursively()
+            }
+            if (!child.renameTo(target)) {
+                if (child.isDirectory) {
+                    child.copyRecursively(target, overwrite = true)
+                    child.deleteRecursively()
+                } else {
+                    child.copyTo(target, overwrite = true)
+                    child.delete()
+                }
+            }
+        }
+        nested.deleteRecursively()
+    }
+
+    private fun isValidVoicePackDir(dir: File): Boolean {
+        if (!dir.exists() || !dir.isDirectory) return false
+        val manifestFile = File(dir, "manifest.json")
+        if (!manifestFile.exists()) return false
+        return try {
+            val manifest = JSONObject(manifestFile.readText(Charsets.UTF_8))
+            val files = manifest.optJSONObject("files") ?: return false
+            val modelRel = files.optString("model", "").trim()
+            val configRel = files.optString("config", "").trim()
+            val phonemizerRel = files.optString("phonemizer", "").trim()
+            modelRel.isNotEmpty() &&
+                configRel.isNotEmpty() &&
+                phonemizerRel.isNotEmpty() &&
+                File(dir, modelRel).isFile &&
+                File(dir, configRel).isFile &&
+                File(dir, phonemizerRel).isFile
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun metaFile(dir: File): File = File(dir, "voicepack.json")
 
     private fun ensureVoiceMeta(dir: File): VoicePackMeta {
         val file = metaFile(dir)
+        val defaultName = bundledVoiceDisplayName(dir)
         val parsed = if (file.exists()) {
             try {
                 val json = JSONObject(file.readText(Charsets.UTF_8))
                 VoicePackMeta(
-                    name = json.optString("name", "未命名").ifBlank { "未命名" },
+                    name = json.optString("name", defaultName).ifBlank { defaultName },
                     remark = json.optString("remark", ""),
                     avatar = json.optString("avatar", "avatar.png"),
                     pinned = json.optBoolean("pinned", false),
                     order = json.optLong("order", System.currentTimeMillis())
                 )
             } catch (_: Exception) {
-                VoicePackMeta()
+                VoicePackMeta(name = defaultName)
             }
         } else {
-            VoicePackMeta()
+            VoicePackMeta(name = defaultName)
         }
         saveVoiceMeta(dir, parsed)
         return parsed
+    }
+
+    private fun bundledVoiceDisplayName(dir: File): String {
+        val manifestName = runCatching {
+            val manifest = JSONObject(File(dir, "manifest.json").readText(Charsets.UTF_8))
+            manifest.optString("name", "").trim()
+        }.getOrNull()
+        if (!manifestName.isNullOrEmpty()) return manifestName
+        return dir.name.ifBlank { "未命名" }
     }
 
     private fun ensureAvatar(dir: File, fileName: String) {

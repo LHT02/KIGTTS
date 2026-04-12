@@ -21,45 +21,34 @@ class SettingsLocalDataSource {
   Future<AppSettings> getSettings() async {
     final prefs = await _sharedPrefs;
     return AppSettings(
-      muteWhilePlaying:
-          prefs.getBool(PrefsKeys.muteWhilePlaying) ?? false,
+      muteWhilePlaying: prefs.getBool(PrefsKeys.muteWhilePlaying) ?? false,
       muteWhilePlayingDelaySec:
           prefs.getDouble(PrefsKeys.muteWhilePlayingDelaySec) ?? 0.0,
-      echoSuppression:
-          prefs.getBool(PrefsKeys.echoSuppression) ?? false,
-      communicationMode:
-          prefs.getBool(PrefsKeys.communicationMode) ?? false,
-      preferredInputType:
-          prefs.getInt(PrefsKeys.preferredInputType) ?? 0,
-      preferredOutputType:
-          prefs.getInt(PrefsKeys.preferredOutputType) ?? 100,
+      echoSuppression: prefs.getBool(PrefsKeys.echoSuppression) ?? false,
+      communicationMode: prefs.getBool(PrefsKeys.communicationMode) ?? false,
+      preferredInputType: prefs.getInt(PrefsKeys.preferredInputType) ?? 0,
+      preferredOutputType: prefs.getInt(PrefsKeys.preferredOutputType) ?? 100,
       aec3Enabled: prefs.getBool(PrefsKeys.aec3Enabled) ?? false,
-      minVolumePercent:
-          prefs.getInt(PrefsKeys.minVolumePercent) ?? 0,
-      playbackGainPercent:
-          prefs.getInt(PrefsKeys.playbackGainPercent) ?? 100,
-      piperNoiseScale:
-          prefs.getDouble(PrefsKeys.piperNoiseScale) ?? 0.667,
-      piperLengthScale:
-          prefs.getDouble(PrefsKeys.piperLengthScale) ?? 1.0,
+      denoiserMode: prefs.getInt(PrefsKeys.denoiserMode) ?? 0,
+      minVolumePercent: prefs.getInt(PrefsKeys.minVolumePercent) ?? 0,
+      playbackGainPercent: prefs.getInt(PrefsKeys.playbackGainPercent) ?? 100,
+      piperNoiseScale: prefs.getDouble(PrefsKeys.piperNoiseScale) ?? 0.667,
+      piperLengthScale: prefs.getDouble(PrefsKeys.piperLengthScale) ?? 1.0,
       piperNoiseW: prefs.getDouble(PrefsKeys.piperNoiseW) ?? 0.8,
       piperSentenceSilence:
           prefs.getDouble(PrefsKeys.piperSentenceSilence) ?? 0.2,
       keepAlive: prefs.getBool(PrefsKeys.keepAlive) ?? false,
-      numberReplaceMode:
-          prefs.getInt(PrefsKeys.numberReplaceMode) ?? 0,
-      landscapeDrawerMode:
-          prefs.getInt(PrefsKeys.landscapeDrawerMode) ?? 1,
+      numberReplaceMode: prefs.getInt(PrefsKeys.numberReplaceMode) ?? 0,
+      landscapeDrawerMode: prefs.getInt(PrefsKeys.landscapeDrawerMode) ?? 1,
       solidTopBar: prefs.getBool(PrefsKeys.solidTopBar) ?? true,
       drawingSaveRelativePath:
           prefs.getString(PrefsKeys.drawingSaveRelativePath) ??
-              'Pictures/KGTTS/Drawings',
+          'Pictures/KGTTS/Drawings',
       quickCardAutoSaveOnExit:
           prefs.getBool(PrefsKeys.quickCardAutoSaveOnExit) ?? false,
       asrSendToQuickSubtitle:
           prefs.getBool(PrefsKeys.asrSendToQuickSubtitle) ?? true,
-      pushToTalkMode:
-          prefs.getBool(PrefsKeys.pushToTalkMode) ?? false,
+      pushToTalkMode: prefs.getBool(PrefsKeys.pushToTalkMode) ?? false,
       pushToTalkConfirmInput:
           prefs.getBool(PrefsKeys.pushToTalkConfirmInput) ?? false,
       floatingOverlayEnabled:

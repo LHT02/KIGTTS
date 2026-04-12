@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import '../../../core/theme/app_colors.dart';
+import 'package:go_router/go_router.dart';
 import '../../../core/theme/app_dimensions.dart';
+import '../../../core/router/app_router.dart';
 import '../../../domain/repositories/overlay_repository.dart';
 import '../../../injection.dart';
 import '../../cubits/overlay/overlay_cubit.dart';
@@ -22,9 +23,9 @@ class OverlayControlPage extends StatelessWidget {
   Widget build(BuildContext context) {
     // SettingsCubit is provided globally in app.dart
     return BlocProvider(
-      create: (_) => OverlayCubit(
-        overlayRepository: getIt<OverlayRepository>(),
-      )..initialize(),
+      create: (_) =>
+          OverlayCubit(overlayRepository: getIt<OverlayRepository>())
+            ..initialize(),
       child: const _OverlayControlView(),
     );
   }
@@ -59,6 +60,7 @@ class _OverlayStatusSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final overlayRepo = getIt<OverlayRepository>();
     return BlocBuilder<OverlayCubit, app.OverlayState>(
       builder: (context, state) {
         final cubit = context.read<OverlayCubit>();
@@ -66,37 +68,31 @@ class _OverlayStatusSection extends StatelessWidget {
           title: '悬浮窗状态',
           children: [
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Icon(
-                  Icons.open_in_new_sharp,
-                  size: 40,
-                  color: state.isShowing
-                      ? AppColors.primary
-                      : theme.colorScheme.outline,
-                ),
-                const SizedBox(width: AppDimensions.spacingMd),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        state.isShowing ? '悬浮窗已开启' : '悬浮窗已关闭',
-                        style: theme.textTheme.titleSmall,
-                      ),
-                      Text(
-                        '显示实时识别结果和快捷控制',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
                 Switch(
                   value: state.isShowing,
                   onChanged: (_) => cubit.toggle(),
                 ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('启用独立悬浮窗', style: theme.textTheme.bodyMedium),
+                ),
               ],
+            ),
+            FutureBuilder<bool>(
+              future: overlayRepo.hasPermission(),
+              builder: (context, snapshot) {
+                final granted = snapshot.data ?? false;
+                return Text(
+                  '权限状态：${granted ? '已授权' : '未授权'}',
+                  style: theme.textTheme.bodySmall,
+                );
+              },
+            ),
+            Text(
+              '运行状态：${state.isShowing ? '已启用' : '未启用'}',
+              style: theme.textTheme.bodySmall,
             ),
             if (state.error != null) ...[
               const SizedBox(height: 8),
@@ -112,12 +108,27 @@ class _OverlayStatusSection extends StatelessWidget {
               children: [
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => cubit.initialize(),
+                    onPressed: () => cubit.openPermissionSettings(),
+                    icon: const Icon(Icons.open_in_new_sharp, size: 18),
+                    label: const Text('打开权限设置'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: state.isShowing
+                        ? () => cubit.initialize()
+                        : null,
                     icon: const Icon(Icons.refresh_sharp, size: 18),
-                    label: const Text('刷新状态'),
+                    label: const Text('刷新悬浮窗'),
                   ),
                 ),
               ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '悬浮窗可吸附到屏幕边缘，并可在软件外直接触发快捷字幕输入。',
+              style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
             BlocBuilder<SettingsCubit, SettingsState>(
@@ -126,10 +137,17 @@ class _OverlayStatusSection extends StatelessWidget {
                   c.settings.floatingOverlayAutoDock,
               builder: (context, settingsState) {
                 return SwitchListTile(
-                  title: const Text('自动吸附边缘'),
-                  subtitle: const Text('松手后自动贴靠屏幕边缘'),
+                  title: const Text('长时间不操作时自动贴边'),
+                  subtitle: const Text('开启后，悬浮 FAB 会自动吸附边缘并降低透明度'),
                   value: settingsState.settings.floatingOverlayAutoDock,
-                  onChanged: (_) {}, // TODO: add cubit method
+                  onChanged: (value) {
+                    context.read<SettingsCubit>().setFloatingOverlayAutoDock(
+                      value,
+                    );
+                    context.read<OverlayCubit>().updateConfig({
+                      'floating_overlay_auto_dock': value,
+                    });
+                  },
                   contentPadding: EdgeInsets.zero,
                 );
               },
@@ -151,29 +169,40 @@ class _InteractionModeSection extends StatelessWidget {
     return BlocBuilder<SettingsCubit, SettingsState>(
       buildWhen: (p, c) =>
           p.settings.pushToTalkMode != c.settings.pushToTalkMode ||
+          p.settings.pushToTalkConfirmInput !=
+              c.settings.pushToTalkConfirmInput ||
           p.settings.keepAlive != c.settings.keepAlive,
       builder: (context, state) {
         final s = state.settings;
         return SectionCard(
           title: '交互模式',
           children: [
-            _StatusRow(
-              icon: Icons.touch_app_sharp,
-              label: '按住说话',
-              enabled: s.pushToTalkMode,
-            ),
-            const SizedBox(height: 8),
-            _StatusRow(
-              icon: Icons.lock_sharp,
-              label: '后台保活',
-              enabled: s.keepAlive,
-            ),
-            const SizedBox(height: 8),
             Text(
-              '这些选项在设置页中配置',
+              '以下交互设置与主设置页完全同步，这里仅显示当前状态。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '按住说话模式：${s.pushToTalkMode ? '已开启' : '未开启'}',
+              style: theme.textTheme.bodySmall,
+            ),
+            Text(
+              '按下输入文本确认：${s.pushToTalkMode ? (s.pushToTalkConfirmInput ? '已开启' : '未开启') : '按住说话未开启'}',
+              style: theme.textTheme.bodySmall,
+            ),
+            Text(
+              '保持后台运行：${s.keepAlive ? '已开启' : '未开启'}',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () {
+                context.go(AppRoutes.settings);
+              },
+              icon: const Icon(Icons.tune_sharp, size: 18),
+              label: const Text('前往主设置修改'),
             ),
           ],
         );
@@ -190,12 +219,9 @@ class _AudioDeviceSection extends StatelessWidget {
   Widget build(BuildContext context) {
     return BlocBuilder<SettingsCubit, SettingsState>(
       buildWhen: (p, c) =>
-          p.settings.playbackGainPercent !=
-              c.settings.playbackGainPercent ||
-          p.settings.preferredInputType !=
-              c.settings.preferredInputType ||
-          p.settings.preferredOutputType !=
-              c.settings.preferredOutputType,
+          p.settings.playbackGainPercent != c.settings.playbackGainPercent ||
+          p.settings.preferredInputType != c.settings.preferredInputType ||
+          p.settings.preferredOutputType != c.settings.preferredOutputType,
       builder: (context, state) {
         final s = state.settings;
         final cubit = context.read<SettingsCubit>();
@@ -211,11 +237,7 @@ class _AudioDeviceSection extends StatelessWidget {
               label: '输入设备类型',
               icon: Icons.mic_sharp,
               value: s.preferredInputType,
-              items: const {
-                0: '默认',
-                1: 'VOICE_COMMUNICATION',
-                6: 'MIC',
-              },
+              items: const {0: '默认', 1: 'VOICE_COMMUNICATION', 6: 'MIC'},
               onChanged: (v) {
                 if (v != null) cubit.setPreferredInputType(v);
               },
@@ -241,51 +263,3 @@ class _AudioDeviceSection extends StatelessWidget {
     );
   }
 }
-
-class _StatusRow extends StatelessWidget {
-  const _StatusRow({
-    required this.icon,
-    required this.label,
-    required this.enabled,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool enabled;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Row(
-      children: [
-        Icon(
-          icon,
-          size: 20,
-          color: enabled
-              ? AppColors.primary
-              : theme.colorScheme.outline,
-        ),
-        const SizedBox(width: 8),
-        Text(label, style: theme.textTheme.bodyMedium),
-        const Spacer(),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            color: enabled
-                ? AppColors.primary.withValues(alpha: 0.15)
-                : theme.colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: Text(
-            enabled ? '已启用' : '未启用',
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: enabled ? AppColors.primary : theme.colorScheme.outline,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-

@@ -24,13 +24,13 @@ class ModelResourceSection extends StatelessWidget {
             const _InfoRow(
               icon: Icons.hearing_sharp,
               label: 'ASR 模型',
-              value: '在语音包页面管理',
+              value: '在设置-语音包分类管理',
             ),
             const SizedBox(height: 8),
             const _InfoRow(
               icon: Icons.record_voice_over_sharp,
               label: '语音包',
-              value: '在语音包页面管理',
+              value: '在设置-语音包分类管理',
             ),
             const SizedBox(height: 8),
             _InfoRow(

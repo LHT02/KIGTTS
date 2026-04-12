@@ -49,6 +49,7 @@ class RealtimeController(
     initialPreferredInputType: Int,
     initialPreferredOutputType: Int,
     initialUseAec3: Boolean,
+    initialDenoiserMode: Int,
     initialNumberReplaceMode: Int,
     initialAllowSystemAecWithAec3: Boolean,
     initialSpeakerVerifyEnabled: Boolean,
@@ -79,6 +80,7 @@ class RealtimeController(
     @Volatile private var preferredInputType = initialPreferredInputType
     @Volatile private var preferredOutputType = initialPreferredOutputType
     @Volatile private var useAec3 = initialUseAec3
+    @Volatile private var denoiserMode = AudioDenoiserMode.normalize(initialDenoiserMode)
     @Volatile private var numberReplaceMode = initialNumberReplaceMode.coerceIn(0, 2)
     @Volatile private var allowSystemAecWithAec3 = initialAllowSystemAecWithAec3
     @Volatile private var speakerVerifyEnabled = initialSpeakerVerifyEnabled
@@ -107,6 +109,10 @@ class RealtimeController(
     @Volatile private var suppressAsrAutoSpeak: Boolean = false
     @Volatile private var lastStreamingDecodeAtMs: Long = 0L
     private val streamingDecodeBusy = AtomicBoolean(false)
+    @Volatile private var pushToTalkMode: Boolean = false
+    @Volatile private var pttSessionActive: Boolean = false
+    private var rnNoiseProcessor: RnNoiseProcessor? = null
+    private var speexNoiseSuppressor: SpeexNoiseSuppressor? = null
 
     private data class QueuedTts(
         val id: Long,
@@ -257,6 +263,7 @@ class RealtimeController(
         player.setUseCommunicationAttributes(useCommunicationMode)
         player.setPreferredOutputType(preferredOutputType)
         player.setPlaybackGainPercent(initialPlaybackGainPercent)
+        setDenoiserMode(denoiserMode)
         player.setOnOutputDevice { notifyOutputDevice(it) }
         player.setOnRender { data, offset, length, rate ->
             if (useAec3) {
@@ -358,6 +365,47 @@ class RealtimeController(
 
     fun setNumberReplaceMode(mode: Int) {
         numberReplaceMode = mode.coerceIn(0, 2)
+    }
+
+    fun setDenoiserMode(mode: Int) {
+        denoiserMode = AudioDenoiserMode.normalize(mode)
+        when (denoiserMode) {
+            AudioDenoiserMode.RNNOISE -> {
+                if (rnNoiseProcessor == null) {
+                    rnNoiseProcessor = runCatching { RnNoiseProcessor() }
+                        .onFailure { AppLogger.e("RNNoise init failed", it) }
+                        .getOrNull()
+                }
+                speexNoiseSuppressor?.release()
+                speexNoiseSuppressor = null
+            }
+            AudioDenoiserMode.SPEEX -> {
+                if (speexNoiseSuppressor == null) {
+                    speexNoiseSuppressor = runCatching { SpeexNoiseSuppressor(sampleRate = sampleRate) }
+                        .onFailure { AppLogger.e("Speex init failed", it) }
+                        .getOrNull()
+                }
+                rnNoiseProcessor?.release()
+                rnNoiseProcessor = null
+            }
+            else -> {
+                rnNoiseProcessor?.release()
+                rnNoiseProcessor = null
+                speexNoiseSuppressor?.release()
+                speexNoiseSuppressor = null
+            }
+        }
+    }
+
+    fun setPushToTalkMode(enabled: Boolean) {
+        pushToTalkMode = enabled
+        if (!enabled) {
+            pttSessionActive = false
+        }
+    }
+
+    fun setPushToTalkSessionActive(active: Boolean) {
+        pttSessionActive = active
     }
 
     fun setPushToTalkStreamingEnabled(enabled: Boolean) {
@@ -647,6 +695,7 @@ class RealtimeController(
             }
             lastStreamingDecodeAtMs = 0L
             streamingDecodeBusy.set(false)
+            pttSessionActive = false
             stopRecorderOnlyLocked()
             ensureAec3()
             startRecorderLoop()
@@ -730,6 +779,11 @@ class RealtimeController(
         }
         streamingDecodeBusy.set(false)
         lastStreamingDecodeAtMs = 0L
+        pttSessionActive = false
+        rnNoiseProcessor?.release()
+        rnNoiseProcessor = null
+        speexNoiseSuppressor?.release()
+        speexNoiseSuppressor = null
         try {
             rec?.release()
         } catch (_: Exception) {
@@ -948,9 +1002,20 @@ class RealtimeController(
                 while (isActive) {
                     val read = rec.read(buffer, 0, buffer.size)
                     if (read <= 0) continue
+                    if (pushToTalkMode && !pttSessionActive) {
+                        window.clear()
+                        silenceMs = 0
+                        voicedMs = 0
+                        continue
+                    }
                     val floatBuf = FloatArray(read)
                     for (i in 0 until read) {
                         floatBuf[i] = buffer[i] / 32768f
+                    }
+                    when (denoiserMode) {
+                        AudioDenoiserMode.RNNOISE -> rnNoiseProcessor?.processInPlace(floatBuf, read)
+                        AudioDenoiserMode.SPEEX -> speexNoiseSuppressor?.processInPlace(floatBuf, read)
+                        else -> Unit
                     }
                     if (useAec3) {
                         aec3?.processCapture(floatBuf, 0, read)

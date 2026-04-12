@@ -1,7 +1,9 @@
 /// SharedPreferences key constants.
 /// Keys and defaults match original UserPrefs.kt exactly.
 abstract final class PrefsKeys {
+  static const lastAsrName = 'last_asr_name';
   static const lastVoiceName = 'last_voice_name';
+  static const systemTtsOrder = 'system_tts_order';
   static const muteWhilePlaying = 'mute_while_playing';
   static const muteWhilePlayingDelaySec = 'mute_delay_sec';
   static const echoSuppression = 'echo_suppression';
@@ -9,6 +11,7 @@ abstract final class PrefsKeys {
   static const preferredInputType = 'preferred_input_type';
   static const preferredOutputType = 'preferred_output_type';
   static const aec3Enabled = 'aec3_enabled';
+  static const denoiserMode = 'denoiser_mode';
   static const minVolumePercent = 'min_volume_percent';
   static const playbackGainPercent = 'playback_gain_percent';
   static const piperNoiseScale = 'piper_noise_scale';
@@ -29,6 +32,7 @@ abstract final class PrefsKeys {
   static const floatingOverlayShortcuts = 'floating_overlay_shortcuts';
   static const floatingOverlayLayout = 'floating_overlay_layout';
   static const quickSubtitleConfig = 'quick_subtitle_config';
+  static const quickSubtitleHistory = 'quick_subtitle_history';
   static const quickCardConfig = 'quick_card_config';
   static const speakerVerifyEnabled = 'speaker_verify_enabled';
   static const speakerVerifyThreshold = 'speaker_verify_threshold';

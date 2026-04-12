@@ -233,12 +233,25 @@ class _BottomToolbar extends StatelessWidget {
             constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
           ),
           const Spacer(),
-          IconButton(
-            icon: Icon(Icons.volume_up_sharp, color: iconColor, size: 20),
-            onPressed: () {},
-            tooltip: '播放开关',
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+          BlocBuilder<QuickSubtitleCubit, QuickSubtitleState>(
+            buildWhen: (p, c) => p.config.playOnSend != c.config.playOnSend,
+            builder: (context, st) {
+              return IconButton(
+                icon: Icon(
+                  st.config.playOnSend
+                      ? Icons.volume_up_sharp
+                      : Icons.volume_off_sharp,
+                  color: iconColor,
+                  size: 20,
+                ),
+                onPressed: () =>
+                    cubit.setPlayOnSend(!st.config.playOnSend),
+                tooltip: st.config.playOnSend ? '发送后自动播报：开' : '发送后自动播报：关',
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 40, minHeight: 40),
+              );
+            },
           ),
           IconButton(
             icon: Icon(
