@@ -741,7 +741,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             null -> null
             else -> repo.resolveVoicePack(lastName)
         }
-        return resolved ?: withContext(Dispatchers.IO) { repo.ensureBundledVoice() } ?: repo.systemTtsVirtualDir()
+        return resolved ?: repo.systemTtsVirtualDir()
     }
 
     private fun appendRecognizedHistory(text: String, id: Long? = null) {

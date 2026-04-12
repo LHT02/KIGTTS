@@ -505,17 +505,17 @@ data class UiState(
     val recognized: List<RecognizedItem> = emptyList(),
     val running: Boolean = false,
     val status: String = "待命",
-    val muteWhilePlaying: Boolean = false,
-    val muteWhilePlayingDelaySec: Float = 0f,
+    val muteWhilePlaying: Boolean = true,
+    val muteWhilePlayingDelaySec: Float = 0.2f,
     val echoSuppression: Boolean = false,
     val communicationMode: Boolean = false,
     val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
     val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
     val aec3Enabled: Boolean = false,
-    val denoiserMode: Int = AudioDenoiserMode.OFF,
+    val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
     val aec3Status: String = "未启用",
     val aec3Diag: String = "AEC3 诊断：未启用",
-    val minVolumePercent: Int = 0,
+    val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
     val piperNoiseScale: Float = 0.667f,
     val piperLengthScale: Float = 1.0f,
@@ -1886,15 +1886,12 @@ class MainViewModel(
                     status = if (isSystemTtsVoiceDir(lastDir)) "已加载系统 TTS" else "已加载上次音色包"
                 )
             } else {
-                val bundledDir = withContext(Dispatchers.IO) { repo.ensureBundledVoice() }
-                val selected = bundledDir ?: systemTtsVoiceDir()
+                val selected = systemTtsVoiceDir()
                 uiState = uiState.copy(
                     voiceDir = selected,
-                    status = if (bundledDir != null) "已加载内置音色包" else "已切换到系统 TTS"
+                    status = "已切换到系统 TTS"
                 )
-                if (bundledDir == null) {
-                    UserPrefs.setLastVoiceName(appContext, SYSTEM_TTS_VOICE_NAME)
-                }
+                UserPrefs.setLastVoiceName(appContext, SYSTEM_TTS_VOICE_NAME)
             }
             val selectedVoice = uiState.voiceDir
             val host = realtimeHost

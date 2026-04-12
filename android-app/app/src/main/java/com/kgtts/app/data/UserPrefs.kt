@@ -71,15 +71,15 @@ object UserPrefs {
     )
 
     data class AppSettings(
-        val muteWhilePlaying: Boolean = false,
-        val muteWhilePlayingDelaySec: Float = 0f,
+        val muteWhilePlaying: Boolean = true,
+        val muteWhilePlayingDelaySec: Float = 0.2f,
         val echoSuppression: Boolean = false,
         val communicationMode: Boolean = false,
         val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
         val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
         val aec3Enabled: Boolean = false,
-        val denoiserMode: Int = AudioDenoiserMode.OFF,
-        val minVolumePercent: Int = 0,
+        val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
+        val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
         val piperLengthScale: Float = 1.0f,
@@ -170,8 +170,8 @@ object UserPrefs {
         val legacyPreferUsb = this[KEY_PREFER_USB_MIC] ?: false
         val legacySpeaker = this[KEY_COMMUNICATION_SPEAKER] ?: false
         return AppSettings(
-            muteWhilePlaying = this[KEY_MUTE_WHILE_PLAYING] ?: false,
-            muteWhilePlayingDelaySec = this[KEY_MUTE_DELAY_SEC] ?: 0f,
+            muteWhilePlaying = this[KEY_MUTE_WHILE_PLAYING] ?: true,
+            muteWhilePlayingDelaySec = this[KEY_MUTE_DELAY_SEC] ?: 0.2f,
             echoSuppression = this[KEY_ECHO_SUPPRESSION] ?: false,
             communicationMode = this[KEY_COMMUNICATION_MODE] ?: false,
             preferredInputType = this[KEY_PREFERRED_INPUT_TYPE]
@@ -179,9 +179,9 @@ object UserPrefs {
             preferredOutputType = this[KEY_PREFERRED_OUTPUT_TYPE]
                 ?: if (legacySpeaker) AudioRoutePreference.OUTPUT_SPEAKER else AudioRoutePreference.OUTPUT_AUTO,
             aec3Enabled = this[KEY_AEC3_ENABLED] ?: false,
-            denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.OFF)
+            denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.RNNOISE)
                 .coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX),
-            minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 0,
+            minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
             piperLengthScale = (this[KEY_PIPER_LENGTH_SCALE] ?: 1.0f).coerceIn(0.1f, 5f),

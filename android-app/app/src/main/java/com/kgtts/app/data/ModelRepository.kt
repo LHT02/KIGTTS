@@ -47,8 +47,6 @@ class ModelRepository(private val context: Context) {
     private val asrRoot = File(root, "asr")
     private val voiceRoot = File(root, "voice")
     private val bundledAsrAsset = "sosv-int8.zip"
-    private val bundledVoiceAsset = "firefly.zip"
-    private val bundledVoiceName = "firefly"
 
     init {
         root.mkdirs()
@@ -193,27 +191,6 @@ class ModelRepository(private val context: Context) {
             if (hasOnnx(targetDir)) targetDir else null
         } catch (e: Exception) {
             AppLogger.e("bundledAsr extract failed", e)
-            null
-        }
-    }
-
-    fun ensureBundledVoice(): File? {
-        val targetDir = File(voiceRoot, bundledVoiceName)
-        if (isValidVoicePackDir(targetDir)) {
-            AppLogger.i("bundledVoice already present: ${targetDir.absolutePath}")
-            return targetDir
-        }
-        if (targetDir.exists()) {
-            targetDir.deleteRecursively()
-        }
-        targetDir.mkdirs()
-        return try {
-            AppLogger.i("bundledVoice extracting asset=$bundledVoiceAsset to ${targetDir.absolutePath}")
-            unzipAssetToDir(bundledVoiceAsset, targetDir)
-            ensureVoiceMeta(targetDir)
-            if (isValidVoicePackDir(targetDir)) targetDir else null
-        } catch (e: Exception) {
-            AppLogger.e("bundledVoice extract failed", e)
             null
         }
     }
