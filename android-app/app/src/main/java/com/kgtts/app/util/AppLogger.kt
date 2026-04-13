@@ -1,4 +1,4 @@
-package com.kgtts.app.util
+package com.lhtstudio.kigtts.app.util
 
 import android.content.Context
 import android.util.Log

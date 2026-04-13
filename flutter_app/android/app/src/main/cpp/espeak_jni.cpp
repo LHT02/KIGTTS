@@ -46,7 +46,7 @@ void append_utf8(std::string &out, char32_t codepoint) {
 } // namespace
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_kgtts_app_audio_EspeakNative_nativeInit(
+Java_com_kgtts_kgtts_1app_audio_EspeakNative_nativeInit(
         JNIEnv *env,
         jobject /* thiz */,
         jstring data_path) {
@@ -66,7 +66,7 @@ Java_com_kgtts_app_audio_EspeakNative_nativeInit(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_kgtts_app_audio_EspeakNative_nativePhonemize(
+Java_com_kgtts_kgtts_1app_audio_EspeakNative_nativePhonemize(
         JNIEnv *env,
         jobject /* thiz */,
         jstring text,

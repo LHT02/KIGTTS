@@ -51,6 +51,8 @@ APK 输出目录：`android-app/app/build/outputs/apk/`
 
 - ASR：`sosv.zip` / `sosv-int8.zip`
 - TTS 音色包：`.kigvpk`（当前导出格式）或兼容导入 `.zip`
+- 安卓端默认朗读后端：`系统 TTS`
+- 安卓 APK 内置资源：`sosv-int8.zip`、sherpa speaker verify model、`espeak-ng-data.zip`
 
 ## 许可证
 

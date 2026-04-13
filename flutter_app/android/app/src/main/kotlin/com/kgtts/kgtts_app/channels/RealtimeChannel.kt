@@ -26,6 +26,7 @@ class RealtimeChannel(
     private var eventSink: EventChannel.EventSink? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var controller: RealtimeController? = null
+    private var cachedSettings: Map<String, Any?> = emptyMap()
 
     init {
         methodChannel.setMethodCallHandler(this)
@@ -46,8 +47,9 @@ class RealtimeChannel(
         }
     }
 
-    private fun ensureController(settings: Map<String, Any?>): RealtimeController {
+    private fun ensureController(): RealtimeController {
         controller?.let { return it }
+        val settings = cachedSettings
         val ctrl = RealtimeController(
             context = context,
             scope = scope,
@@ -104,6 +106,27 @@ class RealtimeChannel(
         return ctrl
     }
 
+    @Suppress("UNCHECKED_CAST")
+    private fun applySettingsToController(ctrl: RealtimeController, args: Map<*, *>) {
+        (args["mute_while_playing"] as? Boolean)?.let { ctrl.setSuppressWhilePlaying(it) }
+        (args["echo_suppression"] as? Boolean)?.let { ctrl.setUseVoiceCommunication(it) }
+        (args["communication_mode"] as? Boolean)?.let { ctrl.setCommunicationMode(it) }
+        ((args["min_volume_percent"] as? Number))?.let { ctrl.setMinVolumePercent(it.toInt()) }
+        ((args["playback_gain_percent"] as? Number))?.let { ctrl.setPlaybackGainPercent(it.toInt()) }
+        ((args["piper_noise_scale"] as? Number))?.let { ctrl.setPiperNoiseScale(it.toFloat()) }
+        ((args["piper_length_scale"] as? Number))?.let { ctrl.setPiperLengthScale(it.toFloat()) }
+        ((args["piper_noise_w"] as? Number))?.let { ctrl.setPiperNoiseW(it.toFloat()) }
+        ((args["piper_sentence_silence"] as? Number))?.let { ctrl.setPiperSentenceSilenceSec(it.toFloat()) }
+        ((args["mute_delay_sec"] as? Number))?.let { ctrl.setSuppressDelaySec(it.toFloat()) }
+        ((args["preferred_input_type"] as? Number))?.let { ctrl.setPreferredInputType(it.toInt()) }
+        ((args["preferred_output_type"] as? Number))?.let { ctrl.setPreferredOutputType(it.toInt()) }
+        (args["aec3_enabled"] as? Boolean)?.let { ctrl.setUseAec3(it) }
+        ((args["number_replace_mode"] as? Number))?.let { ctrl.setNumberReplaceMode(it.toInt()) }
+        (args["push_to_talk_mode"] as? Boolean)?.let { ctrl.setPushToTalkStreamingEnabled(it) }
+        (args["speaker_verify_enabled"] as? Boolean)?.let { ctrl.setSpeakerVerifyEnabled(it) }
+        ((args["speaker_verify_threshold"] as? Number))?.let { ctrl.setSpeakerVerifyThreshold(it.toFloat()) }
+    }
+
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "start" -> {
@@ -111,7 +134,7 @@ class RealtimeChannel(
                 val voiceDir = call.argument<String>("voiceDir") ?: return result.error("ARGS", "missing voiceDir", null)
                 scope.launch {
                     try {
-                        val ctrl = ensureController(emptyMap())
+                        val ctrl = ensureController()
                         ctrl.start(File(asrDir), File(voiceDir))
                         result.success(true)
                     } catch (e: Exception) {
@@ -132,25 +155,12 @@ class RealtimeChannel(
             "updateSettings" -> {
                 try {
                     val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                    // Always cache so ensureController() picks them up later
+                    @Suppress("UNCHECKED_CAST")
+                    cachedSettings = args as Map<String, Any?>
                     val ctrl = controller
                     if (ctrl != null) {
-                        (args["mute_while_playing"] as? Boolean)?.let { ctrl.setSuppressWhilePlaying(it) }
-                        (args["echo_suppression"] as? Boolean)?.let { ctrl.setUseVoiceCommunication(it) }
-                        (args["communication_mode"] as? Boolean)?.let { ctrl.setCommunicationMode(it) }
-                        ((args["min_volume_percent"] as? Number))?.let { ctrl.setMinVolumePercent(it.toInt()) }
-                        ((args["playback_gain_percent"] as? Number))?.let { ctrl.setPlaybackGainPercent(it.toInt()) }
-                        ((args["piper_noise_scale"] as? Number))?.let { ctrl.setPiperNoiseScale(it.toFloat()) }
-                        ((args["piper_length_scale"] as? Number))?.let { ctrl.setPiperLengthScale(it.toFloat()) }
-                        ((args["piper_noise_w"] as? Number))?.let { ctrl.setPiperNoiseW(it.toFloat()) }
-                        ((args["piper_sentence_silence"] as? Number))?.let { ctrl.setPiperSentenceSilenceSec(it.toFloat()) }
-                        ((args["mute_delay_sec"] as? Number))?.let { ctrl.setSuppressDelaySec(it.toFloat()) }
-                        ((args["preferred_input_type"] as? Number))?.let { ctrl.setPreferredInputType(it.toInt()) }
-                        ((args["preferred_output_type"] as? Number))?.let { ctrl.setPreferredOutputType(it.toInt()) }
-                        (args["aec3_enabled"] as? Boolean)?.let { ctrl.setUseAec3(it) }
-                        ((args["number_replace_mode"] as? Number))?.let { ctrl.setNumberReplaceMode(it.toInt()) }
-                        (args["push_to_talk_mode"] as? Boolean)?.let { ctrl.setPushToTalkStreamingEnabled(it) }
-                        (args["speaker_verify_enabled"] as? Boolean)?.let { ctrl.setSpeakerVerifyEnabled(it) }
-                        ((args["speaker_verify_threshold"] as? Number))?.let { ctrl.setSpeakerVerifyThreshold(it.toFloat()) }
+                        applySettingsToController(ctrl, args)
                     }
                     result.success(null)
                 } catch (e: Exception) {
@@ -172,7 +182,7 @@ class RealtimeChannel(
                 val dir = call.argument<String>("dir") ?: return result.error("ARGS", "missing dir", null)
                 scope.launch {
                     try {
-                        val ctrl = ensureController(emptyMap())
+                        val ctrl = ensureController()
                         val ok = ctrl.loadAsr(File(dir))
                         result.success(ok)
                     } catch (e: Exception) {
@@ -184,7 +194,7 @@ class RealtimeChannel(
                 val dir = call.argument<String>("dir") ?: return result.error("ARGS", "missing dir", null)
                 scope.launch {
                     try {
-                        val ctrl = ensureController(emptyMap())
+                        val ctrl = ensureController()
                         val ok = ctrl.loadTts(File(dir))
                         result.success(ok)
                     } catch (e: Exception) {

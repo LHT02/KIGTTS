@@ -1,4 +1,4 @@
-package com.kgtts.app.data
+package com.lhtstudio.kigtts.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
@@ -6,10 +6,11 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.kgtts.app.audio.AudioDenoiserMode
-import com.kgtts.app.audio.AudioRoutePreference
+import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
+import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -23,7 +24,9 @@ object UserPrefs {
     const val DRAWER_MODE_PERMANENT = 1
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
 
+    private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
+    private val KEY_SYSTEM_TTS_ORDER = longPreferencesKey("system_tts_order")
     private val KEY_MUTE_WHILE_PLAYING = booleanPreferencesKey("mute_while_playing")
     private val KEY_MUTE_DELAY_SEC = floatPreferencesKey("mute_delay_sec")
     private val KEY_ECHO_SUPPRESSION = booleanPreferencesKey("echo_suppression")
@@ -34,6 +37,8 @@ object UserPrefs {
     private val KEY_PREFERRED_OUTPUT_TYPE = intPreferencesKey("preferred_output_type")
     private val KEY_AEC3_ENABLED = booleanPreferencesKey("aec3_enabled")
     private val KEY_DENOISER_MODE = intPreferencesKey("denoiser_mode")
+    private val KEY_CLASSIC_VAD_ENABLED = booleanPreferencesKey("classic_vad_enabled")
+    private val KEY_SILERO_VAD_ENABLED = booleanPreferencesKey("silero_vad_enabled")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -60,6 +65,9 @@ object UserPrefs {
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
+    private val KEY_SPEAKER_VERIFY_BACKEND_VERSION = intPreferencesKey("speaker_verify_backend_version")
+
+    const val SPEAKER_VERIFY_BACKEND_SHERPA_V1 = 1
 
     data class SpeakerVerifyProfile(
         val id: String,
@@ -68,21 +76,23 @@ object UserPrefs {
     )
 
     data class AppSettings(
-        val muteWhilePlaying: Boolean = false,
-        val muteWhilePlayingDelaySec: Float = 0f,
+        val muteWhilePlaying: Boolean = true,
+        val muteWhilePlayingDelaySec: Float = 0.2f,
         val echoSuppression: Boolean = false,
         val communicationMode: Boolean = false,
         val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
         val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
         val aec3Enabled: Boolean = false,
-        val denoiserMode: Int = AudioDenoiserMode.OFF,
-        val minVolumePercent: Int = 0,
+        val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
+        val classicVadEnabled: Boolean = true,
+        val sileroVadEnabled: Boolean = false,
+        val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
         val piperLengthScale: Float = 1.0f,
         val piperNoiseW: Float = 0.8f,
         val piperSentenceSilence: Float = 0.2f,
-        val keepAlive: Boolean = false,
+        val keepAlive: Boolean = true,
         val numberReplaceMode: Int = 0,
         val landscapeDrawerMode: Int = DRAWER_MODE_PERMANENT,
         val solidTopBar: Boolean = true,
@@ -98,17 +108,60 @@ object UserPrefs {
         val speakerVerifyEnabled: Boolean = false,
         val speakerVerifyThreshold: Float = 0.72f,
         val speakerVerifyProfileCsv: String = "",
+        val speakerVerifyBackendVersion: Int = 0,
         val allowSystemAecWithAec3: Boolean = true
     )
 
+    suspend fun getLastAsrName(context: Context): String? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_LAST_ASR]?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun setLastAsrName(context: Context, name: String) {
+        context.dataStore.edit { prefs ->
+            if (name.isBlank()) {
+                prefs.remove(KEY_LAST_ASR)
+            } else {
+                prefs[KEY_LAST_ASR] = name
+            }
+        }
+    }
+
+    suspend fun clearLastAsrName(context: Context) {
+        context.dataStore.edit { prefs ->
+            prefs.remove(KEY_LAST_ASR)
+        }
+    }
+
     suspend fun getLastVoiceName(context: Context): String? {
         val prefs = context.dataStore.data.first()
-        return prefs[KEY_LAST_VOICE]
+        return prefs[KEY_LAST_VOICE]?.takeIf { it.isNotBlank() }
     }
 
     suspend fun setLastVoiceName(context: Context, name: String) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_LAST_VOICE] = name
+            if (name.isBlank()) {
+                prefs.remove(KEY_LAST_VOICE)
+            } else {
+                prefs[KEY_LAST_VOICE] = name
+            }
+        }
+    }
+
+    suspend fun clearLastVoiceName(context: Context) {
+        context.dataStore.edit { prefs ->
+            prefs.remove(KEY_LAST_VOICE)
+        }
+    }
+
+    suspend fun getSystemTtsOrder(context: Context): Long? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_SYSTEM_TTS_ORDER]
+    }
+
+    suspend fun setSystemTtsOrder(context: Context, order: Long) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SYSTEM_TTS_ORDER] = order
         }
     }
 
@@ -124,9 +177,15 @@ object UserPrefs {
     private fun Preferences.toAppSettings(): AppSettings {
         val legacyPreferUsb = this[KEY_PREFER_USB_MIC] ?: false
         val legacySpeaker = this[KEY_COMMUNICATION_SPEAKER] ?: false
+        var classicVadEnabled = this[KEY_CLASSIC_VAD_ENABLED] ?: true
+        var sileroVadEnabled = this[KEY_SILERO_VAD_ENABLED] ?: false
+        if (!classicVadEnabled && !sileroVadEnabled) {
+            classicVadEnabled = true
+            sileroVadEnabled = false
+        }
         return AppSettings(
-            muteWhilePlaying = this[KEY_MUTE_WHILE_PLAYING] ?: false,
-            muteWhilePlayingDelaySec = this[KEY_MUTE_DELAY_SEC] ?: 0f,
+            muteWhilePlaying = this[KEY_MUTE_WHILE_PLAYING] ?: true,
+            muteWhilePlayingDelaySec = this[KEY_MUTE_DELAY_SEC] ?: 0.2f,
             echoSuppression = this[KEY_ECHO_SUPPRESSION] ?: false,
             communicationMode = this[KEY_COMMUNICATION_MODE] ?: false,
             preferredInputType = this[KEY_PREFERRED_INPUT_TYPE]
@@ -134,15 +193,17 @@ object UserPrefs {
             preferredOutputType = this[KEY_PREFERRED_OUTPUT_TYPE]
                 ?: if (legacySpeaker) AudioRoutePreference.OUTPUT_SPEAKER else AudioRoutePreference.OUTPUT_AUTO,
             aec3Enabled = this[KEY_AEC3_ENABLED] ?: false,
-            denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.OFF)
+            denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.RNNOISE)
                 .coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX),
-            minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 0,
+            classicVadEnabled = classicVadEnabled,
+            sileroVadEnabled = sileroVadEnabled,
+            minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
             piperLengthScale = (this[KEY_PIPER_LENGTH_SCALE] ?: 1.0f).coerceIn(0.1f, 5f),
             piperNoiseW = (this[KEY_PIPER_NOISE_W] ?: 0.8f).coerceIn(0f, 2f),
             piperSentenceSilence = (this[KEY_PIPER_SENTENCE_SILENCE] ?: 0.2f).coerceIn(0f, 2f),
-            keepAlive = this[KEY_KEEP_ALIVE] ?: false,
+            keepAlive = true,
             numberReplaceMode = this[KEY_NUMBER_REPLACE_MODE] ?: 0,
             landscapeDrawerMode = (this[KEY_LANDSCAPE_DRAWER_MODE] ?: DRAWER_MODE_PERMANENT)
                 .coerceIn(DRAWER_MODE_HIDDEN, DRAWER_MODE_PERMANENT),
@@ -160,6 +221,7 @@ object UserPrefs {
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
             speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.72f).coerceIn(0.4f, 0.95f),
             speakerVerifyProfileCsv = this[KEY_SPEAKER_VERIFY_PROFILE] ?: "",
+            speakerVerifyBackendVersion = this[KEY_SPEAKER_VERIFY_BACKEND_VERSION] ?: 0,
             allowSystemAecWithAec3 = true
         )
     }
@@ -215,6 +277,18 @@ object UserPrefs {
     suspend fun setDenoiserMode(context: Context, mode: Int) {
         context.dataStore.edit { prefs ->
             prefs[KEY_DENOISER_MODE] = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
+        }
+    }
+
+    suspend fun setClassicVadEnabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_CLASSIC_VAD_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setSileroVadEnabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SILERO_VAD_ENABLED] = enabled
         }
     }
 
@@ -367,6 +441,15 @@ object UserPrefs {
         context.dataStore.edit { prefs ->
             val payload = serializeSpeakerVerifyProfiles(profiles)
             prefs[KEY_SPEAKER_VERIFY_PROFILE] = payload
+            prefs[KEY_SPEAKER_VERIFY_BACKEND_VERSION] = SPEAKER_VERIFY_BACKEND_SHERPA_V1
+        }
+    }
+
+    suspend fun resetSpeakerVerifyBackend(context: Context, enabled: Boolean = false) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SPEAKER_VERIFY_PROFILE] = ""
+            prefs[KEY_SPEAKER_VERIFY_ENABLED] = enabled
+            prefs[KEY_SPEAKER_VERIFY_BACKEND_VERSION] = SPEAKER_VERIFY_BACKEND_SHERPA_V1
         }
     }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../../domain/entities/realtime_event.dart';
 import '../../../domain/entities/recognized_item.dart';
 import '../../../domain/repositories/keepalive_repository.dart';
@@ -29,23 +30,29 @@ class RealtimeCubit extends Cubit<RealtimeState> {
   StreamSubscription<RealtimeEvent>? _eventSub;
   StreamSubscription<dynamic>? _settingsSub;
 
+  /// Callback invoked when ASR produces a final recognized text.
+  /// Set by QuickSubtitlePage to forward results to the subtitle display.
+  void Function(String text)? onAsrResultForSubtitle;
+
   /// Initialize: load bundled ASR, last voice, start listening to events.
   Future<void> initialize() async {
     emit(state.copyWith(loading: true, status: '初始化中...'));
     try {
       // Ensure bundled ASR is extracted (may be null if no bundled asset)
       String? asrDir;
+      String? asrError;
       try {
         asrDir = await _modelRepo.ensureBundledAsr();
-      } catch (_) {
-        // sosv-int8.zip may not exist — that's OK, user can import later
+      } catch (e) {
+        asrError = e.toString();
       }
 
       // Ensure bundled voice pack (firefly) is extracted
+      String? voiceError;
       try {
         await _modelRepo.ensureBundledVoice();
-      } catch (_) {
-        // Extraction may fail on some devices
+      } catch (e) {
+        voiceError = e.toString();
       }
 
       // Get last used voice pack
@@ -75,9 +82,20 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       // Subscribe to native events
       _subscribeEvents();
 
+      // Build init diagnostic
+      final diag = <String>[];
+      if (asrDir == null) {
+        diag.add('ASR: not loaded${asrError != null ? " ($asrError)" : ""}');
+      }
+      if (voiceDir == null) {
+        diag.add('Voice: not loaded${voiceError != null ? " ($voiceError)" : ""}');
+      }
+      final initError = diag.isNotEmpty ? diag.join('\n') : null;
+
       emit(state.copyWith(
         loading: false,
-        status: '就绪',
+        status: initError != null ? '部分初始化' : '就绪',
+        error: initError,
         currentAsrDir: asrDir,
         currentVoiceDir: voiceDir,
       ));
@@ -92,7 +110,12 @@ class RealtimeCubit extends Cubit<RealtimeState> {
 
   void _subscribeEvents() {
     _eventSub?.cancel();
-    _eventSub = _realtimeRepo.events.listen(_handleEvent);
+    _eventSub = _realtimeRepo.events.listen(
+      _handleEvent,
+      onError: (e) {
+        emit(state.copyWith(error: '事件流错误: $e'));
+      },
+    );
   }
 
   void _handleEvent(RealtimeEvent event) {
@@ -100,10 +123,15 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       case RealtimeResult(:final id, :final text):
         final item = RecognizedItem(id: id, text: text);
         final updated = [...state.recognized, item];
-        // Keep max 100 items
         final trimmed =
             updated.length > 100 ? updated.sublist(updated.length - 100) : updated;
         emit(state.copyWith(recognized: trimmed));
+        // Forward to subtitle display if enabled.
+        // Do NOT forward during PTT sessions — PTT results are
+        // handled separately via commitPttSession.
+        if (text.trim().isNotEmpty && !state.pttPressed && !state.recording) {
+          onAsrResultForSubtitle?.call(text.trim());
+        }
 
       case RealtimeStreaming(:final text):
         emit(state.copyWith(pttStreamingText: text));
@@ -145,33 +173,71 @@ class RealtimeCubit extends Cubit<RealtimeState> {
     }
   }
 
-  /// Start the realtime pipeline.
+  /// Start the realtime pipeline (ASR + TTS + microphone).
+  ///
+  /// If ASR model is not loaded, shows a clear error to the user
+  /// instead of silently falling back to TTS-only mode.
   Future<void> start() async {
     if (state.running) return;
     final asrDir = state.currentAsrDir;
     final voiceDir = state.currentVoiceDir;
-    if (asrDir == null || voiceDir == null) {
-      emit(state.copyWith(error: '请先加载 ASR 模型和语音包'));
+    if (voiceDir == null) {
+      emit(state.copyWith(error: '请先加载语音包'));
+      return;
+    }
+    if (asrDir == null) {
+      emit(state.copyWith(
+        error: 'ASR 模型未加载，无法启动语音识别。\n请在语音包页面导入 ASR 模型。',
+        status: 'ASR 未就绪',
+      ));
       return;
     }
     try {
-      emit(state.copyWith(status: '启动中...'));
+      emit(state.copyWith(status: '启动中...', loading: true));
+
+      // Request microphone permission (required on Android 6.0+)
+      final micStatus = await Permission.microphone.request();
+      if (!micStatus.isGranted) {
+        emit(state.copyWith(
+          loading: false,
+          status: '权限被拒绝',
+          error: '需要麦克风权限才能进行语音识别。\n'
+              '请在系统设置中允许本应用使用麦克风。',
+        ));
+        return;
+      }
+
       final ok = await _realtimeRepo.start(
         asrDir: asrDir,
         voiceDir: voiceDir,
       );
       if (ok) {
-        // Start keepalive service if enabled
         final settings = await _settingsRepo.getSettings();
         if (settings.keepAlive) {
           await _keepaliveRepo.start();
         }
-        emit(state.copyWith(running: true, status: '运行中', error: null));
+        emit(state.copyWith(
+          running: true,
+          ttsOnly: false,
+          loading: false,
+          status: '运行中',
+          error: null,
+        ));
       } else {
-        emit(state.copyWith(status: '启动失败', error: '启动失败'));
+        emit(state.copyWith(
+          loading: false,
+          status: '启动失败',
+          error: 'start() returned false\n'
+              'asrDir: $asrDir\n'
+              'voiceDir: $voiceDir',
+        ));
       }
     } catch (e) {
-      emit(state.copyWith(status: '启动失败', error: e.toString()));
+      emit(state.copyWith(
+        loading: false,
+        status: '启动失败',
+        error: e.toString(),
+      ));
     }
   }
 
@@ -183,6 +249,7 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       await _keepaliveRepo.stop();
       emit(state.copyWith(
         running: false,
+        ttsOnly: false,
         status: '已停止',
         inputLevel: 0,
         playbackProgress: 0,
@@ -198,6 +265,38 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       await stop();
     } else {
       await start();
+    }
+  }
+
+  /// Start TTS-only mode (no microphone / no ASR).
+  ///
+  /// Used when the user just wants to play text (send subtitle, tap play)
+  /// without opening the microphone for recognition.
+  Future<void> startTtsOnly() async {
+    if (state.running) return;
+    final voiceDir = state.currentVoiceDir;
+    if (voiceDir == null) {
+      emit(state.copyWith(error: '请先加载语音包'));
+      return;
+    }
+    try {
+      emit(state.copyWith(status: '加载语音包...'));
+      final ok = await _realtimeRepo.loadVoice(voiceDir);
+      if (ok) {
+        emit(state.copyWith(
+          running: true,
+          ttsOnly: true,
+          status: '仅TTS模式',
+          error: null,
+        ));
+      } else {
+        emit(state.copyWith(
+          status: '语音包加载失败',
+          error: 'loadVoice() returned false\nvoiceDir: $voiceDir',
+        ));
+      }
+    } catch (e) {
+      emit(state.copyWith(status: '启动失败', error: e.toString()));
     }
   }
 
@@ -270,14 +369,74 @@ class RealtimeCubit extends Cubit<RealtimeState> {
   }
 
   /// Set PTT pressed state.
+  /// When pressed: auto-start pipeline if needed, then begin PTT session.
+  /// When released: commit PTT session with 'speak' action.
   Future<void> setPttPressed(bool pressed) async {
     emit(state.copyWith(pttPressed: pressed));
-    await _realtimeRepo.setPttPressed(pressed);
+    if (pressed) {
+      // Auto-start pipeline if not running
+      if (!state.running) {
+        await start();
+        if (!state.running) return; // start failed
+      }
+      await startPTT();
+    } else {
+      await stopPTT();
+    }
   }
 
   /// Toggle Push-to-Talk mode on/off.
   void setPttMode(bool enabled) {
     emit(state.copyWith(pttMode: enabled));
+  }
+
+  /// Toggle confirm-input sub-mode for PTT.
+  void setPttConfirmInputMode(bool enabled) {
+    emit(state.copyWith(pttConfirmInputMode: enabled));
+  }
+
+  /// Update the drag target during confirm PTT gesture.
+  void setPttDragTarget(String target) {
+    emit(state.copyWith(pttDragTarget: target));
+  }
+
+  /// Begin a PTT session (auto-starts pipeline if needed).
+  Future<void> beginPttSession() async {
+    if (!state.running) {
+      await start();
+      if (!state.running) return;
+    }
+    try {
+      emit(state.copyWith(
+        pttPressed: true,
+        pttStreamingText: '',
+        pttDragTarget: 'SendToSubtitle',
+        recording: true,
+        status: '录音中...',
+      ));
+      await _realtimeRepo.beginPttSession();
+    } catch (e) {
+      emit(state.copyWith(
+        pttPressed: false,
+        error: e.toString(),
+      ));
+    }
+  }
+
+  /// Commit a PTT session with the specified action.
+  /// [action] is one of: 'SendToSubtitle', 'SendToInput', 'Cancel', 'speak'
+  Future<void> commitPttSession(String action) async {
+    try {
+      emit(state.copyWith(
+        pttPressed: false,
+        recording: false,
+        pttDragTarget: '',
+      ));
+      await _realtimeRepo.commitPttSession(action);
+      emit(state.copyWith(status: state.running ? '运行中' : '就绪'));
+    } catch (e) {
+      emit(state.copyWith(error: e.toString()));
+    }
   }
 
   /// Set preferred input device type and persist.

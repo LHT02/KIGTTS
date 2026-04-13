@@ -21,10 +21,7 @@ class RealtimeChannelDataSource {
         .receiveBroadcastStream()
         .map((data) => RealtimeEventDto.fromMap(
               Map<String, dynamic>.from(data as Map),
-            ))
-        .handleError((e) {
-      // Log and re-emit as error event
-    });
+            ));
     return _eventStream!;
   }
 

@@ -1,4 +1,4 @@
-package com.kgtts.app.overlay
+package com.lhtstudio.kigtts.app.overlay
 
 import android.animation.LayoutTransition
 import android.animation.ValueAnimator
@@ -6,14 +6,18 @@ import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
 import android.content.pm.LauncherApps
 import android.content.pm.ResolveInfo
 import android.content.pm.ShortcutInfo
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.hardware.display.DisplayManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -33,7 +37,9 @@ import android.provider.Settings
 import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
+import android.util.DisplayMetrics
 import android.util.TypedValue
+import android.view.Display
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.ViewConfiguration
@@ -57,17 +63,19 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.ColorUtils
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.lhtstudio.kigtts.app.service.RealtimeHostService
+import com.lhtstudio.kigtts.app.service.RealtimeHostState
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
-import com.kgtts.app.R
-import com.kgtts.app.data.UserPrefs
-import com.kgtts.app.overlay.RealtimeRuntimeBridge
-import com.kgtts.app.ui.QuickCard
-import com.kgtts.app.ui.QuickCardType
-import com.kgtts.app.util.AppLogger
-import com.kgtts.app.util.QuickCardRenderCache
+import com.lhtstudio.kigtts.app.R
+import com.lhtstudio.kigtts.app.data.UserPrefs
+import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
+import com.lhtstudio.kigtts.app.ui.QuickCard
+import com.lhtstudio.kigtts.app.ui.QuickCardType
+import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -107,8 +115,10 @@ class FloatingOverlayService : Service() {
     private var fabParams: WindowManager.LayoutParams? = null
     private var bubbleRow: LinearLayout? = null
     private var bubbleTextView: TextView? = null
+    private var fabSpacerView: View? = null
+    private var fabButtonHost: FrameLayout? = null
     private var fabButton: FrameLayout? = null
-    private var fabIconView: TextView? = null
+    private var fabIconView: ImageView? = null
     private var panelRoot: FrameLayout? = null
     private var panelContent: LinearLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
@@ -188,19 +198,12 @@ class FloatingOverlayService : Service() {
     private var leftActionButton: FrameLayout? = null
     private var rightActionButton: FrameLayout? = null
 
-    private var running = false
     private var pttPressed = false
     private var pttTemporaryStart = false
-    private var pttSessionLastText = ""
-    private var pttStreamingText = ""
-    private var latestRecognizedText = ""
+    private var overlayHintText = ""
     private var currentDragAction = OverlayReleaseAction.SendToSubtitle
     private var overlayDarkTheme = false
     private var overlayStatusExpanded = false
-    private var overlayInputLevel = 0f
-    private var overlayPlaybackProgress = 0f
-    private var overlayInputDeviceLabel = ""
-    private var overlayOutputDeviceLabel = ""
     private var fabSnapAnimator: ValueAnimator? = null
     private var fabIdleDockJob: Job? = null
     private var fabIdleDocked = false
@@ -215,6 +218,39 @@ class FloatingOverlayService : Service() {
     private var downWinX = 0
     private var downWinY = 0
     private var draggingFab = false
+    private var realtimeHost: RealtimeHostService? = null
+    private var realtimeHostBound = false
+    private var realtimeHostState = RealtimeHostState()
+    private var realtimeHostStateJob: Job? = null
+    private val pendingRealtimeHostActions = mutableListOf<(RealtimeHostService) -> Unit>()
+    private val realtimeHostConnection =
+        object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                val binder = service as? RealtimeHostService.LocalBinder ?: return
+                realtimeHost = binder.getService()
+                realtimeHostBound = true
+                realtimeHostStateJob?.cancel()
+                realtimeHostStateJob = scope.launch {
+                    realtimeHost!!.stateFlow().collectLatest { snapshot ->
+                        realtimeHostState = snapshot
+                        updateFabUi()
+                        if (pttPressed && confirmOverlay?.visibility == View.VISIBLE) {
+                            updateConfirmVisuals(currentDragAction)
+                        }
+                    }
+                }
+                flushPendingRealtimeHostActions()
+                scope.launch { updateFabUi() }
+            }
+
+            override fun onServiceDisconnected(name: ComponentName?) {
+                realtimeHostStateJob?.cancel()
+                realtimeHostStateJob = null
+                realtimeHost = null
+                realtimeHostBound = false
+                scope.launch { updateFabUi() }
+            }
+        }
     private val runtimeBridgeListener =
         object : RealtimeRuntimeBridge.Listener {
             override fun onAppRuntimeChanged() {
@@ -471,7 +507,7 @@ class FloatingOverlayService : Service() {
     }
 
     private fun updateFabDisplaySnapshot() {
-        currentFabOrientation = normalizeFabOrientation(resources.configuration.orientation)
+        currentFabOrientation = displayOrientation()
         lastFabDisplayWidth = displayWidth()
         lastFabDisplayHeight = displayHeight()
     }
@@ -489,8 +525,17 @@ class FloatingOverlayService : Service() {
 
     private fun fabMinY(): Int = dp(48)
 
+    private fun fabVisibleHeightPx(): Int =
+        max(
+            fabRoot?.measuredHeight?.takeIf { it > 0 } ?: 0,
+            max(
+                fabRoot?.height?.takeIf { it > 0 } ?: 0,
+                dp(FAB_SIZE_DP)
+            )
+        )
+
     private fun fabMaxY(screenHeight: Int = displayHeight()): Int =
-        max(fabMinY(), screenHeight - dp(220))
+        max(fabMinY(), screenHeight - fabVisibleHeightPx())
 
     private fun fabMaxX(screenWidth: Int = displayWidth()): Int =
         max(0, screenWidth - max(fabRoot?.measuredWidth ?: 0, dp(FAB_SIZE_DP)))
@@ -600,13 +645,87 @@ class FloatingOverlayService : Service() {
         return max(byButton, byRootHalf)
     }
 
+    private fun fabDockExposedWidthPx(): Int {
+        val buttonWidth =
+            fabButton?.measuredWidth?.takeIf { it > 0 }
+                ?: fabButton?.width?.takeIf { it > 0 }
+                ?: dp(FAB_SIZE_DP)
+        return max(1, buttonWidth / 2)
+    }
+
+    private fun fabDockShadowPaddingPx(): Int = dp(8)
+
+    private fun lerpInt(start: Int, end: Int, fraction: Float): Int {
+        return (start + (end - start) * fraction).roundToInt()
+    }
+
+    private fun fabDockVisibleWidthPx(): Int {
+        return fabDockExposedWidthPx() + fabDockShadowPaddingPx()
+    }
+
     private fun dockedFabXForEdge(edge: String, screenWidth: Int): Int {
-        val exposure = fabButtonHalfExposureOffset()
+        val visibleWidth = fabDockVisibleWidthPx()
         return if (edge == FAB_EDGE_LEFT) {
-            -exposure
+            0
         } else {
-            screenWidth - exposure
+            max(0, screenWidth - visibleWidth)
         }
+    }
+
+    private fun updateFabDockLayout(edge: String) {
+        val root = fabRoot ?: return
+        val host = fabButtonHost ?: return
+        val button = fabButton ?: return
+        val spacer = fabSpacerView
+        val rootLayoutParams = root.layoutParams as? ViewGroup.MarginLayoutParams
+        val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return
+        val buttonLayoutParams = button.layoutParams as? FrameLayout.LayoutParams ?: return
+        val buttonWidth =
+            button.measuredWidth.takeIf { it > 0 }
+                ?: button.width.takeIf { it > 0 }
+                ?: dp(FAB_SIZE_DP)
+        if (fabIdleDocked) {
+            val exposedWidth = fabDockExposedWidthPx()
+            val shadowPadding = fabDockShadowPaddingPx()
+            val visibleWidth = fabDockVisibleWidthPx()
+            root.clipChildren = false
+            root.clipToPadding = false
+            root.gravity = if (edge == FAB_EDGE_LEFT) Gravity.START else Gravity.END
+            root.setPadding(0, dp(14), 0, dp(14))
+            rootLayoutParams?.width = ViewGroup.LayoutParams.WRAP_CONTENT
+            spacer?.visibility = View.VISIBLE
+            host.clipChildren = true
+            host.clipToPadding = true
+            hostLayoutParams.width = visibleWidth
+            hostLayoutParams.height = dp(FAB_SIZE_DP)
+            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            button.translationX =
+                if (edge == FAB_EDGE_LEFT) {
+                    -(buttonWidth - exposedWidth).toFloat()
+                } else {
+                    shadowPadding.toFloat()
+                }
+        } else {
+            root.clipChildren = false
+            root.clipToPadding = false
+            root.gravity = Gravity.END
+            root.setPadding(dp(14), dp(14), dp(14), dp(14))
+            rootLayoutParams?.width = ViewGroup.LayoutParams.WRAP_CONTENT
+            spacer?.visibility = View.VISIBLE
+            host.clipChildren = false
+            host.clipToPadding = false
+            hostLayoutParams.width = dp(FAB_SIZE_DP)
+            hostLayoutParams.height = dp(FAB_SIZE_DP)
+            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            button.translationX = 0f
+        }
+        host.layoutParams = hostLayoutParams
+        button.layoutParams = buttonLayoutParams
+        if (rootLayoutParams != null) {
+            root.layoutParams = rootLayoutParams
+        }
+        host.requestLayout()
+        root.requestLayout()
     }
 
     private fun restoreFabFromIdleDock() {
@@ -620,6 +739,7 @@ class FloatingOverlayService : Service() {
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
         applyFabAnchor(params, anchor, displayWidth(), displayHeight())
         fabIdleDocked = false
+        updateFabDockLayout(anchor.edge)
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
     }
@@ -628,8 +748,10 @@ class FloatingOverlayService : Service() {
         val root = fabRoot ?: return
         if (fabIdleDocked) {
             bubbleRow?.visibility = View.GONE
+            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
             root.alpha = fabIdleDockAlpha
         } else {
+            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
             root.alpha = 1f
         }
     }
@@ -651,13 +773,45 @@ class FloatingOverlayService : Service() {
         root.post {
             val liveParams = fabParams ?: return@post
             val liveRoot = fabRoot ?: return@post
+            val host = fabButtonHost ?: return@post
+            val button = fabButton ?: return@post
+            val spacer = fabSpacerView
+            val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return@post
+            val buttonLayoutParams = button.layoutParams as? FrameLayout.LayoutParams ?: return@post
+            val spacerLayoutParams = spacer?.layoutParams as? LinearLayout.LayoutParams
+            val buttonWidth =
+                button.measuredWidth.takeIf { it > 0 }
+                    ?: button.width.takeIf { it > 0 }
+                    ?: dp(FAB_SIZE_DP)
+            val startPaddingLeft = liveRoot.paddingLeft
+            val startPaddingTop = liveRoot.paddingTop
+            val startPaddingRight = liveRoot.paddingRight
+            val startPaddingBottom = liveRoot.paddingBottom
+            val startHostWidth = hostLayoutParams.width.takeIf { it > 0 } ?: dp(FAB_SIZE_DP)
+            val startSpacerHeight =
+                spacerLayoutParams?.height?.takeIf { it >= 0 }
+                    ?: if (spacer?.visibility == View.VISIBLE) dp(12) else 0
+            val startButtonTranslation = button.translationX
+            val targetVisibleWidth = fabDockVisibleWidthPx()
+            val targetExposedWidth = fabDockExposedWidthPx()
+            val targetShadowPadding = fabDockShadowPaddingPx()
+            val targetPaddingHorizontal = 0
+            val targetPaddingVertical = dp(14)
+            val targetSpacerHeight = startSpacerHeight.takeIf { it > 0 } ?: dp(12)
+            val targetButtonTranslation =
+                if (anchor.edge == FAB_EDGE_LEFT) {
+                    -(buttonWidth - targetExposedWidth).toFloat()
+                } else {
+                    targetShadowPadding.toFloat()
+                }
+            fabIdleDocked = true
             val targetX = dockedFabXForEdge(anchor.edge, displayWidth())
             val targetY = liveParams.y
             val startX = liveParams.x
             val startY = liveParams.y
             fabSnapAnimator?.cancel()
-            fabIdleDocked = true
             if (startX == targetX && startY == targetY) {
+                updateFabDockLayout(anchor.edge)
                 liveParams.x = targetX
                 liveParams.y = targetY
                 liveRoot.alpha = fabIdleDockAlpha
@@ -669,19 +823,59 @@ class FloatingOverlayService : Service() {
                 interpolator = DecelerateInterpolator()
                 addUpdateListener { animator ->
                     val fraction = animator.animatedFraction
+                    liveRoot.gravity = if (anchor.edge == FAB_EDGE_LEFT) Gravity.START else Gravity.END
+                    liveRoot.clipChildren = false
+                    liveRoot.clipToPadding = false
+                    liveRoot.setPadding(
+                        lerpInt(startPaddingLeft, targetPaddingHorizontal, fraction),
+                        lerpInt(startPaddingTop, targetPaddingVertical, fraction),
+                        lerpInt(startPaddingRight, targetPaddingHorizontal, fraction),
+                        lerpInt(startPaddingBottom, targetPaddingVertical, fraction)
+                    )
+                    spacer?.visibility = View.VISIBLE
+                    spacer?.alpha = 1f
+                    if (spacerLayoutParams != null) {
+                        spacerLayoutParams.height = lerpInt(startSpacerHeight, targetSpacerHeight, fraction)
+                        spacer.layoutParams = spacerLayoutParams
+                    }
+                    host.clipChildren = fraction > 0f
+                    host.clipToPadding = fraction > 0f
+                    hostLayoutParams.width = lerpInt(startHostWidth, targetVisibleWidth, fraction)
+                    hostLayoutParams.height = dp(FAB_SIZE_DP)
+                    host.layoutParams = hostLayoutParams
+                    buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                    button.layoutParams = buttonLayoutParams
+                    button.translationX =
+                        startButtonTranslation + (targetButtonTranslation - startButtonTranslation) * fraction
                     liveParams.x = (startX + (targetX - startX) * fraction).roundToInt()
                     liveParams.y = (startY + (targetY - startY) * fraction).roundToInt()
                     liveRoot.alpha = 1f + (fabIdleDockAlpha - 1f) * fraction
+                    host.requestLayout()
+                    liveRoot.requestLayout()
                     runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
                 }
+                addListener(
+                    object : android.animation.AnimatorListenerAdapter() {
+                        override fun onAnimationEnd(animation: android.animation.Animator) {
+                            spacer?.alpha = 1f
+                            updateFabDockLayout(anchor.edge)
+                            liveParams.x = targetX
+                            liveParams.y = targetY
+                            liveRoot.alpha = fabIdleDockAlpha
+                            runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
+                        }
+                    }
+                )
             }.also { it.start() }
         }
     }
 
     private fun scheduleFabIdleDock() {
-        fabIdleDockJob?.cancel()
         if (!canAutoDockFab() || fabIdleDocked) {
             applyFabIdleDockVisualState()
+            return
+        }
+        if (fabIdleDockJob?.isActive == true) {
             return
         }
         fabIdleDockJob = scope.launch {
@@ -699,7 +893,7 @@ class FloatingOverlayService : Service() {
             return
         }
         if (fabIdleDocked) {
-            dockFabIdleNow()
+            applyFabIdleDockVisualState()
         } else {
             scheduleFabIdleDock()
         }
@@ -754,6 +948,8 @@ class FloatingOverlayService : Service() {
             stopSelf()
             return
         }
+        RealtimeHostService.ensureStarted(this)
+        ensureRealtimeHostBound()
         overlayDarkTheme = isOverlayDarkTheme()
         updateFabDisplaySnapshot()
         startForegroundInternal()
@@ -800,6 +996,13 @@ class FloatingOverlayService : Service() {
         settingsJob = null
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
+        if (realtimeHostBound) {
+            runCatching { unbindService(realtimeHostConnection) }
+            realtimeHostBound = false
+        }
+        realtimeHostStateJob?.cancel()
+        realtimeHostStateJob = null
+        realtimeHost = null
         RealtimeRuntimeBridge.removeListener(runtimeBridgeListener)
         hideConfirmOverlay()
         removeWindows()
@@ -814,7 +1017,7 @@ class FloatingOverlayService : Service() {
             lastFabDisplayWidth.takeIf { it > 0 } ?: displayWidth(),
             lastFabDisplayHeight.takeIf { it > 0 } ?: displayHeight()
         )
-        currentFabOrientation = normalizeFabOrientation(newConfig.orientation)
+        currentFabOrientation = displayOrientation()
         lastFabDisplayWidth = displayWidth()
         lastFabDisplayHeight = displayHeight()
         val darkNow = isOverlayDarkTheme()
@@ -867,13 +1070,14 @@ class FloatingOverlayService : Service() {
             .setContentTitle("KIGTTS 悬浮窗")
             .setContentText("悬浮窗正在运行")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)
@@ -903,14 +1107,14 @@ class FloatingOverlayService : Service() {
                 LinearLayout.LayoutParams(dp(220), ViewGroup.LayoutParams.WRAP_CONTENT)
             )
             setOnClickListener {
-                val text = latestRecognizedText.trim()
+                val text = effectiveLatestRecognizedText().trim()
                 if (text.isNotEmpty()) {
                     launchQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, text)
                 }
             }
         }
 
-        fabIconView = symbolTextView("play_arrow", 30f, Color.WHITE)
+        fabIconView = launcherFabIconView()
         fabButton = FrameLayout(this).apply {
             background = circleDrawable(overlayPrimaryColor())
             elevation = dp(8).toFloat()
@@ -924,6 +1128,15 @@ class FloatingOverlayService : Service() {
             )
             setOnTouchListener { _, event -> handleFabTouch(event) }
         }
+        fabButtonHost = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(
+                fabButton,
+                FrameLayout.LayoutParams(dp(FAB_SIZE_DP), dp(FAB_SIZE_DP), Gravity.START or Gravity.CENTER_VERTICAL)
+            )
+        }
+        fabSpacerView = spaceView(1, dp(12))
 
         fabRoot = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -938,9 +1151,9 @@ class FloatingOverlayService : Service() {
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
-            addView(spaceView(1, dp(12)))
+            addView(fabSpacerView)
             addView(
-                fabButton,
+                fabButtonHost,
                 LinearLayout.LayoutParams(dp(FAB_SIZE_DP), dp(FAB_SIZE_DP))
             )
         }
@@ -2255,6 +2468,8 @@ class FloatingOverlayService : Service() {
         fabRoot?.let { runCatching { windowManager.removeView(it) } }
         fabRoot = null
         fabButton = null
+        fabButtonHost = null
+        fabSpacerView = null
         fabIconView = null
         bubbleRow = null
         bubbleTextView = null
@@ -2291,15 +2506,12 @@ class FloatingOverlayService : Service() {
         val inputLevel = effectiveInputLevel()
         val playbackProgress = effectivePlaybackProgress()
         val pttPressedState = effectivePttPressedState()
-        val icon = when {
+        val actionIcon = when {
             settings.pushToTalkMode && pttPressedState -> "settings_voice"
             settings.pushToTalkMode -> "mic"
             runningState -> "stop"
             else -> "play_arrow"
         }
-        fabIconView?.text = icon
-        panelActionFabIconView?.text = icon
-        miniActionFabIconView?.text = icon
         bubbleTextView?.text = latestText
         bubbleRow?.visibility = View.GONE
         val hasLatestResult = latestText.isNotBlank()
@@ -2322,6 +2534,8 @@ class FloatingOverlayService : Service() {
         miniStatusEqProgressView?.progress = (playbackProgress * 1000f).roundToInt().coerceIn(0, 1000)
         miniStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressedState) 1f else 0.68f
         miniStatusEqContainer?.alpha = if (runningState || hasLatestResult) 1f else 0.68f
+        panelActionFabIconView?.text = actionIcon
+        miniActionFabIconView?.text = actionIcon
         refreshStatusDetailUi()
         syncFabVisibility(!(miniVisible || panelVisible))
         fabButton?.alpha = if (pttPressedState) 0.94f else 1f
@@ -2330,7 +2544,6 @@ class FloatingOverlayService : Service() {
         if (fabIdleDocked) {
             bubbleRow?.visibility = View.GONE
         }
-        refreshFabIdleDockState()
     }
 
     private fun syncFabVisibility(show: Boolean) {
@@ -2340,6 +2553,9 @@ class FloatingOverlayService : Service() {
         if (fabVisibilityTarget == show) return
         fabVisibilityTarget = show
         animateFabVisibility(show)
+        if (show) {
+            refreshFabIdleDockState()
+        }
     }
 
     private fun updateConfirmLayout() {
@@ -2397,27 +2613,43 @@ class FloatingOverlayService : Service() {
             OverlayReleaseAction.Cancel -> RealtimeRuntimeBridge.PttCommitAction.Cancel
         }
 
+    private fun hasRecordAudioPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestRecordAudioPermissionFromApp(startRealtimeOnGrant: Boolean) {
+        overlayHintText = "需要麦克风权限"
+        runCatching {
+            startActivity(
+                OverlayBridge.buildRequestRecordAudioPermissionIntent(
+                    this,
+                    startRealtimeOnGrant = startRealtimeOnGrant
+                )
+            )
+        }.onFailure {
+            AppLogger.e("FloatingOverlayService.requestRecordAudioPermission failed", it)
+        }
+    }
+
     private fun beginPttSession() {
+        if (!hasRecordAudioPermission()) {
+            requestRecordAudioPermissionFromApp(startRealtimeOnGrant = false)
+            updateFabUi()
+            return
+        }
         pttPressed = true
         pttTemporaryStart = !effectiveRunningState()
-        pttSessionLastText = ""
-        pttStreamingText = ""
+        overlayHintText = ""
         currentDragAction = OverlayReleaseAction.SendToSubtitle
         updateFabUi()
         if (settings.pushToTalkConfirmInput) showConfirmOverlay()
-        scope.launch {
-            val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
-            if (appDelegate == null) {
-                pttPressed = false
-                pttTemporaryStart = false
-                hideConfirmOverlay()
-                latestRecognizedText = "请先打开主界面"
-                updateFabUi()
-                return@launch
-            }
-            if (pttTemporaryStart) appDelegate.startRealtime()
-            appDelegate.beginPushToTalkSession()
-            appDelegate.setPushToTalkPressed(true)
+        runWithRealtimeHost("音频宿主初始化中") { host ->
+            if (pttTemporaryStart) host.startRealtime()
+            host.beginPushToTalkSession()
+            host.setPushToTalkPressed(true)
         }
     }
 
@@ -2426,26 +2658,11 @@ class FloatingOverlayService : Service() {
         val shouldStop = pttTemporaryStart
         pttPressed = false
         pttTemporaryStart = false
-        pttSessionLastText = ""
-        pttStreamingText = ""
         hideConfirmOverlay()
-        scope.launch {
-            val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
-            if (appDelegate != null) {
-                appDelegate.commitPushToTalkSession(mapCommitAction(action))
-                appDelegate.setPushToTalkPressed(false)
-                if (shouldStop) appDelegate.stopRealtime()
-            } else if (text.isNotEmpty()) {
-                when (action) {
-                    OverlayReleaseAction.SendToSubtitle -> {
-                        launchQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, text)
-                    }
-                    OverlayReleaseAction.SendToInput -> {
-                        launchQuickSubtitle(OverlayBridge.TARGET_INPUT, text)
-                    }
-                    OverlayReleaseAction.Cancel -> Unit
-                }
-            }
+        runWithRealtimeHost("音频宿主初始化中") { host ->
+            host.commitPushToTalkSession(mapCommitAction(action))
+            host.setPushToTalkPressed(false)
+            if (shouldStop) host.stopRealtime()
         }
         if (action == OverlayReleaseAction.SendToInput && text.isNotEmpty()) {
             launchQuickSubtitle(OverlayBridge.TARGET_OPEN, "")
@@ -2456,41 +2673,38 @@ class FloatingOverlayService : Service() {
     private fun submitQuickSubtitleText(text: String) {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
-        latestRecognizedText = normalized
+        overlayHintText = ""
         quickSubtitleCurrentText = normalized
         saveQuickSubtitleConfig()
         refreshQuickSubtitleUi()
         updateFabUi()
-        val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
-        if (appDelegate != null) {
-            appDelegate.submitQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, normalized)
-        } else {
-            launchQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, normalized)
+        runWithRealtimeHost("音频宿主初始化中") { host ->
+            host.submitQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, normalized)
         }
     }
 
     private suspend fun startListeningInternal(showFailureInBubble: Boolean): Boolean {
-        if (effectiveRunningState()) return true
-        val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
-        if (appDelegate == null) {
-            if (showFailureInBubble) {
-                latestRecognizedText = "请先打开主界面"
-                updateFabUi()
-            }
+        if (!hasRecordAudioPermission()) {
+            requestRecordAudioPermissionFromApp(startRealtimeOnGrant = true)
+            updateFabUi()
             return false
         }
-        appDelegate.startRealtime()
-        running = true
+        if (effectiveRunningState()) return true
+        overlayHintText = ""
+        val queued = runWithRealtimeHost(
+            if (showFailureInBubble) "音频宿主初始化中" else null
+        ) { host ->
+            host.startRealtime()
+        }
+        if (!queued) return false
         updateFabUi()
         return true
     }
 
     private suspend fun stopListeningInternal() {
-        val appDelegate = RealtimeRuntimeBridge.currentAppDelegate()
-        if (appDelegate != null) {
-            appDelegate.stopRealtime()
+        runWithRealtimeHost(null) { host ->
+            host.stopRealtime()
         }
-        running = false
         updateFabUi()
     }
 
@@ -2913,10 +3127,19 @@ class FloatingOverlayService : Service() {
         card.bringToFront()
     }
 
-    private fun isTabletUi(): Boolean = resources.configuration.smallestScreenWidthDp >= 600
+    private fun displayOrientation(): Int =
+        if (displayWidth() > displayHeight()) {
+            Configuration.ORIENTATION_LANDSCAPE
+        } else {
+            Configuration.ORIENTATION_PORTRAIT
+        }
 
-    private fun isLandscapeUi(): Boolean =
-        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    private fun displaySmallestWidthDp(): Int =
+        (min(displayWidth(), displayHeight()) / resources.displayMetrics.density).roundToInt()
+
+    private fun isTabletUi(): Boolean = displaySmallestWidthDp() >= 600
+
+    private fun isLandscapeUi(): Boolean = displayOrientation() == Configuration.ORIENTATION_LANDSCAPE
 
     private fun isTabletLandscapeUi(): Boolean = isTabletUi() && isLandscapeUi()
 
@@ -5950,20 +6173,20 @@ class FloatingOverlayService : Service() {
     }
 
     private fun preferredInputTypeOptions(): List<Pair<Int, String>> = listOf(
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_AUTO to "自动",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_BUILTIN_MIC to "内置麦克风/话筒",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_USB to "USB 麦克风",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_BLUETOOTH to "蓝牙麦克风",
-        com.kgtts.app.audio.AudioRoutePreference.INPUT_WIRED to "有线麦克风"
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_AUTO to "自动",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_BUILTIN_MIC to "内置麦克风/话筒",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_USB to "USB 麦克风",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_BLUETOOTH to "蓝牙麦克风",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.INPUT_WIRED to "有线麦克风"
     )
 
     private fun preferredOutputTypeOptions(): List<Pair<Int, String>> = listOf(
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_AUTO to "自动",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_SPEAKER to "扬声器",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_EARPIECE to "听筒",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_BLUETOOTH to "蓝牙音频",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_USB to "USB 音频",
-        com.kgtts.app.audio.AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_AUTO to "自动",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_SPEAKER to "扬声器",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_EARPIECE to "听筒",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_BLUETOOTH to "蓝牙音频",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_USB to "USB 音频",
+        com.lhtstudio.kigtts.app.audio.AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
     )
 
     private fun preferredInputTypeLabel(type: Int): String =
@@ -6333,9 +6556,9 @@ class FloatingOverlayService : Service() {
     private fun clampFabToScreen() {
         val params = fabParams ?: return
         val maxX = fabMaxX(displayWidth())
-        val maxY = max(0, displayHeight() - max(fabRoot?.measuredHeight ?: 0, dp(FAB_SIZE_DP)))
+        val maxY = fabMaxY(displayHeight())
         params.x = params.x.coerceIn(0, maxX)
-        params.y = params.y.coerceIn(dp(32), maxY)
+        params.y = params.y.coerceIn(fabMinY(), maxY)
     }
 
     private fun overlayWindowType(): Int {
@@ -6441,84 +6664,171 @@ class FloatingOverlayService : Service() {
             includeFontPadding = false
         }
 
+    private fun launcherFabIconView(): ImageView =
+        ImageView(this).apply {
+            setImageResource(R.drawable.ic_launcher_foreground)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+            layoutParams = FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER)
+        }
+
     private fun spaceView(width: Int, height: Int): View =
         View(this).apply { layoutParams = ViewGroup.LayoutParams(width, height) }
 
     private fun usesAppRealtimeBridge(): Boolean =
-        RealtimeRuntimeBridge.currentAppDelegate() != null
+        realtimeHost != null || RealtimeRuntimeBridge.currentAppDelegate() != null
+
+    private fun ensureRealtimeHostBound() {
+        if (realtimeHostBound) return
+        RealtimeHostService.ensureStarted(this)
+        val bound = runCatching {
+            bindService(
+                Intent(this, RealtimeHostService::class.java),
+                realtimeHostConnection,
+                Context.BIND_AUTO_CREATE
+            )
+        }.getOrDefault(false)
+        realtimeHostBound = bound
+    }
+
+    private fun runWithRealtimeHost(
+        pendingStatus: String?,
+        action: (RealtimeHostService) -> Unit
+    ): Boolean {
+        val host = realtimeHost
+        if (host != null) {
+            action(host)
+            return true
+        }
+        synchronized(pendingRealtimeHostActions) {
+            pendingRealtimeHostActions += action
+        }
+        ensureRealtimeHostBound()
+        if (pendingStatus != null) {
+            overlayHintText = pendingStatus
+            updateFabUi()
+        }
+        return false
+    }
+
+    private fun flushPendingRealtimeHostActions() {
+        val host = realtimeHost ?: return
+        val pending = synchronized(pendingRealtimeHostActions) {
+            pendingRealtimeHostActions.toList().also { pendingRealtimeHostActions.clear() }
+        }
+        pending.forEach { action ->
+            runCatching { action(host) }
+                .onFailure { AppLogger.e("FloatingOverlayService pending host action failed", it) }
+        }
+    }
 
     private fun effectiveRunningState(): Boolean =
-        if (usesAppRealtimeBridge()) {
+        if (realtimeHost != null) {
+            realtimeHostState.running
+        } else if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().running
         } else {
-            running
+            false
         }
 
     private fun effectiveLatestRecognizedText(): String =
-        if (usesAppRealtimeBridge()) {
-            RealtimeRuntimeBridge.currentSnapshot().latestRecognizedText.ifBlank { latestRecognizedText }
+        if (realtimeHost != null) {
+            realtimeHostState.recognized.firstOrNull()?.text.orEmpty().ifBlank { overlayHintText }
+        } else if (usesAppRealtimeBridge()) {
+            RealtimeRuntimeBridge.currentSnapshot().latestRecognizedText
         } else {
-            latestRecognizedText
+            overlayHintText
         }
 
     private fun effectivePttStreamingText(): String =
-        if (usesAppRealtimeBridge()) {
-            RealtimeRuntimeBridge.currentSnapshot().pushToTalkStreamingText.ifBlank { pttStreamingText }
+        if (realtimeHost != null) {
+            realtimeHostState.pushToTalkStreamingText
+        } else if (usesAppRealtimeBridge()) {
+            RealtimeRuntimeBridge.currentSnapshot().pushToTalkStreamingText
         } else {
-            pttStreamingText
+            ""
         }
 
     private fun effectivePttPressedState(): Boolean =
-        if (usesAppRealtimeBridge()) {
+        if (realtimeHost != null) {
+            pttPressed || realtimeHostState.pushToTalkPressed
+        } else if (usesAppRealtimeBridge()) {
             pttPressed || RealtimeRuntimeBridge.currentSnapshot().pushToTalkPressed
         } else {
             pttPressed
         }
 
     private fun effectiveInputLevel(): Float =
-        if (usesAppRealtimeBridge()) {
+        if (realtimeHost != null) {
+            realtimeHostState.inputLevel.coerceIn(0f, 1f)
+        } else if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().inputLevel.coerceIn(0f, 1f)
         } else {
-            overlayInputLevel.coerceIn(0f, 1f)
+            0f
         }
 
     private fun effectivePlaybackProgress(): Float =
-        if (usesAppRealtimeBridge()) {
+        if (realtimeHost != null) {
+            realtimeHostState.playbackProgress.coerceIn(0f, 1f)
+        } else if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().playbackProgress.coerceIn(0f, 1f)
         } else {
-            overlayPlaybackProgress.coerceIn(0f, 1f)
+            0f
         }
 
     private fun effectiveInputDeviceLabel(): String =
-        if (usesAppRealtimeBridge()) {
+        if (realtimeHost != null) {
+            realtimeHostState.inputDeviceLabel.ifBlank {
+                preferredInputTypeLabel(settings.preferredInputType)
+            }
+        } else if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().inputDeviceLabel.ifBlank {
                 preferredInputTypeLabel(settings.preferredInputType)
             }
         } else {
-            overlayInputDeviceLabel.ifBlank { preferredInputTypeLabel(settings.preferredInputType) }
+            preferredInputTypeLabel(settings.preferredInputType)
         }
 
     private fun effectiveOutputDeviceLabel(): String =
-        if (usesAppRealtimeBridge()) {
+        if (realtimeHost != null) {
+            realtimeHostState.outputDeviceLabel.ifBlank {
+                preferredOutputTypeLabel(settings.preferredOutputType)
+            }
+        } else if (usesAppRealtimeBridge()) {
             RealtimeRuntimeBridge.currentSnapshot().outputDeviceLabel.ifBlank {
                 preferredOutputTypeLabel(settings.preferredOutputType)
             }
         } else {
-            overlayOutputDeviceLabel.ifBlank { preferredOutputTypeLabel(settings.preferredOutputType) }
+            preferredOutputTypeLabel(settings.preferredOutputType)
         }
 
     private fun dp(value: Int): Int = (resources.displayMetrics.density * value).roundToInt()
     private fun dp(value: Float): Int = (resources.displayMetrics.density * value).roundToInt()
-    private fun displayWidth(): Int = resources.displayMetrics.widthPixels
-    private fun displayHeight(): Int = resources.displayMetrics.heightPixels
+
+    private fun displayBounds(): Rect {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            return Rect(windowManager.maximumWindowMetrics.bounds)
+        }
+        val display = getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)
+        if (display != null) {
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics)
+            return Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
+        }
+        return Rect(0, 0, resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels)
+    }
+
+    private fun displayWidth(): Int = displayBounds().width()
+    private fun displayHeight(): Int = displayBounds().height()
 
     companion object {
         private const val CHANNEL_ID = "floating_overlay"
         private const val NOTIFICATION_ID = 3204
         private const val OWNER_TAG = "overlay"
         private const val FAB_SIZE_DP = 56
-        private const val ACTION_STOP = "com.kgtts.app.action.OVERLAY_STOP"
-        private const val ACTION_REFRESH = "com.kgtts.app.action.OVERLAY_REFRESH"
+        private const val ACTION_STOP = "com.lhtstudio.kigtts.app.action.OVERLAY_STOP"
+        private const val ACTION_REFRESH = "com.lhtstudio.kigtts.app.action.OVERLAY_REFRESH"
 
         fun canDrawOverlays(context: Context): Boolean {
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

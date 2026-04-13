@@ -1,4 +1,4 @@
-package com.kgtts.app.data
+package com.lhtstudio.kigtts.app.data
 
 import android.content.ContentResolver
 import android.content.Context
@@ -8,7 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.net.Uri
 import android.provider.OpenableColumns
-import com.kgtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.AppLogger
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -16,6 +16,13 @@ import java.io.IOException
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+
+const val SYSTEM_TTS_VOICE_NAME = "__system_tts__"
+private const val SYSTEM_TTS_VIRTUAL_DIR_NAME = "__system_tts_virtual__"
+
+fun isSystemTtsVoiceDir(dir: File?): Boolean {
+    return dir?.name == SYSTEM_TTS_VIRTUAL_DIR_NAME
+}
 
 data class ModelPaths(
     val asrDir: File?,
@@ -40,8 +47,6 @@ class ModelRepository(private val context: Context) {
     private val asrRoot = File(root, "asr")
     private val voiceRoot = File(root, "voice")
     private val bundledAsrAsset = "sosv-int8.zip"
-    private val bundledVoiceAsset = "firefly.zip"
-    private val bundledVoiceName = "firefly"
 
     init {
         root.mkdirs()
@@ -100,6 +105,13 @@ class ModelRepository(private val context: Context) {
         )
     }
 
+    fun systemTtsVirtualDir(): File = File(root, SYSTEM_TTS_VIRTUAL_DIR_NAME)
+
+    fun resolveAsr(name: String): File? {
+        val dir = File(asrRoot, name)
+        return if (dir.isDirectory) dir else null
+    }
+
     fun resolveVoicePack(name: String): File? {
         val dir = File(voiceRoot, name)
         return if (dir.isDirectory) dir else null
@@ -137,8 +149,9 @@ class ModelRepository(private val context: Context) {
     }
 
     fun deleteVoicePack(dir: File) {
-        if (!dir.exists()) return
-        dir.deleteRecursively()
+        val target = requireManagedVoicePackDir(dir)
+        if (!target.exists()) return
+        target.deleteRecursively()
     }
 
     fun zipVoicePack(dir: File, outZip: File) {
@@ -182,22 +195,16 @@ class ModelRepository(private val context: Context) {
         }
     }
 
-    fun ensureBundledVoice(): File? {
-        val targetDir = File(voiceRoot, bundledVoiceName)
-        if (hasOnnx(targetDir)) {
-            AppLogger.i("bundledVoice already present: ${targetDir.absolutePath}")
-            return targetDir
+    private fun requireManagedVoicePackDir(dir: File): File {
+        val canonicalTarget = dir.canonicalFile
+        val canonicalRoot = voiceRoot.canonicalFile
+        val rootPath = canonicalRoot.path
+        val targetPath = canonicalTarget.path
+        val withinRoot = targetPath == rootPath || targetPath.startsWith("$rootPath${File.separator}")
+        if (!withinRoot || canonicalTarget == canonicalRoot) {
+            throw SecurityException("非法语音包目录：${dir.absolutePath}")
         }
-        targetDir.mkdirs()
-        return try {
-            AppLogger.i("bundledVoice extracting asset=$bundledVoiceAsset to ${targetDir.absolutePath}")
-            unzipAssetToDir(bundledVoiceAsset, targetDir)
-            ensureVoiceMeta(targetDir)
-            if (hasOnnx(targetDir)) targetDir else null
-        } catch (e: Exception) {
-            AppLogger.e("bundledVoice extract failed", e)
-            null
-        }
+        return canonicalTarget
     }
 
     private fun safeName(uri: Uri, resolver: ContentResolver? = null): String {
@@ -212,7 +219,7 @@ class ModelRepository(private val context: Context) {
             ZipInputStream(stream).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
-                    val outPath = File(outDir, entry.name)
+                    val outPath = entryOutputFile(outDir, entry)
                     if (entry.isDirectory) {
                         outPath.mkdirs()
                     } else {
@@ -254,7 +261,7 @@ class ModelRepository(private val context: Context) {
             ZipInputStream(stream).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
-                    val outPath = File(outDir, entry.name)
+                    val outPath = entryOutputFile(outDir, entry)
                     if (entry.isDirectory) {
                         outPath.mkdirs()
                     } else {
@@ -273,6 +280,35 @@ class ModelRepository(private val context: Context) {
     private fun hasOnnx(dir: File): Boolean {
         if (!dir.exists()) return false
         return dir.walkTopDown().any { it.isFile && it.extension.lowercase() == "onnx" }
+    }
+
+    private fun isValidVoicePackDir(dir: File): Boolean {
+        return try {
+            validateVoicePack(dir)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun entryOutputFile(outDir: File, entry: ZipEntry): File {
+        val normalized = entry.name
+            .replace('\\', '/')
+            .trim()
+            .removePrefix("/")
+        if (normalized.isBlank()) {
+            throw IOException("无效压缩包条目：空路径")
+        }
+        val outPath = File(outDir, normalized)
+        val canonicalRoot = outDir.canonicalFile
+        val canonicalOut = outPath.canonicalFile
+        if (
+            canonicalOut != canonicalRoot &&
+            !canonicalOut.path.startsWith("${canonicalRoot.path}${File.separator}")
+        ) {
+            throw IOException("无效压缩包条目：${entry.name}")
+        }
+        return canonicalOut
     }
 
     private fun validateVoicePack(dir: File) {
