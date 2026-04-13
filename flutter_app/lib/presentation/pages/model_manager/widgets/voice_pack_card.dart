@@ -28,10 +28,14 @@ class VoicePackCard extends StatelessWidget {
         elevation: AppDimensions.elevationCard,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppDimensions.radiusSmall),
+          side: BorderSide(
+            color: isSelected
+                ? AppColors.primary.withValues(alpha: 0.66)
+                : theme.colorScheme.outline.withValues(alpha: 0.25),
+            width: isSelected ? 1.8 : 1,
+          ),
         ),
-        color: isSelected
-            ? AppColors.primary.withValues(alpha: 0.08)
-            : theme.cardTheme.color,
+        color: theme.cardTheme.color,
         child: InkWell(
           borderRadius: BorderRadius.circular(AppDimensions.radiusSmall),
           onTap: onTap,
@@ -51,7 +55,6 @@ class VoicePackCard extends StatelessWidget {
                     isPinned: pack.meta.pinned,
                   ),
                 ),
-                if (isSelected) _buildCurrentBadge(theme),
                 const SizedBox(width: AppDimensions.spacingSm),
                 Icon(
                   Icons.drag_indicator,
@@ -65,22 +68,6 @@ class VoicePackCard extends StatelessWidget {
     );
   }
 
-  Widget _buildCurrentBadge(ThemeData theme) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(AppDimensions.radiusSmall),
-      ),
-      child: Text(
-        '当前',
-        style: theme.textTheme.labelSmall?.copyWith(
-          color: Colors.white,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
-  }
 }
 
 class _Avatar extends StatelessWidget {

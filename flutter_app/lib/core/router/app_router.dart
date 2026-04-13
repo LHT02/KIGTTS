@@ -15,6 +15,7 @@ import '../../presentation/widgets/app_scaffold.dart';
 /// Application route paths.
 abstract final class AppRoutes {
   static const home = '/';
+  static const quickSubtitleDrawing = '/quick-subtitle/drawing';
   static const quickSubtitleHistory = '/quick-subtitle/history';
   static const quickSubtitleEditor = '/quick-subtitle/editor';
   static const overlay = '/overlay';
@@ -32,6 +33,13 @@ abstract final class AppRoutes {
 final GoRouter appRouter = GoRouter(
   initialLocation: AppRoutes.home,
   routes: [
+    GoRoute(
+      path: AppRoutes.quickSubtitleDrawing,
+      pageBuilder: (context, state) => _buildPage(
+        key: state.pageKey,
+        child: const DrawingPage(fullscreen: true),
+      ),
+    ),
     ShellRoute(
       builder: (context, state, child) =>
           AppScaffold(currentPath: state.matchedLocation, child: child),

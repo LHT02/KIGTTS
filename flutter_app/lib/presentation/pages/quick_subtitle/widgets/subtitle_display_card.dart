@@ -59,6 +59,10 @@ class SubtitleDisplayCard extends StatelessWidget {
                 children: [
                   LayoutBuilder(
                     builder: (context, constraints) {
+                      final minHeight =
+                          (constraints.maxHeight - AppDimensions.spacingLg * 2)
+                              .clamp(0.0, double.infinity)
+                              .toDouble();
                       final textWidget = displayText.isEmpty
                           ? Text(
                               '选择或输入要显示的内容',
@@ -90,8 +94,7 @@ class SubtitleDisplayCard extends StatelessWidget {
                         ),
                         child: ConstrainedBox(
                           constraints: BoxConstraints(
-                            minHeight: constraints.maxHeight -
-                                AppDimensions.spacingLg * 2,
+                            minHeight: minHeight,
                           ),
                           child: Center(child: textWidget),
                         ),

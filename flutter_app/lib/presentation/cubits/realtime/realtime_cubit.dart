@@ -3,11 +3,15 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../../../domain/entities/realtime_event.dart';
 import '../../../domain/entities/recognized_item.dart';
+import '../../../domain/entities/voice_pack_info.dart';
 import '../../../domain/repositories/keepalive_repository.dart';
 import '../../../domain/repositories/model_repository.dart';
 import '../../../domain/repositories/realtime_repository.dart';
 import '../../../domain/repositories/settings_repository.dart';
 import 'realtime_state.dart';
+
+const _systemTtsVoiceName = '__system_tts__';
+const _legacyBundledVoiceName = 'firefly';
 
 /// Cubit managing the real-time ASR/TTS conversion state.
 class RealtimeCubit extends Cubit<RealtimeState> {
@@ -32,7 +36,7 @@ class RealtimeCubit extends Cubit<RealtimeState> {
 
   /// Callback invoked when ASR produces a final recognized text.
   /// Set by QuickSubtitlePage to forward results to the subtitle display.
-  void Function(String text)? onAsrResultForSubtitle;
+  void Function(String text, {bool append})? onAsrResultForSubtitle;
 
   /// Initialize: load bundled ASR, last voice, start listening to events.
   Future<void> initialize() async {
@@ -52,28 +56,8 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       }
       final asrDir = await _resolvePreferredAsrDir();
 
-      // Ensure bundled voice pack (firefly) is extracted
-      String? voiceError;
-      try {
-        await _modelRepo.ensureBundledVoice();
-      } catch (e) {
-        voiceError = e.toString();
-      }
-
-      // Get last used voice pack
-      final lastVoiceName = await _modelRepo.getLastVoiceName();
-      String? voiceDir;
       final packs = await _modelRepo.listVoicePacks();
-      if (lastVoiceName != null) {
-        final match = packs.where((p) => p.dirName == lastVoiceName);
-        if (match.isNotEmpty) {
-          voiceDir = match.first.dirPath;
-        }
-      }
-      // Fall back to first available voice pack (e.g. bundled firefly)
-      if (voiceDir == null && packs.isNotEmpty) {
-        voiceDir = packs.first.dirPath;
-      }
+      final voiceDir = await _resolvePreferredVoiceDir(packs);
 
       // Push current settings to native
       final settings = await _settingsRepo.getSettings();
@@ -83,9 +67,7 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       if (asrDir != null) {
         await _realtimeRepo.loadAsr(asrDir);
       }
-      if (voiceDir != null) {
-        await _realtimeRepo.loadVoice(voiceDir);
-      }
+      await _realtimeRepo.loadVoice(voiceDir);
 
       // Listen to settings changes
       _settingsSub = _settingsRepo.observeSettings().listen((s) {
@@ -99,11 +81,6 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       final diag = <String>[];
       if (asrDir == null) {
         diag.add('ASR: not loaded${asrError != null ? " ($asrError)" : ""}');
-      }
-      if (voiceDir == null) {
-        diag.add(
-          'Voice: not loaded${voiceError != null ? " ($voiceError)" : ""}',
-        );
       }
       final initError = diag.isNotEmpty ? diag.join('\n') : null;
 
@@ -145,7 +122,10 @@ class RealtimeCubit extends Cubit<RealtimeState> {
         // Forward to subtitle display if enabled.
         // Do NOT forward during PTT sessions — PTT results are
         // handled separately via commitPttSession.
-        if (text.trim().isNotEmpty && !state.pttPressed && !state.recording) {
+        if (text.trim().isNotEmpty &&
+            !state.pttPressed &&
+            !state.recording &&
+            !state.pttConfirmInputMode) {
           onAsrResultForSubtitle?.call(text.trim());
         }
 
@@ -199,10 +179,10 @@ class RealtimeCubit extends Cubit<RealtimeState> {
     if (state.running) return;
     var asrDir = await _resolvePreferredAsrDir();
     asrDir ??= state.currentAsrDir;
-    final voiceDir = state.currentVoiceDir;
-    if (voiceDir == null) {
-      emit(state.copyWith(error: '请先加载语音包'));
-      return;
+    var voiceDir = state.currentVoiceDir;
+    voiceDir ??= await _resolvePreferredVoiceDir();
+    if (voiceDir != state.currentVoiceDir) {
+      emit(state.copyWith(currentVoiceDir: voiceDir));
     }
     if (asrDir != null && asrDir != state.currentAsrDir) {
       emit(state.copyWith(currentAsrDir: asrDir));
@@ -268,22 +248,29 @@ class RealtimeCubit extends Cubit<RealtimeState> {
 
   /// Stop the realtime pipeline.
   Future<void> stop() async {
-    if (!state.running) return;
+    String? stopError;
     try {
       await _realtimeRepo.stop();
-      await _keepaliveRepo.stop();
-      emit(
-        state.copyWith(
-          running: false,
-          ttsOnly: false,
-          status: '已停止',
-          inputLevel: 0,
-          playbackProgress: 0,
-        ),
-      );
     } catch (e) {
-      emit(state.copyWith(error: e.toString()));
+      stopError = e.toString();
     }
+
+    try {
+      await _keepaliveRepo.stop();
+    } catch (e) {
+      stopError ??= e.toString();
+    }
+
+    emit(
+      state.copyWith(
+        running: false,
+        ttsOnly: false,
+        status: '已停止',
+        inputLevel: 0,
+        playbackProgress: 0,
+        error: stopError,
+      ),
+    );
   }
 
   /// Toggle start/stop.
@@ -301,10 +288,10 @@ class RealtimeCubit extends Cubit<RealtimeState> {
   /// without opening the microphone for recognition.
   Future<void> startTtsOnly() async {
     if (state.running) return;
-    final voiceDir = state.currentVoiceDir;
-    if (voiceDir == null) {
-      emit(state.copyWith(error: '请先加载语音包'));
-      return;
+    var voiceDir = state.currentVoiceDir;
+    voiceDir ??= await _resolvePreferredVoiceDir();
+    if (voiceDir != state.currentVoiceDir) {
+      emit(state.copyWith(currentVoiceDir: voiceDir));
     }
     try {
       emit(state.copyWith(status: '加载语音包...'));
@@ -464,7 +451,7 @@ class RealtimeCubit extends Cubit<RealtimeState> {
       );
       await _realtimeRepo.commitPttSession(action);
       if (action == 'SendToSubtitle' && previewText.isNotEmpty) {
-        onAsrResultForSubtitle?.call(previewText);
+        onAsrResultForSubtitle?.call(previewText, append: true);
         await enqueueTts(previewText);
       }
       emit(state.copyWith(status: state.running ? '运行中' : '就绪'));
@@ -512,6 +499,29 @@ class RealtimeCubit extends Cubit<RealtimeState> {
     final fallback = models.first;
     await _modelRepo.setLastAsrName(fallback.dirName);
     return fallback.dirPath;
+  }
+
+  Future<String> _resolvePreferredVoiceDir([
+    List<VoicePackInfo>? preloadedPacks,
+  ]) async {
+    final packs = preloadedPacks ?? await _modelRepo.listVoicePacks();
+    final systemDir = await _modelRepo.getSystemTtsVirtualDir();
+    final lastVoiceName = await _modelRepo.getLastVoiceName();
+
+    if (lastVoiceName == _systemTtsVoiceName ||
+        lastVoiceName == _legacyBundledVoiceName ||
+        lastVoiceName == null) {
+      await _modelRepo.setLastVoiceName(_systemTtsVoiceName);
+      return systemDir;
+    }
+
+    final matched = packs.where((p) => p.dirName == lastVoiceName);
+    if (matched.isNotEmpty) {
+      return matched.first.dirPath;
+    }
+
+    await _modelRepo.setLastVoiceName(_systemTtsVoiceName);
+    return systemDir;
   }
 
   String _dirNameFromPath(String path) {

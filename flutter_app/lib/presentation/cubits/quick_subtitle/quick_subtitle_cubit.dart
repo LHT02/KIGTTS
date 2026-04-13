@@ -100,6 +100,14 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
     emit(state.copyWith(displayText: text));
   }
 
+  void appendDisplayText(String text) {
+    final normalized = text.trim();
+    if (normalized.isEmpty) return;
+    final previous = state.displayText;
+    final merged = previous.isEmpty ? normalized : '$previous$normalized';
+    emit(state.copyWith(displayText: merged));
+  }
+
   void selectItem(int index) {
     final groups = state.config.groups;
     if (state.selectedGroupIndex >= groups.length) return;
@@ -400,6 +408,11 @@ class QuickSubtitleCubit extends Cubit<QuickSubtitleState> {
 
   void togglePresetsVisible() {
     emit(state.copyWith(presetsVisible: !state.presetsVisible));
+  }
+
+  void setPresetsVisible(bool visible) {
+    if (state.presetsVisible == visible) return;
+    emit(state.copyWith(presetsVisible: visible));
   }
 
   Future<void> setFontSize(double size) async {

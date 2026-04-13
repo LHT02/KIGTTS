@@ -97,6 +97,15 @@ class _QuickSubtitleHistoryPageState extends State<QuickSubtitleHistoryPage> {
         children: [
           Row(
             children: [
+              IconButton(
+                tooltip: '返回',
+                icon: const Icon(Icons.arrow_back_sharp, size: 20),
+                onPressed: () {
+                  if (context.canPop()) {
+                    context.pop();
+                  }
+                },
+              ),
               Text(
                 '历史记录 (${_history.length})',
                 style: theme.textTheme.titleMedium,

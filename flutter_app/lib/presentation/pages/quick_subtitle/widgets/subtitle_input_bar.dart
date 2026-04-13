@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
+import '../../../../core/router/app_router.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../cubits/quick_subtitle/quick_subtitle_cubit.dart';
 import '../../../cubits/realtime/realtime_cubit.dart';
@@ -10,9 +12,31 @@ import '../../../cubits/settings/settings_state.dart';
 /// Input mode for the subtitle input bar.
 enum InputBarMode { keyboard, mic }
 
+class SubtitleInputBarController {
+  _SubtitleInputBarState? _state;
+
+  void _attach(_SubtitleInputBarState state) {
+    _state = state;
+  }
+
+  void _detach(_SubtitleInputBarState state) {
+    if (identical(_state, state)) {
+      _state = null;
+    }
+  }
+
+  void moveCursorLeft() {
+    _state?._moveCursor(-1);
+  }
+
+  void moveCursorRight() {
+    _state?._moveCursor(1);
+  }
+}
+
 /// Bottom input bar with keyboard/mic toggle on the left.
 ///
-/// Left icon always toggles between keyboard ↔ mic mode.
+/// Left icon toggles keyboard ↔ mic.
 /// Centre area shows either:
 /// - **keyboard mode**: text field + send button
 /// - **mic mode**: recording button — whose *gesture behaviour* is controlled
@@ -25,10 +49,15 @@ enum InputBarMode { keyboard, mic }
 /// | true  | false | **Simple PTT**: hold → record → release → auto-TTS |
 /// | true  | true  | **Confirm PTT**: hold → drag to choose target → release |
 class SubtitleInputBar extends StatefulWidget {
-  const SubtitleInputBar({super.key, this.onPttOverlayChanged});
+  const SubtitleInputBar({
+    super.key,
+    this.onPttOverlayChanged,
+    this.controller,
+  });
 
   /// Called with `true` when confirm-PTT overlay should show.
   final ValueChanged<bool>? onPttOverlayChanged;
+  final SubtitleInputBarController? controller;
 
   @override
   State<SubtitleInputBar> createState() => _SubtitleInputBarState();
@@ -36,6 +65,7 @@ class SubtitleInputBar extends StatefulWidget {
 
 class _SubtitleInputBarState extends State<SubtitleInputBar> {
   late TextEditingController _controller;
+  late FocusNode _inputFocusNode;
   InputBarMode _mode = InputBarMode.mic;
   Offset? _pttStartOffset;
 
@@ -46,12 +76,51 @@ class _SubtitleInputBarState extends State<SubtitleInputBar> {
   void initState() {
     super.initState();
     _controller = TextEditingController();
+    _inputFocusNode = FocusNode();
+    widget.controller?._attach(this);
+  }
+
+  @override
+  void didUpdateWidget(covariant SubtitleInputBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller?._detach(this);
+      widget.controller?._attach(this);
+    }
   }
 
   @override
   void dispose() {
+    widget.controller?._detach(this);
+    _inputFocusNode.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  void _moveCursor(int delta) {
+    void applyMove() {
+      final text = _controller.text;
+      final selection = _controller.selection;
+      var cursor = selection.isValid ? selection.baseOffset : text.length;
+      if (cursor < 0) {
+        cursor = text.length;
+      }
+      final next = (cursor + delta).clamp(0, text.length);
+      _controller.selection = TextSelection.collapsed(offset: next);
+      _inputFocusNode.requestFocus();
+    }
+
+    if (_mode != InputBarMode.keyboard) {
+      setState(() {
+        _mode = InputBarMode.keyboard;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        applyMove();
+      });
+      return;
+    }
+    applyMove();
   }
 
   void _send(QuickSubtitleCubit cubit) {
@@ -148,6 +217,7 @@ class _SubtitleInputBarState extends State<SubtitleInputBar> {
                 ? _KeyboardInput(
                     key: const ValueKey('keyboard'),
                     controller: _controller,
+                    focusNode: _inputFocusNode,
                     onSend: () => _send(subtitleCubit),
                     onChanged: (t) => subtitleCubit.setInputText(t),
                   )
@@ -161,7 +231,6 @@ class _SubtitleInputBarState extends State<SubtitleInputBar> {
           ),
         ),
         const SizedBox(width: 6),
-        // Right side: send button only in keyboard mode
         if (_mode == InputBarMode.keyboard)
           IconButton(
             icon: const Icon(Icons.send_sharp, color: AppColors.primary),
@@ -169,6 +238,12 @@ class _SubtitleInputBarState extends State<SubtitleInputBar> {
             tooltip: '发送',
             constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
           ),
+        IconButton(
+          icon: const Icon(Icons.brush_sharp, color: AppColors.primary),
+          onPressed: () => context.push(AppRoutes.quickSubtitleDrawing),
+          tooltip: '画板',
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+        ),
       ],
     );
   }
@@ -187,20 +262,22 @@ class _ModeToggleButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final (icon, tooltip) = mode == InputBarMode.keyboard
+        ? (Icons.keyboard_sharp, '输入模式：键盘（点击切换）')
+        : (Icons.mic_sharp, '输入模式：语音（点击切换）');
+
     return IconButton(
       icon: AnimatedSwitcher(
         duration: const Duration(milliseconds: 200),
         child: Icon(
-          mode == InputBarMode.keyboard
-              ? Icons.mic_sharp
-              : Icons.keyboard_sharp,
+          icon,
           key: ValueKey(mode),
           color: AppColors.primary,
           size: 24,
         ),
       ),
       onPressed: onToggle,
-      tooltip: mode == InputBarMode.keyboard ? '语音模式' : '键盘输入',
+      tooltip: tooltip,
       constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
     );
   }
@@ -211,11 +288,13 @@ class _KeyboardInput extends StatelessWidget {
   const _KeyboardInput({
     super.key,
     required this.controller,
+    required this.focusNode,
     required this.onSend,
     required this.onChanged,
   });
 
   final TextEditingController controller;
+  final FocusNode focusNode;
   final VoidCallback onSend;
   final ValueChanged<String> onChanged;
 
@@ -224,6 +303,7 @@ class _KeyboardInput extends StatelessWidget {
     final theme = Theme.of(context);
     return TextField(
       controller: controller,
+      focusNode: focusNode,
       decoration: InputDecoration(
         hintText: '输入要显示/播报的内容...',
         hintStyle: theme.textTheme.bodySmall?.copyWith(

@@ -1,6 +1,7 @@
 package com.kgtts.kgtts_app.channels
 
 import android.content.Context
+import android.content.Intent
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -9,6 +10,7 @@ import kotlinx.coroutines.*
 import com.kgtts.kgtts_app.audio.*
 import com.kgtts.kgtts_app.overlay.OverlayBridge
 import com.kgtts.kgtts_app.overlay.RealtimeRuntimeBridge
+import com.kgtts.kgtts_app.service.RealtimeHostService
 import com.kgtts.kgtts_app.util.AppLogger
 import java.io.File
 
@@ -325,6 +327,7 @@ class RealtimeChannel(
                     try {
                         withContext(Dispatchers.IO) {
                             controller?.stop()
+                            context.stopService(Intent(context, RealtimeHostService::class.java))
                         }
                         runtimeRunning = false
                         pttPressed = false
