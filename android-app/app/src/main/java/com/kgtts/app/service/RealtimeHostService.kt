@@ -72,6 +72,16 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
     private val _state = MutableStateFlow(RealtimeHostState())
     private val _quickSubtitleRequests = MutableStateFlow<ExternalQuickSubtitleRequest?>(null)
 
+    private suspend fun ensureSpeakerBackend(settings: UserPrefs.AppSettings): Boolean {
+        val outdated =
+            settings.speakerVerifyBackendVersion != UserPrefs.SPEAKER_VERIFY_BACKEND_SHERPA_V1 &&
+                    (settings.speakerVerifyEnabled || settings.speakerVerifyProfileCsv.isNotBlank())
+        if (outdated) {
+            UserPrefs.resetSpeakerVerifyBackend(applicationContext, enabled = false)
+        }
+        return outdated
+    }
+
     override fun onCreate() {
         super.onCreate()
         AppLogger.i("RealtimeHostService.onCreate")
@@ -239,6 +249,14 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
 
     fun setDenoiserMode(mode: Int) {
         controller?.setDenoiserMode(mode)
+    }
+
+    fun setClassicVadEnabled(enabled: Boolean) {
+        controller?.setClassicVadEnabled(enabled)
+    }
+
+    fun setSileroVadEnabled(enabled: Boolean) {
+        controller?.setSileroVadEnabled(enabled)
     }
 
     fun setNumberReplaceMode(mode: Int) {
@@ -417,7 +435,12 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         serviceScope.launch {
             val settings = UserPrefs.getSettings(applicationContext)
             currentSettings = settings
-            speakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv).toMutableList()
+            val resetBackend = ensureSpeakerBackend(settings)
+            speakerProfiles = if (resetBackend) {
+                mutableListOf()
+            } else {
+                UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv).toMutableList()
+            }
             quickSubtitlePlayOnSend = loadQuickSubtitlePlayOnSend()
             val asrDir = loadInitialAsrDir()
             val voiceDir = loadInitialVoiceDir()
@@ -466,7 +489,12 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             UserPrefs.observeSettings(this@RealtimeHostService).collectLatest { next ->
                 val previous = currentSettings
                 currentSettings = next
-                speakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(next.speakerVerifyProfileCsv).toMutableList()
+                val resetBackend = ensureSpeakerBackend(next)
+                speakerProfiles = if (resetBackend) {
+                    mutableListOf()
+                } else {
+                    UserPrefs.parseSpeakerVerifyProfiles(next.speakerVerifyProfileCsv).toMutableList()
+                }
                 applySettingsToController(next)
                 if (
                     controller != null &&
@@ -611,6 +639,8 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialPreferredOutputType = currentSettings.preferredOutputType,
             initialUseAec3 = currentSettings.aec3Enabled,
             initialDenoiserMode = currentSettings.denoiserMode,
+            initialClassicVadEnabled = currentSettings.classicVadEnabled,
+            initialSileroVadEnabled = currentSettings.sileroVadEnabled,
             initialNumberReplaceMode = currentSettings.numberReplaceMode,
             initialAllowSystemAecWithAec3 = currentSettings.allowSystemAecWithAec3,
             initialSpeakerVerifyEnabled = currentSettings.speakerVerifyEnabled && speakerProfiles.isNotEmpty(),
@@ -713,6 +743,8 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setPreferredInputType(settings.preferredInputType)
         controller?.setPreferredOutputType(settings.preferredOutputType)
         controller?.setDenoiserMode(settings.denoiserMode)
+        controller?.setClassicVadEnabled(settings.classicVadEnabled)
+        controller?.setSileroVadEnabled(settings.sileroVadEnabled)
         controller?.setNumberReplaceMode(settings.numberReplaceMode)
         controller?.setAllowSystemAecWithAec3(settings.allowSystemAecWithAec3)
         controller?.setSpeakerVerifyEnabled(settings.speakerVerifyEnabled && speakerProfiles.isNotEmpty())

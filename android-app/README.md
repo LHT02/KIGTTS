@@ -6,7 +6,7 @@
 
 - 技术栈：Kotlin + Jetpack Compose
 - ASR：`sherpa-onnx`（AAR）
-- TTS：Piper ONNX（导入兼容 `.kigvpk` / `.zip`）
+- TTS：系统 TTS（默认）+ Piper ONNX（导入兼容 `.kigvpk` / `.zip`）
 
 > 命名变更：`KIGTTS` 为当前主名称，`KGTTS` 为旧称。
 
@@ -30,6 +30,11 @@ cd android-app
 导入项：
 - ASR：`sosv.zip` 或 `sosv-int8.zip`
 - 音色包：`.kigvpk`（当前导出格式）或兼容 `.zip`
+
+安卓 APK 当前内置：
+- `sosv-int8.zip`（SenseVoice + Silero VAD + 标点模型）
+- `speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
+- `espeak-ng-data.zip`
 
 ## 关键代码
 

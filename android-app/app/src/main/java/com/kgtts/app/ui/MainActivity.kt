@@ -515,6 +515,8 @@ data class UiState(
     val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
     val aec3Status: String = "未启用",
     val aec3Diag: String = "AEC3 诊断：未启用",
+    val classicVadEnabled: Boolean = true,
+    val sileroVadEnabled: Boolean = false,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
     val piperNoiseScale: Float = 0.667f,
@@ -946,9 +948,21 @@ class MainViewModel(
     }
 
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
-        speakerProfiles = UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv)
-            .take(MAX_SPEAKER_PROFILES)
-            .toMutableList()
+        val needsSpeakerBackendReset =
+            settings.speakerVerifyBackendVersion != UserPrefs.SPEAKER_VERIFY_BACKEND_SHERPA_V1 &&
+                    (settings.speakerVerifyEnabled || settings.speakerVerifyProfileCsv.isNotBlank())
+        if (needsSpeakerBackendReset) {
+            viewModelScope.launch(Dispatchers.IO) {
+                UserPrefs.resetSpeakerVerifyBackend(appContext, enabled = false)
+            }
+        }
+        speakerProfiles = if (needsSpeakerBackendReset) {
+            mutableListOf()
+        } else {
+            UserPrefs.parseSpeakerVerifyProfiles(settings.speakerVerifyProfileCsv)
+                .take(MAX_SPEAKER_PROFILES)
+                .toMutableList()
+        }
         val hasProfiles = speakerProfiles.isNotEmpty()
         val speakerVerifyEnabled = settings.speakerVerifyEnabled && hasProfiles
         val nextAec3Status = if (settings.aec3Enabled) {
@@ -972,6 +986,8 @@ class MainViewModel(
             denoiserMode = settings.denoiserMode,
             aec3Status = nextAec3Status,
             aec3Diag = nextAec3Diag,
+            classicVadEnabled = settings.classicVadEnabled,
+            sileroVadEnabled = settings.sileroVadEnabled,
             minVolumePercent = settings.minVolumePercent,
             playbackGainPercent = settings.playbackGainPercent,
             piperNoiseScale = settings.piperNoiseScale,
@@ -2187,6 +2203,44 @@ class MainViewModel(
         }
     }
 
+    private fun normalizeVadFlags(
+        classicEnabled: Boolean,
+        sileroEnabled: Boolean
+    ): Pair<Boolean, Boolean> {
+        return if (!classicEnabled && !sileroEnabled) {
+            true to false
+        } else {
+            classicEnabled to sileroEnabled
+        }
+    }
+
+    private fun persistVadFlags(classicEnabled: Boolean, sileroEnabled: Boolean) {
+        realtimeHost?.setClassicVadEnabled(classicEnabled)
+        realtimeHost?.setSileroVadEnabled(sileroEnabled)
+        viewModelScope.launch {
+            UserPrefs.setClassicVadEnabled(appContext, classicEnabled)
+            UserPrefs.setSileroVadEnabled(appContext, sileroEnabled)
+        }
+    }
+
+    fun setClassicVadEnabled(enabled: Boolean) {
+        val (classicEnabled, sileroEnabled) = normalizeVadFlags(enabled, uiState.sileroVadEnabled)
+        uiState = uiState.copy(
+            classicVadEnabled = classicEnabled,
+            sileroVadEnabled = sileroEnabled
+        )
+        persistVadFlags(classicEnabled, sileroEnabled)
+    }
+
+    fun setSileroVadEnabled(enabled: Boolean) {
+        val (classicEnabled, sileroEnabled) = normalizeVadFlags(uiState.classicVadEnabled, enabled)
+        uiState = uiState.copy(
+            classicVadEnabled = classicEnabled,
+            sileroVadEnabled = sileroEnabled
+        )
+        persistVadFlags(classicEnabled, sileroEnabled)
+    }
+
     fun setPlaybackGainPercent(percent: Int) {
         val clamped = snapPlaybackGainPercent(percent)
         uiState = uiState.copy(playbackGainPercent = clamped)
@@ -2942,6 +2996,8 @@ class MainViewModel(
             host.setPreferredInputType(settings.preferredInputType)
             host.setPreferredOutputType(settings.preferredOutputType)
             host.setDenoiserMode(settings.denoiserMode)
+            host.setClassicVadEnabled(settings.classicVadEnabled)
+            host.setSileroVadEnabled(settings.sileroVadEnabled)
             host.setNumberReplaceMode(settings.numberReplaceMode)
             host.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
             host.setSpeakerVerifyThreshold(settings.speakerVerifyThreshold)
@@ -13991,6 +14047,18 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         value = state.minVolumePercent.toFloat(),
                         onValueChange = { viewModel.setMinVolumePercent(it.toInt()) },
                         valueRange = 0f..100f
+                    )
+                    Md2SettingSwitchRow(
+                        title = "原有阈值式 VAD",
+                        checked = state.classicVadEnabled,
+                        onCheckedChange = { viewModel.setClassicVadEnabled(it) },
+                        supportingText = "使用现有音量阈值、静音时长和 voiced ratio 断句。至少保持开启一项 VAD。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "Silero VAD",
+                        checked = state.sileroVadEnabled,
+                        onCheckedChange = { viewModel.setSileroVadEnabled(it) },
+                        supportingText = "使用模型级语音活动检测辅助断句，对轻声和彩噪更稳。至少保持开启一项 VAD。"
                     )
                     Md2SettingDropdownRow(
                         title = "数字替换",

@@ -4,6 +4,11 @@
 
 本文档集中维护项目相关模型与素材下载链接，避免链接分散在多个 README。
 
+当前安卓端的默认模型/后端策略：
+- 默认 TTS 后端为 **系统 TTS**，不再内置默认 Piper 语音包
+- 自定义离线 Piper 音色包仍可导入，格式为 `.kigvpk` 或兼容 `.zip`
+- APK 内已集成 sherpa-onnx 说话人验证模型，无需用户单独下载
+
 ## 1. 运行必需素材（用户侧）
 
 ### 1.1 一键配置
@@ -16,7 +21,9 @@ powershell -ExecutionPolicy Bypass -File setup_assets.ps1
 
 脚本会处理：
 - **sosv-int8.zip**（ASR, ~209MB）— 从 GitHub Release 下载
-- **firefly.zip**（默认语音包, ~56MB）— 从项目根目录的「流萤语音包.zip」复制
+- 如项目根目录存在本地 Piper 音色包 zip，也会按旧兼容逻辑分发到 assets 目录，便于开发测试
+
+> 安卓主软件当前默认使用系统 TTS，不依赖内置 `firefly.zip`。
 
 > 如果网络不通，脚本会给出手动下载链接。
 
@@ -24,19 +31,44 @@ powershell -ExecutionPolicy Bypass -File setup_assets.ps1
 - SOSV 模型发布页（`sosv.zip` / `sosv-int8.zip`）：
   - https://github.com/HiMeditator/auto-caption/releases/tag/sosv-model
 
-### 1.2 音色包（Android 导入）
-- `voicepack.zip` 由 PC 训练器或 Electron 训练器导出。
+### 1.3 音色包（Android 导入）
+- 当前推荐导出格式：`voicepack.kigvpk`
+- 兼容导入：`.kigvpk` / `.zip`
 - 最小结构：
   - `manifest.json`
   - `tts/model.onnx`
   - `tts/model.onnx.json`
   - `tts/phonemizer.dict`
 
+### 1.4 APK 内置模型与资源
+
+安卓主软件当前随 APK 一起打包的模型/资源：
+
+- `sosv-int8.zip`（首次运行可直接使用的 ASR 资源包）
+  - `sensevoice/model.int8.onnx`
+  - `sensevoice/tokens.txt`
+  - `silero_vad.onnx`
+  - `punct/model.int8.onnx`
+  - `punct-en/model.int8.onnx`
+- `speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
+  - sherpa-onnx 官方说话人验证模型
+  - 约 `26.97 MiB`
+- `espeak-ng-data.zip`
+  - Piper 语音包所需的 eSpeak 数据
+
+说明：
+- 系统 TTS 为默认内置朗读后端，不需要单独模型文件
+- 自定义 Piper 音色包仅在用户导入后才会出现在语音包列表中
+
 ## 2. 训练与推理相关上游项目
 
 ### 2.1 ASR 框架
 - sherpa-onnx：
   - https://github.com/k2-fsa/sherpa-onnx
+- sherpa-onnx Speaker Identification / Verification：
+  - https://k2-fsa.github.io/sherpa/onnx/speaker-identification/index.html
+- sherpa-onnx 官方 speaker models：
+  - https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models
 
 ### 2.2 TTS 训练/导出（Piper）
 - 当前活跃上游（推荐）：

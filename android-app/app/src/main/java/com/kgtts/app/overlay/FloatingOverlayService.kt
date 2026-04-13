@@ -118,7 +118,7 @@ class FloatingOverlayService : Service() {
     private var fabSpacerView: View? = null
     private var fabButtonHost: FrameLayout? = null
     private var fabButton: FrameLayout? = null
-    private var fabIconView: TextView? = null
+    private var fabIconView: ImageView? = null
     private var panelRoot: FrameLayout? = null
     private var panelContent: LinearLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
@@ -1114,7 +1114,7 @@ class FloatingOverlayService : Service() {
             }
         }
 
-        fabIconView = symbolTextView("play_arrow", 30f, Color.WHITE)
+        fabIconView = launcherFabIconView()
         fabButton = FrameLayout(this).apply {
             background = circleDrawable(overlayPrimaryColor())
             elevation = dp(8).toFloat()
@@ -2506,15 +2506,12 @@ class FloatingOverlayService : Service() {
         val inputLevel = effectiveInputLevel()
         val playbackProgress = effectivePlaybackProgress()
         val pttPressedState = effectivePttPressedState()
-        val icon = when {
+        val actionIcon = when {
             settings.pushToTalkMode && pttPressedState -> "settings_voice"
             settings.pushToTalkMode -> "mic"
             runningState -> "stop"
             else -> "play_arrow"
         }
-        fabIconView?.text = icon
-        panelActionFabIconView?.text = icon
-        miniActionFabIconView?.text = icon
         bubbleTextView?.text = latestText
         bubbleRow?.visibility = View.GONE
         val hasLatestResult = latestText.isNotBlank()
@@ -2537,6 +2534,8 @@ class FloatingOverlayService : Service() {
         miniStatusEqProgressView?.progress = (playbackProgress * 1000f).roundToInt().coerceIn(0, 1000)
         miniStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressedState) 1f else 0.68f
         miniStatusEqContainer?.alpha = if (runningState || hasLatestResult) 1f else 0.68f
+        panelActionFabIconView?.text = actionIcon
+        miniActionFabIconView?.text = actionIcon
         refreshStatusDetailUi()
         syncFabVisibility(!(miniVisible || panelVisible))
         fabButton?.alpha = if (pttPressedState) 0.94f else 1f
@@ -6663,6 +6662,14 @@ class FloatingOverlayService : Service() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
             typeface = iconTypeface
             includeFontPadding = false
+        }
+
+    private fun launcherFabIconView(): ImageView =
+        ImageView(this).apply {
+            setImageResource(R.drawable.ic_launcher_foreground)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+            layoutParams = FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER)
         }
 
     private fun spaceView(width: Int, height: Int): View =

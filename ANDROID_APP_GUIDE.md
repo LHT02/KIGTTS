@@ -27,9 +27,10 @@ KIGTTS 安卓端是一款以**离线语音识别（ASR）+ 离线语音合成（
 ### 1.1 技术栈与核心依赖
 
 - UI：Kotlin + Jetpack Compose
-- ASR：`sherpa-onnx`（SenseVoice 路线）
-- TTS：Piper ONNX
+- ASR：`sherpa-onnx`（SenseVoice 路线，结合 Silero VAD / 标点模型）
+- TTS：系统 TTS（默认）+ Piper ONNX（可导入语音包）
 - 软件降噪：RNNoise / Speex
+- 说话人验证：sherpa-onnx 官方 speaker embedding 模型
 - 二维码：相机扫码 + 文本/网页分流
 - 画板：Compose 画布 + 自定义工具栏
 - 悬浮窗：`SYSTEM_ALERT_WINDOW` + 独立前台服务
@@ -432,6 +433,8 @@ flowchart TD
 
 - 支持最多 3 个说话人
 - 未注册时打开验证会触发注册流程
+- 当前底层使用 sherpa-onnx 官方说话人验证模型：
+  - `speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
 - 注册流程为分步引导式弹窗：
   - 准备页
   - 3 句逐句朗读页
@@ -443,6 +446,11 @@ flowchart TD
 
 - ASR 模型导入：`sosv.zip` / `sosv-int8.zip`
 - 语音包导入：`.zip` / `.kigvpk`
+- 默认朗读后端：系统 TTS
+- APK 内置资源：
+  - `sosv-int8.zip`（含 SenseVoice、Silero VAD、中文/英文标点模型）
+  - `speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
+  - `espeak-ng-data.zip`
 - 内建文件管理器：
   - 搜索
   - 排序
@@ -490,6 +498,14 @@ flowchart TD
 - `sosv.zip`
 - `sosv-int8.zip`
 
+当前推荐的 `sosv-int8.zip` 资源包内包含：
+
+- `sensevoice/model.int8.onnx`
+- `sensevoice/tokens.txt`
+- `silero_vad.onnx`
+- `punct/model.int8.onnx`
+- `punct-en/model.int8.onnx`
+
 ### 5.2 语音包格式
 
 导入兼容：
@@ -500,6 +516,8 @@ flowchart TD
 分享输出统一为：
 
 - `.kigvpk`
+
+默认情况下，安卓端不内置 Piper 语音包，首次运行直接使用系统 TTS。导入自定义语音包后，才会切换到 Piper 路线。
 
 最小合法结构：
 
@@ -557,6 +575,7 @@ tts/phonemizer.dict
 - 识别结果输出
 - 历史记录写入
 - PTT / 说话人验证 / 设备切换相关主逻辑
+- SenseVoice、Silero VAD、系统 TTS / Piper 双后端、sherpa 说话人验证模型接线
 
 ### 6.3 降噪与录测
 
