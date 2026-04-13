@@ -1,12 +1,16 @@
 package com.kgtts.kgtts_app.channels
 
 import android.content.Context
+import android.content.Intent
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.*
 import com.kgtts.kgtts_app.audio.*
+import com.kgtts.kgtts_app.overlay.OverlayBridge
+import com.kgtts.kgtts_app.overlay.RealtimeRuntimeBridge
+import com.kgtts.kgtts_app.service.RealtimeHostService
 import com.kgtts.kgtts_app.util.AppLogger
 import java.io.File
 
@@ -27,6 +31,129 @@ class RealtimeChannel(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var controller: RealtimeController? = null
     private var cachedSettings: Map<String, Any?> = emptyMap()
+    private var lastAsrDirPath: String? = null
+    private var lastVoiceDirPath: String? = null
+
+    @Volatile
+    private var runtimeRunning = false
+
+    @Volatile
+    private var latestRecognizedText = ""
+
+    @Volatile
+    private var inputLevel = 0f
+
+    @Volatile
+    private var playbackProgress = 0f
+
+    @Volatile
+    private var inputDeviceLabel = ""
+
+    @Volatile
+    private var outputDeviceLabel = ""
+
+    @Volatile
+    private var pttPressed = false
+
+    @Volatile
+    private var pttStreamingText = ""
+
+    private val appDelegate = object : RealtimeRuntimeBridge.AppDelegate {
+        override fun startRealtime() {
+            scope.launch {
+                try {
+                    val ctrl = ensureController()
+                    val asrPath = lastAsrDirPath
+                    val voicePath = lastVoiceDirPath
+                    if (!asrPath.isNullOrBlank() && !voicePath.isNullOrBlank()) {
+                        withContext(Dispatchers.IO) {
+                            ctrl.start(File(asrPath), File(voicePath))
+                        }
+                    } else {
+                        withContext(Dispatchers.IO) {
+                            ctrl.startMic()
+                        }
+                    }
+                    runtimeRunning = true
+                    publishRuntimeSnapshot()
+                } catch (e: Exception) {
+                    AppLogger.e("RealtimeChannel delegate.startRealtime failed", e)
+                }
+            }
+        }
+
+        override fun stopRealtime() {
+            scope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        controller?.stopMic()
+                    }
+                    runtimeRunning = false
+                    pttPressed = false
+                    pttStreamingText = ""
+                    publishRuntimeSnapshot()
+                }.onFailure {
+                    AppLogger.e("RealtimeChannel delegate.stopRealtime failed", it)
+                }
+            }
+        }
+
+        override fun submitQuickSubtitle(target: String, text: String) {
+            runCatching {
+                val intent = OverlayBridge.buildQuickSubtitleIntent(
+                    context = context,
+                    target = target,
+                    text = text,
+                    navigateToPage = true,
+                )
+                context.startActivity(intent)
+            }.onFailure {
+                AppLogger.e("RealtimeChannel delegate.submitQuickSubtitle failed", it)
+            }
+        }
+
+        override fun beginPushToTalkSession() {
+            val ctrl = controller ?: return
+            val pushToTalkMode = cachedSettings["push_to_talk_mode"] as? Boolean ?: false
+            val confirmMode = cachedSettings["push_to_talk_confirm_input"] as? Boolean ?: false
+            ctrl.setPushToTalkMode(pushToTalkMode)
+            ctrl.setPushToTalkSessionActive(pushToTalkMode)
+            ctrl.setPushToTalkStreamingEnabled(pushToTalkMode && confirmMode)
+            pttPressed = pushToTalkMode
+            publishRuntimeSnapshot()
+        }
+
+        override fun setPushToTalkPressed(pressed: Boolean) {
+            val ctrl = controller ?: return
+            val pushToTalkMode = cachedSettings["push_to_talk_mode"] as? Boolean ?: false
+            val confirmMode = cachedSettings["push_to_talk_confirm_input"] as? Boolean ?: false
+            ctrl.setPushToTalkSessionActive(pressed && pushToTalkMode)
+            ctrl.setPushToTalkStreamingEnabled(pressed && pushToTalkMode && confirmMode)
+            pttPressed = pressed && pushToTalkMode
+            publishRuntimeSnapshot()
+        }
+
+        override fun commitPushToTalkSession(action: RealtimeRuntimeBridge.PttCommitAction) {
+            val ctrl = controller ?: return
+            ctrl.setPushToTalkStreamingEnabled(false)
+            ctrl.setPushToTalkSessionActive(false)
+            pttPressed = false
+            val text = pttStreamingText.trim()
+            pttStreamingText = ""
+            publishRuntimeSnapshot()
+            if (text.isNotEmpty()) {
+                when (action) {
+                    RealtimeRuntimeBridge.PttCommitAction.SendToSubtitle ->
+                        submitQuickSubtitle(OverlayBridge.TARGET_SUBTITLE, text)
+
+                    RealtimeRuntimeBridge.PttCommitAction.SendToInput ->
+                        submitQuickSubtitle(OverlayBridge.TARGET_INPUT, text)
+
+                    RealtimeRuntimeBridge.PttCommitAction.Cancel -> Unit
+                }
+            }
+        }
+    }
 
     init {
         methodChannel.setMethodCallHandler(this)
@@ -47,6 +174,21 @@ class RealtimeChannel(
         }
     }
 
+    private fun publishRuntimeSnapshot() {
+        RealtimeRuntimeBridge.updateAppSnapshot(
+            RealtimeRuntimeBridge.Snapshot(
+                running = runtimeRunning,
+                latestRecognizedText = latestRecognizedText,
+                inputLevel = inputLevel,
+                playbackProgress = playbackProgress,
+                inputDeviceLabel = inputDeviceLabel,
+                outputDeviceLabel = outputDeviceLabel,
+                pushToTalkPressed = pttPressed,
+                pushToTalkStreamingText = pttStreamingText,
+            )
+        )
+    }
+
     private fun ensureController(): RealtimeController {
         controller?.let { return it }
         val settings = cachedSettings
@@ -55,21 +197,34 @@ class RealtimeChannel(
             scope = scope,
             onResult = { id, text ->
                 sendEvent(mapOf("type" to "result", "id" to id, "text" to text))
+                latestRecognizedText = text
+                pttStreamingText = ""
+                publishRuntimeSnapshot()
             },
             onStreamingResult = { text ->
                 sendEvent(mapOf("type" to "streaming", "text" to text))
+                pttStreamingText = text
+                publishRuntimeSnapshot()
             },
             onProgress = { id, value ->
                 sendEvent(mapOf("type" to "progress", "id" to id, "value" to value))
+                playbackProgress = value.coerceIn(0f, 1f)
+                publishRuntimeSnapshot()
             },
             onLevel = { value ->
                 sendEvent(mapOf("type" to "level", "value" to value))
+                inputLevel = value.coerceIn(0f, 1f)
+                publishRuntimeSnapshot()
             },
             onInputDevice = { label ->
                 sendEvent(mapOf("type" to "inputDevice", "label" to label))
+                inputDeviceLabel = label
+                publishRuntimeSnapshot()
             },
             onOutputDevice = { label ->
                 sendEvent(mapOf("type" to "outputDevice", "label" to label))
+                outputDeviceLabel = label
+                publishRuntimeSnapshot()
             },
             onAec3Status = { status ->
                 sendEvent(mapOf("type" to "aec3Status", "status" to status))
@@ -96,6 +251,7 @@ class RealtimeChannel(
             initialPreferredInputType = (settings["preferred_input_type"] as? Number)?.toInt() ?: 0,
             initialPreferredOutputType = (settings["preferred_output_type"] as? Number)?.toInt() ?: 100,
             initialUseAec3 = settings["aec3_enabled"] as? Boolean ?: false,
+            initialDenoiserMode = (settings["denoiser_mode"] as? Number)?.toInt() ?: 0,
             initialNumberReplaceMode = (settings["number_replace_mode"] as? Number)?.toInt() ?: 0,
             initialAllowSystemAecWithAec3 = false,
             initialSpeakerVerifyEnabled = settings["speaker_verify_enabled"] as? Boolean ?: false,
@@ -103,6 +259,8 @@ class RealtimeChannel(
             initialSpeakerProfiles = emptyList()
         )
         controller = ctrl
+        RealtimeRuntimeBridge.registerAppDelegate(appDelegate)
+        publishRuntimeSnapshot()
         return ctrl
     }
 
@@ -121,10 +279,26 @@ class RealtimeChannel(
         ((args["preferred_input_type"] as? Number))?.let { ctrl.setPreferredInputType(it.toInt()) }
         ((args["preferred_output_type"] as? Number))?.let { ctrl.setPreferredOutputType(it.toInt()) }
         (args["aec3_enabled"] as? Boolean)?.let { ctrl.setUseAec3(it) }
+        ((args["denoiser_mode"] as? Number))?.let { ctrl.setDenoiserMode(it.toInt()) }
         ((args["number_replace_mode"] as? Number))?.let { ctrl.setNumberReplaceMode(it.toInt()) }
-        (args["push_to_talk_mode"] as? Boolean)?.let { ctrl.setPushToTalkStreamingEnabled(it) }
         (args["speaker_verify_enabled"] as? Boolean)?.let { ctrl.setSpeakerVerifyEnabled(it) }
         ((args["speaker_verify_threshold"] as? Number))?.let { ctrl.setSpeakerVerifyThreshold(it.toFloat()) }
+
+        val pushToTalkMode =
+            (args["push_to_talk_mode"] as? Boolean)
+                ?: (cachedSettings["push_to_talk_mode"] as? Boolean)
+                ?: false
+        val pushToTalkConfirmInput =
+            (args["push_to_talk_confirm_input"] as? Boolean)
+                ?: (cachedSettings["push_to_talk_confirm_input"] as? Boolean)
+                ?: false
+        val suppressAutoSpeak = pushToTalkMode && pushToTalkConfirmInput
+        ctrl.setPushToTalkMode(pushToTalkMode)
+        ctrl.setPushToTalkSessionActive(false)
+        ctrl.setSuppressAsrAutoSpeak(suppressAutoSpeak)
+        if (!suppressAutoSpeak) {
+            ctrl.setPushToTalkStreamingEnabled(false)
+        }
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -132,10 +306,16 @@ class RealtimeChannel(
             "start" -> {
                 val asrDir = call.argument<String>("asrDir") ?: return result.error("ARGS", "missing asrDir", null)
                 val voiceDir = call.argument<String>("voiceDir") ?: return result.error("ARGS", "missing voiceDir", null)
+                lastAsrDirPath = asrDir
+                lastVoiceDirPath = voiceDir
                 scope.launch {
                     try {
                         val ctrl = ensureController()
-                        ctrl.start(File(asrDir), File(voiceDir))
+                        withContext(Dispatchers.IO) {
+                            ctrl.start(File(asrDir), File(voiceDir))
+                        }
+                        runtimeRunning = true
+                        publishRuntimeSnapshot()
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("START_FAILED", e.message, null)
@@ -145,7 +325,14 @@ class RealtimeChannel(
             "stop" -> {
                 scope.launch {
                     try {
-                        controller?.stop()
+                        withContext(Dispatchers.IO) {
+                            controller?.stop()
+                            context.stopService(Intent(context, RealtimeHostService::class.java))
+                        }
+                        runtimeRunning = false
+                        pttPressed = false
+                        pttStreamingText = ""
+                        publishRuntimeSnapshot()
                         result.success(null)
                     } catch (e: Exception) {
                         result.error("STOP_FAILED", e.message, null)
@@ -171,7 +358,9 @@ class RealtimeChannel(
                 val text = call.argument<String>("text") ?: return result.error("ARGS", "missing text", null)
                 scope.launch {
                     try {
-                        controller?.enqueueSpeakText(text)
+                        withContext(Dispatchers.IO) {
+                            controller?.enqueueSpeakText(text)
+                        }
                         result.success(null)
                     } catch (e: Exception) {
                         result.error("TTS_FAILED", e.message, null)
@@ -183,7 +372,9 @@ class RealtimeChannel(
                 scope.launch {
                     try {
                         val ctrl = ensureController()
-                        val ok = ctrl.loadAsr(File(dir))
+                        val ok = withContext(Dispatchers.IO) {
+                            ctrl.loadAsr(File(dir))
+                        }
                         result.success(ok)
                     } catch (e: Exception) {
                         result.error("LOAD_ASR_FAILED", e.message, null)
@@ -195,7 +386,9 @@ class RealtimeChannel(
                 scope.launch {
                     try {
                         val ctrl = ensureController()
-                        val ok = ctrl.loadTts(File(dir))
+                        val ok = withContext(Dispatchers.IO) {
+                            ctrl.loadTts(File(dir))
+                        }
                         result.success(ok)
                     } catch (e: Exception) {
                         result.error("LOAD_VOICE_FAILED", e.message, null)
@@ -204,18 +397,47 @@ class RealtimeChannel(
             }
             "setPttPressed" -> {
                 val pressed = call.argument<Boolean>("pressed") ?: false
-                // PTT is handled via streaming in RealtimeController
+                val ctrl = controller
+                if (ctrl != null) {
+                    ctrl.setPushToTalkSessionActive(pressed)
+                    val pushToTalkMode = cachedSettings["push_to_talk_mode"] as? Boolean ?: false
+                    val pushToTalkConfirmInput = cachedSettings["push_to_talk_confirm_input"] as? Boolean ?: false
+                    ctrl.setPushToTalkStreamingEnabled(
+                        pressed && pushToTalkMode && pushToTalkConfirmInput
+                    )
+                    pttPressed = pressed && pushToTalkMode
+                    publishRuntimeSnapshot()
+                }
                 result.success(null)
             }
             "beginPttSession" -> {
-                controller?.setPushToTalkStreamingEnabled(true)
+                val ctrl = ensureController()
+                val pushToTalkMode = cachedSettings["push_to_talk_mode"] as? Boolean ?: false
+                val pushToTalkConfirmInput = cachedSettings["push_to_talk_confirm_input"] as? Boolean ?: false
+                val confirmPtt = pushToTalkMode && pushToTalkConfirmInput
+                ctrl.setPushToTalkMode(pushToTalkMode)
+                ctrl.setPushToTalkSessionActive(pushToTalkMode)
+                ctrl.setSuppressAsrAutoSpeak(confirmPtt)
+                ctrl.setPushToTalkStreamingEnabled(confirmPtt)
+                pttPressed = pushToTalkMode
+                publishRuntimeSnapshot()
                 result.success(null)
             }
             "commitPttSession" -> {
                 val action = call.argument<String>("action") ?: "cancel"
-                controller?.setPushToTalkStreamingEnabled(false)
-                if (action == "cancel") {
-                    controller?.setSuppressAsrAutoSpeak(false)
+                val ctrl = controller
+                if (ctrl != null) {
+                    ctrl.setPushToTalkStreamingEnabled(false)
+                    ctrl.setPushToTalkSessionActive(false)
+                    val pushToTalkMode = cachedSettings["push_to_talk_mode"] as? Boolean ?: false
+                    val pushToTalkConfirmInput = cachedSettings["push_to_talk_confirm_input"] as? Boolean ?: false
+                    ctrl.setSuppressAsrAutoSpeak(pushToTalkMode && pushToTalkConfirmInput)
+                    if (action.equals("cancel", ignoreCase = true)) {
+                        // Keep interface compatibility with original channel action names.
+                    }
+                    pttPressed = false
+                    pttStreamingText = ""
+                    publishRuntimeSnapshot()
                 }
                 result.success(null)
             }
@@ -225,6 +447,11 @@ class RealtimeChannel(
 
     fun dispose() {
         scope.cancel()
+        RealtimeRuntimeBridge.unregisterAppDelegate(appDelegate)
+        runtimeRunning = false
+        pttPressed = false
+        pttStreamingText = ""
+        publishRuntimeSnapshot()
         controller = null
     }
 }

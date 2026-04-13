@@ -15,6 +15,7 @@ abstract class AppSettings with _$AppSettings {
     @Default(0) int preferredInputType,
     @Default(100) int preferredOutputType,
     @Default(false) bool aec3Enabled,
+    @Default(0) int denoiserMode,
     @Default(0) int minVolumePercent,
     @Default(100) int playbackGainPercent,
     @Default(0.667) double piperNoiseScale,

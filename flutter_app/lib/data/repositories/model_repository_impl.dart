@@ -20,11 +20,13 @@ class ModelRepositoryImpl implements ModelRepository {
   Future<List<AsrModelInfo>> listAsrModels() async {
     final maps = await dataSource.listAsrModels();
     return maps
-        .map((m) => AsrModelInfo(
-              dirName: m['dirName'] as String,
-              dirPath: m['dirPath'] as String,
-              isBundled: m['isBundled'] as bool? ?? false,
-            ))
+        .map(
+          (m) => AsrModelInfo(
+            dirName: m['dirName'] as String,
+            dirPath: m['dirPath'] as String,
+            isBundled: m['isBundled'] as bool? ?? false,
+          ),
+        )
         .toList();
   }
 
@@ -47,10 +49,7 @@ class ModelRepositoryImpl implements ModelRepository {
 
   @override
   Future<void> updateVoiceMeta(String dirName, VoicePackMeta meta) {
-    return dataSource.updateVoiceMeta(
-      dirName,
-      VoicePackDto.metaToMap(meta),
-    );
+    return dataSource.updateVoiceMeta(dirName, VoicePackDto.metaToMap(meta));
   }
 
   @override
@@ -75,5 +74,21 @@ class ModelRepositoryImpl implements ModelRepository {
   @override
   Future<void> setLastVoiceName(String name) {
     return dataSource.setLastVoiceName(name);
+  }
+
+  @override
+  Future<String?> getLastAsrName() => dataSource.getLastAsrName();
+
+  @override
+  Future<void> setLastAsrName(String name) {
+    return dataSource.setLastAsrName(name);
+  }
+
+  @override
+  Future<int?> getSystemTtsOrder() => dataSource.getSystemTtsOrder();
+
+  @override
+  Future<void> setSystemTtsOrder(int order) {
+    return dataSource.setSystemTtsOrder(order);
   }
 }

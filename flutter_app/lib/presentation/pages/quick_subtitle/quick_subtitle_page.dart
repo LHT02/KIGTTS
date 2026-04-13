@@ -47,14 +47,30 @@ class _Body extends StatefulWidget {
   State<_Body> createState() => _BodyState();
 }
 
-class _BodyState extends State<_Body> {
+class _BodyState extends State<_Body> with WidgetsBindingObserver {
   bool _showPttOverlay = false;
   bool _callbackRegistered = false;
+  bool _keyboardVisible = false;
+  final SubtitleInputBarController _inputBarController =
+      SubtitleInputBarController();
+
+  bool _isKeyboardVisible(BuildContext context) {
+    return View.of(context).viewInsets.bottom > 0;
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     fullscreenActionNotifier.addListener(_onFullscreen);
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    if (!mounted) return;
+    final cubit = context.read<QuickSubtitleCubit>();
+    _syncPresetVisibilityForKeyboard(_isKeyboardVisible(context), cubit);
   }
 
   @override
@@ -64,7 +80,7 @@ class _BodyState extends State<_Body> {
       _callbackRegistered = true;
       // Connect ASR results → subtitle display
       final realtimeCubit = context.read<RealtimeCubit>();
-      realtimeCubit.onAsrResultForSubtitle = (text) {
+      realtimeCubit.onAsrResultForSubtitle = (text, {append = false}) {
         if (!mounted) return;
         final settings = context.read<SettingsCubit>().state.settings;
         if (!settings.asrSendToQuickSubtitle) return;
@@ -73,13 +89,19 @@ class _BodyState extends State<_Body> {
         // RealtimeController (it auto-enqueues TTS after recognition).
         // Calling sendText() from Flutter would double-enqueue and
         // block the ASR pipeline while TTS plays.
-        context.read<QuickSubtitleCubit>().setDisplayText(text);
+        final quickSubtitleCubit = context.read<QuickSubtitleCubit>();
+        if (append) {
+          quickSubtitleCubit.appendDisplayText(text);
+        } else {
+          quickSubtitleCubit.setDisplayText(text);
+        }
       };
     }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     fullscreenActionNotifier.removeListener(_onFullscreen);
     // Unregister callback to avoid dangling reference
     try {
@@ -98,6 +120,15 @@ class _BodyState extends State<_Body> {
       centered: st.config.centered,
       fontSize: st.config.fontSize,
     );
+  }
+
+  void _syncPresetVisibilityForKeyboard(
+    bool keyboardVisible,
+    QuickSubtitleCubit cubit,
+  ) {
+    if (_keyboardVisible == keyboardVisible) return;
+    _keyboardVisible = keyboardVisible;
+    cubit.setPresetsVisible(!keyboardVisible);
   }
 
   @override
@@ -123,6 +154,10 @@ class _BodyState extends State<_Body> {
         if (state.loading) {
           return const Center(child: CircularProgressIndicator());
         }
+
+        final quickSubtitleCubit = context.read<QuickSubtitleCubit>();
+        final keyboardVisible = _isKeyboardVisible(context);
+        _syncPresetVisibilityForKeyboard(keyboardVisible, quickSubtitleCubit);
 
         final groups = state.config.groups;
         final selectedGroup =
@@ -154,7 +189,7 @@ class _BodyState extends State<_Body> {
                   duration: const Duration(milliseconds: 200),
                   curve: Curves.fastOutSlowIn,
                   alignment: Alignment.topCenter,
-                  child: state.presetsVisible && selectedGroup != null
+                  child: !keyboardVisible && state.presetsVisible && selectedGroup != null
                       ? Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -175,11 +210,16 @@ class _BodyState extends State<_Body> {
                       : const SizedBox.shrink(),
                 ),
                 // 4. Bottom toolbar
-                _BottomToolbar(presetsVisible: state.presetsVisible),
+                _BottomToolbar(
+                  presetsVisible: !keyboardVisible && state.presetsVisible,
+                  onMoveCursorLeft: _inputBarController.moveCursorLeft,
+                  onMoveCursorRight: _inputBarController.moveCursorRight,
+                ),
                 // 5. Input bar (with integrated PTT + continuous listen)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(8, 0, 8, 0),
                   child: SubtitleInputBar(
+                    controller: _inputBarController,
                     onPttOverlayChanged: (show) {
                       setState(() => _showPttOverlay = show);
                     },
@@ -204,8 +244,14 @@ class _BodyState extends State<_Body> {
 /// Bottom toolbar: ← → [spacer] 🔊 📺 ▶
 /// 📺 toggles presets section visible/hidden.
 class _BottomToolbar extends StatelessWidget {
-  const _BottomToolbar({required this.presetsVisible});
+  const _BottomToolbar({
+    required this.presetsVisible,
+    required this.onMoveCursorLeft,
+    required this.onMoveCursorRight,
+  });
   final bool presetsVisible;
+  final VoidCallback onMoveCursorLeft;
+  final VoidCallback onMoveCursorRight;
 
   @override
   Widget build(BuildContext context) {
@@ -220,25 +266,38 @@ class _BottomToolbar extends StatelessWidget {
           const SizedBox(width: 4),
           IconButton(
             icon: Icon(Icons.arrow_back_sharp, color: iconColor, size: 20),
-            onPressed: cubit.navigatePrev,
-            tooltip: '上一条',
+            onPressed: onMoveCursorLeft,
+            tooltip: '光标左移',
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
           ),
           IconButton(
             icon: Icon(Icons.arrow_forward_sharp, color: iconColor, size: 20),
-            onPressed: cubit.navigateNext,
-            tooltip: '下一条',
+            onPressed: onMoveCursorRight,
+            tooltip: '光标右移',
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
           ),
           const Spacer(),
-          IconButton(
-            icon: Icon(Icons.volume_up_sharp, color: iconColor, size: 20),
-            onPressed: () {},
-            tooltip: '播放开关',
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+          BlocBuilder<QuickSubtitleCubit, QuickSubtitleState>(
+            buildWhen: (p, c) => p.config.playOnSend != c.config.playOnSend,
+            builder: (context, st) {
+              return IconButton(
+                icon: Icon(
+                  st.config.playOnSend
+                      ? Icons.volume_up_sharp
+                      : Icons.volume_off_sharp,
+                  color: iconColor,
+                  size: 20,
+                ),
+                onPressed: () =>
+                    cubit.setPlayOnSend(!st.config.playOnSend),
+                tooltip: st.config.playOnSend ? '发送后自动播报：开' : '发送后自动播报：关',
+                padding: EdgeInsets.zero,
+                constraints:
+                    const BoxConstraints(minWidth: 40, minHeight: 40),
+              );
+            },
           ),
           IconButton(
             icon: Icon(

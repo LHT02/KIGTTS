@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
+import '../../../../core/router/app_router.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../domain/entities/quick_subtitle.dart';
 import '../../../cubits/quick_subtitle/quick_subtitle_cubit.dart';
@@ -34,7 +36,7 @@ class SubtitleCategoryTabs extends StatelessWidget {
                 avatar: const Icon(Icons.edit_sharp, size: 16),
                 label: const Text('编辑'),
                 onPressed: () {
-                  // TODO: open group editor
+                  context.push(AppRoutes.quickSubtitleEditor);
                 },
               ),
             );
@@ -44,9 +46,7 @@ class SubtitleCategoryTabs extends StatelessWidget {
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
             child: ChoiceChip(
-              label: Text(
-                '${group.icon.isNotEmpty ? '' : ''}${group.name}',
-              ),
+              label: Text('${group.icon.isNotEmpty ? '' : ''}${group.name}'),
               selected: isSelected,
               selectedColor: AppColors.primary.withValues(alpha: 0.2),
               onSelected: (_) => cubit.selectGroup(i),

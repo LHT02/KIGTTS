@@ -8,7 +8,7 @@ import '../../../cubits/realtime/realtime_state.dart';
 ///
 /// Shows:
 /// - Streaming recognition text at the top
-/// - Two target indicators (SendToInput / Cancel) that highlight
+/// - Two target indicators (Confirm / Cancel) that highlight
 ///   based on the current drag direction.
 class QuickSubtitlePttOverlay extends StatelessWidget {
   const QuickSubtitlePttOverlay({super.key});
@@ -45,20 +45,16 @@ class QuickSubtitlePttOverlay extends StatelessWidget {
               ),
               // Drag target indicators
               Padding(
-                padding: const EdgeInsets.only(bottom: 120),
+                padding: const EdgeInsets.only(bottom: 56),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     _TargetIndicator(
-                      icon: Icons.keyboard_return_sharp,
-                      label: '输入框',
-                      active: target == 'SendToInput',
-                    ),
-                    _TargetIndicator(
-                      icon: Icons.subtitles_sharp,
-                      label: '字幕',
+                      icon: Icons.check_sharp,
+                      label: '确认上屏',
                       active: target == 'SendToSubtitle',
                     ),
+                    const SizedBox(width: 56),
                     _TargetIndicator(
                       icon: Icons.close_sharp,
                       label: '取消',
@@ -94,8 +90,8 @@ class _TargetIndicator extends StatelessWidget {
       children: [
         AnimatedContainer(
           duration: const Duration(milliseconds: 150),
-          width: 56,
-          height: 56,
+          width: 76,
+          height: 76,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: active
@@ -103,13 +99,10 @@ class _TargetIndicator extends StatelessWidget {
                 : Colors.white.withValues(alpha: 0.1),
             border: Border.all(color: color, width: active ? 2 : 1),
           ),
-          child: Icon(icon, color: color, size: 28),
+          child: Icon(icon, color: color, size: 34),
         ),
-        const SizedBox(height: 6),
-        Text(
-          label,
-          style: TextStyle(color: color, fontSize: 12),
-        ),
+        const SizedBox(height: 8),
+        Text(label, style: TextStyle(color: color, fontSize: 14)),
       ],
     );
   }

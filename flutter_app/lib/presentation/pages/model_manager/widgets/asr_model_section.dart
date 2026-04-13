@@ -17,6 +17,7 @@ class AsrModelSection extends StatelessWidget {
           p.asrModels != c.asrModels ||
           p.currentAsrDirName != c.currentAsrDirName,
       builder: (context, state) {
+        final cubit = context.read<ModelManagerCubit>();
         return Padding(
           padding: const EdgeInsets.all(AppDimensions.spacingLg),
           child: Card(
@@ -40,6 +41,9 @@ class AsrModelSection extends StatelessWidget {
                       (model) => _AsrModelRow(
                         dirName: model.dirName,
                         isBundled: model.isBundled,
+                        isSelected: model.dirName == state.currentAsrDirName,
+                        onTap: () =>
+                            cubit.selectAsr(model.dirPath, model.dirName),
                       ),
                     ),
                 ],
@@ -68,37 +72,61 @@ class _EmptyLabel extends StatelessWidget {
 }
 
 class _AsrModelRow extends StatelessWidget {
-  const _AsrModelRow({required this.dirName, required this.isBundled});
+  const _AsrModelRow({
+    required this.dirName,
+    required this.isBundled,
+    required this.isSelected,
+    required this.onTap,
+  });
   final String dirName;
   final bool isBundled;
+  final bool isSelected;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        children: [
-          const Icon(Icons.hearing, size: 16, color: AppColors.primary),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(dirName, style: theme.textTheme.bodySmall),
-          ),
-          if (isBundled)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                '内置',
-                style: theme.textTheme.labelSmall?.copyWith(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            child: Row(
+              children: [
+                Icon(
+                  isSelected ? Icons.radio_button_checked : Icons.hearing,
+                  size: 16,
                   color: AppColors.primary,
                 ),
-              ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(dirName, style: theme.textTheme.bodySmall),
+                ),
+                if (isBundled)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 1,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '内置',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: AppColors.primary,
+                      ),
+                    ),
+                  ),
+              ],
             ),
-        ],
+          ),
+        ),
       ),
     );
   }

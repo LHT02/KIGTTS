@@ -7,28 +7,28 @@ import 'app_dimensions.dart';
 /// Dark theme is default, light theme follows system.
 abstract final class AppTheme {
   static ThemeData get dark => _buildTheme(
-        brightness: Brightness.dark,
-        background: AppColors.darkBackground,
-        surface: AppColors.darkSurface,
-        surfaceVariant: AppColors.darkSurfaceVariant,
-        onBackground: AppColors.darkOnBackground,
-        onSurface: AppColors.darkOnSurface,
-        onSurfaceVariant: AppColors.darkOnSurfaceVariant,
-        outline: AppColors.darkOutline,
-        error: AppColors.darkError,
-      );
+    brightness: Brightness.dark,
+    background: AppColors.darkBackground,
+    surface: AppColors.darkSurface,
+    surfaceVariant: AppColors.darkSurfaceVariant,
+    onBackground: AppColors.darkOnBackground,
+    onSurface: AppColors.darkOnSurface,
+    onSurfaceVariant: AppColors.darkOnSurfaceVariant,
+    outline: AppColors.darkOutline,
+    error: AppColors.darkError,
+  );
 
   static ThemeData get light => _buildTheme(
-        brightness: Brightness.light,
-        background: AppColors.lightBackground,
-        surface: AppColors.lightSurface,
-        surfaceVariant: AppColors.lightSurfaceVariant,
-        onBackground: AppColors.lightOnBackground,
-        onSurface: AppColors.lightOnSurface,
-        onSurfaceVariant: AppColors.lightOnSurfaceVariant,
-        outline: AppColors.lightOutline,
-        error: AppColors.lightError,
-      );
+    brightness: Brightness.light,
+    background: AppColors.lightBackground,
+    surface: AppColors.lightSurface,
+    surfaceVariant: AppColors.lightSurfaceVariant,
+    onBackground: AppColors.lightOnBackground,
+    onSurface: AppColors.lightOnSurface,
+    onSurfaceVariant: AppColors.lightOnSurfaceVariant,
+    outline: AppColors.lightOutline,
+    error: AppColors.lightError,
+  );
 
   static ThemeData _buildTheme({
     required Brightness brightness,
@@ -41,22 +41,23 @@ abstract final class AppTheme {
     required Color outline,
     required Color error,
   }) {
-    final colorScheme = ColorScheme(
-      brightness: brightness,
-      primary: AppColors.primary,
-      onPrimary: Colors.white,
-      primaryContainer: AppColors.primaryVariant,
-      onPrimaryContainer: Colors.white,
-      secondary: AppColors.secondary,
-      onSecondary: Colors.black,
-      surface: surface,
-      onSurface: onSurface,
-      surfaceContainerHighest: surfaceVariant,
-      onSurfaceVariant: onSurfaceVariant,
-      error: error,
-      onError: Colors.white,
-      outline: outline,
-    );
+    final colorScheme =
+        ColorScheme.fromSeed(
+          seedColor: AppColors.primary,
+          brightness: brightness,
+          primary: AppColors.primary,
+          secondary: AppColors.secondary,
+          surface: surface,
+          onSurface: onSurface,
+          error: error,
+          outline: outline,
+        ).copyWith(
+          primaryContainer: AppColors.primaryVariant,
+          onPrimaryContainer: Colors.white,
+          surfaceContainerHighest: surfaceVariant,
+          onSurfaceVariant: onSurfaceVariant,
+          onSecondary: Colors.black,
+        );
 
     return ThemeData(
       useMaterial3: true,

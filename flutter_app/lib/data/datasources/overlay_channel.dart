@@ -8,6 +8,24 @@ class OverlayChannelDataSource {
 
   final _method = const MethodChannel(ChannelNames.overlay);
 
+  Future<bool> canDrawOverlays() async {
+    try {
+      return await _method.invokeMethod<bool>('canDrawOverlays') ?? false;
+    } on PlatformException catch (e) {
+      throw Exception('Failed to check overlay permission: ${e.message}');
+    }
+  }
+
+  Future<void> openOverlayPermissionSettings() async {
+    try {
+      await _method.invokeMethod<void>('openOverlayPermissionSettings');
+    } on PlatformException catch (e) {
+      throw Exception(
+        'Failed to open overlay permission settings: ${e.message}',
+      );
+    }
+  }
+
   Future<void> show() async {
     try {
       await _method.invokeMethod<void>('show');

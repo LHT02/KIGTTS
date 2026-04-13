@@ -11,9 +11,9 @@ class SettingsCubit extends Cubit<SettingsState> {
   SettingsCubit({
     required SettingsRepository settingsRepository,
     required RealtimeRepository realtimeRepository,
-  })  : _settingsRepo = settingsRepository,
-        _realtimeRepo = realtimeRepository,
-        super(const SettingsState());
+  }) : _settingsRepo = settingsRepository,
+       _realtimeRepo = realtimeRepository,
+       super(const SettingsState());
 
   final SettingsRepository _settingsRepo;
   final RealtimeRepository _realtimeRepo;
@@ -54,8 +54,9 @@ class SettingsCubit extends Cubit<SettingsState> {
   Future<void> setPreferredOutputType(int v) =>
       _update(PrefsKeys.preferredOutputType, v);
 
-  Future<void> setAec3Enabled(bool v) =>
-      _update(PrefsKeys.aec3Enabled, v);
+  Future<void> setAec3Enabled(bool v) => _update(PrefsKeys.aec3Enabled, v);
+
+  Future<void> setDenoiserMode(int v) => _update(PrefsKeys.denoiserMode, v);
 
   Future<void> setMinVolumePercent(int v) =>
       _update(PrefsKeys.minVolumePercent, v);
@@ -69,14 +70,12 @@ class SettingsCubit extends Cubit<SettingsState> {
   Future<void> setPiperLengthScale(double v) =>
       _update(PrefsKeys.piperLengthScale, v);
 
-  Future<void> setPiperNoiseW(double v) =>
-      _update(PrefsKeys.piperNoiseW, v);
+  Future<void> setPiperNoiseW(double v) => _update(PrefsKeys.piperNoiseW, v);
 
   Future<void> setPiperSentenceSilence(double v) =>
       _update(PrefsKeys.piperSentenceSilence, v);
 
-  Future<void> setKeepAlive(bool v) =>
-      _update(PrefsKeys.keepAlive, v);
+  Future<void> setKeepAlive(bool v) => _update(PrefsKeys.keepAlive, v);
 
   Future<void> setNumberReplaceMode(int v) =>
       _update(PrefsKeys.numberReplaceMode, v);
@@ -84,8 +83,7 @@ class SettingsCubit extends Cubit<SettingsState> {
   Future<void> setLandscapeDrawerMode(int v) =>
       _update(PrefsKeys.landscapeDrawerMode, v);
 
-  Future<void> setSolidTopBar(bool v) =>
-      _update(PrefsKeys.solidTopBar, v);
+  Future<void> setSolidTopBar(bool v) => _update(PrefsKeys.solidTopBar, v);
 
   Future<void> setPushToTalkMode(bool v) =>
       _update(PrefsKeys.pushToTalkMode, v);
@@ -95,6 +93,9 @@ class SettingsCubit extends Cubit<SettingsState> {
 
   Future<void> setFloatingOverlayEnabled(bool v) =>
       _update(PrefsKeys.floatingOverlayEnabled, v);
+
+    Future<void> setFloatingOverlayAutoDock(bool v) =>
+      _update(PrefsKeys.floatingOverlayAutoDock, v);
 
   Future<void> setAsrSendToQuickSubtitle(bool v) =>
       _update(PrefsKeys.asrSendToQuickSubtitle, v);

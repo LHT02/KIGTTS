@@ -38,4 +38,16 @@ abstract class ModelRepository {
 
   /// Save the last selected voice pack name.
   Future<void> setLastVoiceName(String name);
+
+  /// Get the last selected ASR model name.
+  Future<String?> getLastAsrName();
+
+  /// Save the last selected ASR model name.
+  Future<void> setLastAsrName(String name);
+
+  /// Get system TTS ordering timestamp.
+  Future<int?> getSystemTtsOrder();
+
+  /// Save system TTS ordering timestamp.
+  Future<void> setSystemTtsOrder(int order);
 }

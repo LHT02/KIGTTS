@@ -13,9 +13,7 @@ class ModelChannelDataSource {
       final result = await _method.invokeMethod<List<dynamic>>(
         'listVoicePacks',
       );
-      return result
-              ?.map((e) => Map<String, dynamic>.from(e as Map))
-              .toList() ??
+      return result?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ??
           [];
     } on PlatformException catch (e) {
       throw Exception('Failed to list voice packs: ${e.message}');
@@ -24,12 +22,8 @@ class ModelChannelDataSource {
 
   Future<List<Map<String, dynamic>>> listAsrModels() async {
     try {
-      final result = await _method.invokeMethod<List<dynamic>>(
-        'listAsrModels',
-      );
-      return result
-              ?.map((e) => Map<String, dynamic>.from(e as Map))
-              .toList() ??
+      final result = await _method.invokeMethod<List<dynamic>>('listAsrModels');
+      return result?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ??
           [];
     } on PlatformException catch (e) {
       throw Exception('Failed to list ASR models: ${e.message}');
@@ -62,10 +56,7 @@ class ModelChannelDataSource {
 
   Future<void> deleteVoice(String dirName) async {
     try {
-      await _method.invokeMethod<void>(
-        'deleteVoice',
-        {'dirName': dirName},
-      );
+      await _method.invokeMethod<void>('deleteVoice', {'dirName': dirName});
     } on PlatformException catch (e) {
       throw Exception('Failed to delete voice: ${e.message}');
     }
@@ -133,12 +124,41 @@ class ModelChannelDataSource {
 
   Future<void> setLastVoiceName(String name) async {
     try {
-      await _method.invokeMethod<void>(
-        'setLastVoiceName',
-        {'name': name},
-      );
+      await _method.invokeMethod<void>('setLastVoiceName', {'name': name});
     } on PlatformException catch (e) {
       throw Exception('Failed to set last voice name: ${e.message}');
+    }
+  }
+
+  Future<String?> getLastAsrName() async {
+    try {
+      return await _method.invokeMethod<String>('getLastAsrName');
+    } on PlatformException catch (e) {
+      throw Exception('Failed to get last ASR name: ${e.message}');
+    }
+  }
+
+  Future<void> setLastAsrName(String name) async {
+    try {
+      await _method.invokeMethod<void>('setLastAsrName', {'name': name});
+    } on PlatformException catch (e) {
+      throw Exception('Failed to set last ASR name: ${e.message}');
+    }
+  }
+
+  Future<int?> getSystemTtsOrder() async {
+    try {
+      return await _method.invokeMethod<int>('getSystemTtsOrder');
+    } on PlatformException catch (e) {
+      throw Exception('Failed to get system TTS order: ${e.message}');
+    }
+  }
+
+  Future<void> setSystemTtsOrder(int order) async {
+    try {
+      await _method.invokeMethod<void>('setSystemTtsOrder', {'order': order});
+    } on PlatformException catch (e) {
+      throw Exception('Failed to set system TTS order: ${e.message}');
     }
   }
 }

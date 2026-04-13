@@ -37,7 +37,10 @@ class SubtitlePhraseRow extends StatelessWidget {
             child: _PhraseChip(
               item: item,
               isDisplayed: isDisplayed,
-              onTap: () => cubit.selectItem(i),
+              onTap: () {
+                cubit.selectItem(i);
+                cubit.sendItem(item);
+              },
               onLongPress: () => cubit.sendItem(item),
             ),
           );

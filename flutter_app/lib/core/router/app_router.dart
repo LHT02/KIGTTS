@@ -4,6 +4,8 @@ import '../../presentation/pages/realtime/realtime_page.dart';
 import '../../presentation/pages/model_manager/model_manager_page.dart';
 import '../../presentation/pages/settings/settings_page.dart';
 import '../../presentation/pages/quick_subtitle/quick_subtitle_page.dart';
+import '../../presentation/pages/quick_subtitle/quick_subtitle_history_page.dart';
+import '../../presentation/pages/quick_subtitle/quick_subtitle_editor_page.dart';
 import '../../presentation/pages/quick_card/quick_card_page.dart';
 import '../../presentation/pages/drawing/drawing_page.dart';
 import '../../presentation/pages/overlay/overlay_control_page.dart';
@@ -13,6 +15,9 @@ import '../../presentation/widgets/app_scaffold.dart';
 /// Application route paths.
 abstract final class AppRoutes {
   static const home = '/';
+  static const quickSubtitleDrawing = '/quick-subtitle/drawing';
+  static const quickSubtitleHistory = '/quick-subtitle/history';
+  static const quickSubtitleEditor = '/quick-subtitle/editor';
   static const overlay = '/overlay';
   static const cards = '/cards';
   static const voicepacks = '/voicepacks';
@@ -28,67 +33,70 @@ abstract final class AppRoutes {
 final GoRouter appRouter = GoRouter(
   initialLocation: AppRoutes.home,
   routes: [
-    ShellRoute(
-      builder: (context, state, child) => AppScaffold(
-        currentPath: state.matchedLocation,
-        child: child,
+    GoRoute(
+      path: AppRoutes.quickSubtitleDrawing,
+      pageBuilder: (context, state) => _buildPage(
+        key: state.pageKey,
+        child: const DrawingPage(fullscreen: true),
       ),
+    ),
+    ShellRoute(
+      builder: (context, state, child) =>
+          AppScaffold(currentPath: state.matchedLocation, child: child),
       routes: [
         GoRoute(
           path: AppRoutes.home,
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const QuickSubtitlePage()),
+        ),
+        GoRoute(
+          path: AppRoutes.quickSubtitleHistory,
           pageBuilder: (context, state) => _buildPage(
             key: state.pageKey,
-            child: const QuickSubtitlePage(),
+            child: const QuickSubtitleHistoryPage(),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.quickSubtitleEditor,
+          pageBuilder: (context, state) => _buildPage(
+            key: state.pageKey,
+            child: const QuickSubtitleEditorPage(),
           ),
         ),
         GoRoute(
           path: AppRoutes.realtime,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const RealtimePage(),
-          ),
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const RealtimePage()),
         ),
         GoRoute(
           path: AppRoutes.overlay,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const OverlayControlPage(),
-          ),
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const OverlayControlPage()),
         ),
         GoRoute(
           path: AppRoutes.cards,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const QuickCardPage(),
-          ),
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const QuickCardPage()),
         ),
         GoRoute(
           path: AppRoutes.voicepacks,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const ModelManagerPage(),
-          ),
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const ModelManagerPage()),
         ),
         GoRoute(
           path: AppRoutes.drawing,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const DrawingPage(),
-          ),
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const DrawingPage()),
         ),
         GoRoute(
           path: AppRoutes.settings,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const SettingsPage(),
-          ),
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const SettingsPage()),
         ),
         GoRoute(
           path: AppRoutes.log,
-          pageBuilder: (context, state) => _buildPage(
-            key: state.pageKey,
-            child: const LogViewerPage(),
-          ),
+          pageBuilder: (context, state) =>
+              _buildPage(key: state.pageKey, child: const LogViewerPage()),
         ),
       ],
     ),

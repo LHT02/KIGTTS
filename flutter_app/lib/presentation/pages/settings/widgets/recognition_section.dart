@@ -20,16 +20,15 @@ class RecognitionSection extends StatelessWidget {
               c.settings.muteWhilePlayingDelaySec ||
           p.settings.echoSuppression != c.settings.echoSuppression ||
           p.settings.aec3Enabled != c.settings.aec3Enabled ||
+          p.settings.denoiserMode != c.settings.denoiserMode ||
           p.settings.piperNoiseScale != c.settings.piperNoiseScale ||
           p.settings.piperLengthScale != c.settings.piperLengthScale ||
           p.settings.piperNoiseW != c.settings.piperNoiseW ||
-          p.settings.piperSentenceSilence !=
-              c.settings.piperSentenceSilence ||
+          p.settings.piperSentenceSilence != c.settings.piperSentenceSilence ||
           p.settings.numberReplaceMode != c.settings.numberReplaceMode ||
           p.settings.asrSendToQuickSubtitle !=
               c.settings.asrSendToQuickSubtitle ||
-          p.settings.playbackGainPercent !=
-              c.settings.playbackGainPercent ||
+          p.settings.playbackGainPercent != c.settings.playbackGainPercent ||
           p.settings.minVolumePercent != c.settings.minVolumePercent ||
           p.settings.pushToTalkMode != c.settings.pushToTalkMode ||
           p.settings.pushToTalkConfirmInput !=
@@ -73,6 +72,10 @@ class RecognitionSection extends StatelessWidget {
               contentPadding: EdgeInsets.zero,
               dense: true,
             ),
+            _DenoiserModeRow(
+              mode: s.denoiserMode,
+              onChanged: cubit.setDenoiserMode,
+            ),
             SwitchListTile(
               title: const Text('ASR 发送到字幕'),
               subtitle: const Text('识别结果自动显示在字幕页'),
@@ -86,9 +89,9 @@ class RecognitionSection extends StatelessWidget {
             Text(
               '录音模式',
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 4),
             SwitchListTile(
@@ -113,9 +116,9 @@ class RecognitionSection extends StatelessWidget {
             Text(
               'Piper TTS 参数',
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 4),
             _SliderRow(
@@ -200,9 +203,9 @@ class _SliderRow extends StatelessWidget {
             Text(label, style: Theme.of(context).textTheme.bodySmall),
             Text(
               valueLabel,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
             ),
           ],
         ),
@@ -219,19 +222,12 @@ class _SliderRow extends StatelessWidget {
 }
 
 class _NumberReplaceRow extends StatelessWidget {
-  const _NumberReplaceRow({
-    required this.mode,
-    required this.onChanged,
-  });
+  const _NumberReplaceRow({required this.mode, required this.onChanged});
 
   final int mode;
   final ValueChanged<int> onChanged;
 
-  static const _modes = {
-    0: '不替换',
-    1: '数字→中文',
-    2: '中文→数字',
-  };
+  static const _modes = {0: '不替换', 1: '数字→中文', 2: '中文→数字'};
 
   @override
   Widget build(BuildContext context) {
@@ -239,6 +235,42 @@ class _NumberReplaceRow extends StatelessWidget {
     return Row(
       children: [
         Text('数字替换', style: theme.textTheme.bodySmall),
+        const Spacer(),
+        DropdownButton<int>(
+          value: _modes.containsKey(mode) ? mode : 0,
+          underline: const SizedBox.shrink(),
+          isDense: true,
+          items: _modes.entries
+              .map(
+                (e) => DropdownMenuItem<int>(
+                  value: e.key,
+                  child: Text(e.value, style: theme.textTheme.bodySmall),
+                ),
+              )
+              .toList(),
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _DenoiserModeRow extends StatelessWidget {
+  const _DenoiserModeRow({required this.mode, required this.onChanged});
+
+  final int mode;
+  final ValueChanged<int> onChanged;
+
+  static const _modes = {0: '关闭', 1: 'RNNoise', 2: 'Speex'};
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Text('降噪模式', style: theme.textTheme.bodySmall),
         const Spacer(),
         DropdownButton<int>(
           value: _modes.containsKey(mode) ? mode : 0,

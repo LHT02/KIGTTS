@@ -1,5 +1,11 @@
 /// Repository interface for floating overlay service control.
 abstract class OverlayRepository {
+  /// Check whether SYSTEM_ALERT_WINDOW permission is granted.
+  Future<bool> hasPermission();
+
+  /// Open system overlay permission settings page.
+  Future<void> openPermissionSettings();
+
   /// Show the floating overlay.
   Future<void> show();
 

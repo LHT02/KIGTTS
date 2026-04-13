@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:go_router/go_router.dart';
 import '../../core/router/app_router.dart';
 import '../../core/theme/app_colors.dart';
@@ -33,15 +34,17 @@ class DrawerPanel extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: AppDimensions.spacingLg,
-                  vertical: AppDimensions.spacingMd,
+                  vertical: AppDimensions.spacingSm,
                 ),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    'KIGTTS',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.primary,
+                child: SizedBox(
+                  height: 44,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: SvgPicture.asset(
+                      theme.brightness == Brightness.dark
+                          ? 'assets/images/logo_white.svg'
+                          : 'assets/images/logo_black.svg',
+                      fit: BoxFit.contain,
                     ),
                   ),
                 ),
@@ -62,25 +65,9 @@ class DrawerPanel extends StatelessWidget {
                     onItemTap: onItemTap,
                   ),
                   _DrawerItem(
-                    icon: Icons.picture_in_picture_alt_sharp,
-                    label: '悬浮窗',
-                    path: AppRoutes.overlay,
-                    currentPath: currentPath,
-                    expanded: expanded,
-                    onItemTap: onItemTap,
-                  ),
-                  _DrawerItem(
                     icon: Icons.contact_page_sharp,
-                    label: '快捷名片',
+                    label: '快捷页面',
                     path: AppRoutes.cards,
-                    currentPath: currentPath,
-                    expanded: expanded,
-                    onItemTap: onItemTap,
-                  ),
-                  _DrawerItem(
-                    icon: Icons.record_voice_over_sharp,
-                    label: '语音包',
-                    path: AppRoutes.voicepacks,
                     currentPath: currentPath,
                     expanded: expanded,
                     onItemTap: onItemTap,

@@ -1,4 +1,4 @@
-name: kgtts_app
+name: kigtts_app
 description: "KIGTTS - Real-time ASR/TTS voice conversion app"
 publish_to: 'none'
 version: 1.0.0+1
@@ -20,6 +20,7 @@ dependencies:
   file_picker: ^9.2.0
   equatable: ^2.0.7
   permission_handler: ^12.0.1
+  flutter_svg: ^2.1.0
 
 dev_dependencies:
   flutter_test:
@@ -32,6 +33,8 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/
   fonts:
     - family: MaterialSymbolsSharp
       fonts:

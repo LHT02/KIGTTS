@@ -28,29 +28,38 @@ class _QuickSubtitleMicFabState extends State<QuickSubtitleMicFab> {
 
   // --- Drag-zone logic (confirm PTT) ---
 
-  /// 56 dp threshold matching original Android spec.
-  static const double _dragThresholdDp = 56;
+  static const double _dragThresholdDp = 48;
+  static const double _cancelRightThresholdDp = 18;
 
   String _computeDragTarget(Offset delta) {
-    if (delta.dy >= -_dragThresholdDp) return 'SendToSubtitle';
-    if (delta.dx < -12) return 'SendToInput';
+    if (delta.dy <= -_dragThresholdDp && delta.dx < _cancelRightThresholdDp) {
+      return 'SendToSubtitle';
+    }
     return 'Cancel';
   }
 
   // --- Gesture callbacks ---
 
-  void _onPointerDown(PointerDownEvent e, RealtimeCubit cubit, bool ptt,
-      bool confirmInput) {
+  void _onPointerDown(
+    PointerDownEvent e,
+    RealtimeCubit cubit,
+    bool ptt,
+    bool confirmInput,
+  ) {
     if (!ptt) return; // continuous-listen: handled by onTap
     _startOffset = e.localPosition;
     cubit.beginPttSession();
     if (confirmInput) {
+      cubit.setPttDragTarget('Cancel');
       widget.onPttOverlayChanged?.call(true);
     }
   }
 
   void _onPointerMove(
-      PointerMoveEvent e, RealtimeCubit cubit, bool confirmInput) {
+    PointerMoveEvent e,
+    RealtimeCubit cubit,
+    bool confirmInput,
+  ) {
     if (_startOffset == null) return;
     if (!confirmInput) return;
     final delta = e.localPosition - _startOffset!;
@@ -58,8 +67,12 @@ class _QuickSubtitleMicFabState extends State<QuickSubtitleMicFab> {
     cubit.setPttDragTarget(target);
   }
 
-  void _onPointerUp(PointerUpEvent e, RealtimeCubit cubit, bool ptt,
-      bool confirmInput) {
+  void _onPointerUp(
+    PointerUpEvent e,
+    RealtimeCubit cubit,
+    bool ptt,
+    bool confirmInput,
+  ) {
     if (!ptt || _startOffset == null) return;
     widget.onPttOverlayChanged?.call(false);
 
@@ -74,8 +87,7 @@ class _QuickSubtitleMicFabState extends State<QuickSubtitleMicFab> {
     _startOffset = null;
   }
 
-  void _onPointerCancel(
-      PointerCancelEvent e, RealtimeCubit cubit, bool ptt) {
+  void _onPointerCancel(PointerCancelEvent e, RealtimeCubit cubit, bool ptt) {
     if (!ptt || _startOffset == null) return;
     widget.onPttOverlayChanged?.call(false);
     cubit.commitPttSession('Cancel');
@@ -104,14 +116,10 @@ class _QuickSubtitleMicFabState extends State<QuickSubtitleMicFab> {
             final isRunning = rtState.running;
 
             return Listener(
-              onPointerDown: (e) =>
-                  _onPointerDown(e, cubit, ptt, confirmInput),
-              onPointerMove: (e) =>
-                  _onPointerMove(e, cubit, confirmInput),
-              onPointerUp: (e) =>
-                  _onPointerUp(e, cubit, ptt, confirmInput),
-              onPointerCancel: (e) =>
-                  _onPointerCancel(e, cubit, ptt),
+              onPointerDown: (e) => _onPointerDown(e, cubit, ptt, confirmInput),
+              onPointerMove: (e) => _onPointerMove(e, cubit, confirmInput),
+              onPointerUp: (e) => _onPointerUp(e, cubit, ptt, confirmInput),
+              onPointerCancel: (e) => _onPointerCancel(e, cubit, ptt),
               child: _FabBody(
                 ptt: ptt,
                 isPressed: isPressed,
@@ -184,8 +192,8 @@ class _FabBody extends StatelessWidget {
     final bgColor = isPressed
         ? Colors.red
         : isRunning
-            ? AppColors.darkError
-            : AppColors.primary;
+        ? AppColors.darkError
+        : AppColors.primary;
 
     return FloatingActionButton(
       heroTag: 'quickSubtitleFab',

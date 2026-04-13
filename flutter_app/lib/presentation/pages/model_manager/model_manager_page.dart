@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import '../../../injection.dart';
 import '../../cubits/model_manager/model_manager_cubit.dart';
 import '../../cubits/model_manager/model_manager_state.dart';
+import '../../../domain/entities/voice_pack_info.dart';
 import 'widgets/voice_pack_card.dart';
 import 'widgets/voice_pack_detail_dialog.dart';
 import 'widgets/asr_model_section.dart';
@@ -123,7 +124,7 @@ class _VoicePackList extends StatelessWidget {
     required this.staggerController,
   });
 
-  final List packs;
+  final List<VoicePackInfo> packs;
   final String? currentDirName;
   final AnimationController staggerController;
 
@@ -134,7 +135,7 @@ class _VoicePackList extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       itemCount: packs.length,
       onReorder: (oldIndex, newIndex) {
-        // TODO: implement reorder persistence in cubit
+        cubit.reorderVoicePacks(oldIndex, newIndex);
       },
       proxyDecorator: _proxyDecorator,
       itemBuilder: (context, index) {
@@ -223,10 +224,7 @@ class _ImportFab extends StatelessWidget {
         child: SizedBox(
           width: 24,
           height: 24,
-          child: CircularProgressIndicator(
-            strokeWidth: 2,
-            color: Colors.white,
-          ),
+          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
         ),
       );
     }

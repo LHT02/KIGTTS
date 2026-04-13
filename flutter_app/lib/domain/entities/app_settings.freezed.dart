@@ -28,6 +28,7 @@ mixin _$AppSettings {
   int get preferredInputType => throw _privateConstructorUsedError;
   int get preferredOutputType => throw _privateConstructorUsedError;
   bool get aec3Enabled => throw _privateConstructorUsedError;
+  int get denoiserMode => throw _privateConstructorUsedError;
   int get minVolumePercent => throw _privateConstructorUsedError;
   int get playbackGainPercent => throw _privateConstructorUsedError;
   double get piperNoiseScale => throw _privateConstructorUsedError;
@@ -73,6 +74,7 @@ abstract class $AppSettingsCopyWith<$Res> {
     int preferredInputType,
     int preferredOutputType,
     bool aec3Enabled,
+    int denoiserMode,
     int minVolumePercent,
     int playbackGainPercent,
     double piperNoiseScale,
@@ -117,6 +119,7 @@ class _$AppSettingsCopyWithImpl<$Res, $Val extends AppSettings>
     Object? preferredInputType = null,
     Object? preferredOutputType = null,
     Object? aec3Enabled = null,
+    Object? denoiserMode = null,
     Object? minVolumePercent = null,
     Object? playbackGainPercent = null,
     Object? piperNoiseScale = null,
@@ -167,6 +170,10 @@ class _$AppSettingsCopyWithImpl<$Res, $Val extends AppSettings>
                 ? _value.aec3Enabled
                 : aec3Enabled // ignore: cast_nullable_to_non_nullable
                       as bool,
+            denoiserMode: null == denoiserMode
+                ? _value.denoiserMode
+                : denoiserMode // ignore: cast_nullable_to_non_nullable
+                      as int,
             minVolumePercent: null == minVolumePercent
                 ? _value.minVolumePercent
                 : minVolumePercent // ignore: cast_nullable_to_non_nullable
@@ -266,6 +273,7 @@ abstract class _$$AppSettingsImplCopyWith<$Res>
     int preferredInputType,
     int preferredOutputType,
     bool aec3Enabled,
+    int denoiserMode,
     int minVolumePercent,
     int playbackGainPercent,
     double piperNoiseScale,
@@ -309,6 +317,7 @@ class __$$AppSettingsImplCopyWithImpl<$Res>
     Object? preferredInputType = null,
     Object? preferredOutputType = null,
     Object? aec3Enabled = null,
+    Object? denoiserMode = null,
     Object? minVolumePercent = null,
     Object? playbackGainPercent = null,
     Object? piperNoiseScale = null,
@@ -359,6 +368,10 @@ class __$$AppSettingsImplCopyWithImpl<$Res>
             ? _value.aec3Enabled
             : aec3Enabled // ignore: cast_nullable_to_non_nullable
                   as bool,
+        denoiserMode: null == denoiserMode
+            ? _value.denoiserMode
+            : denoiserMode // ignore: cast_nullable_to_non_nullable
+                  as int,
         minVolumePercent: null == minVolumePercent
             ? _value.minVolumePercent
             : minVolumePercent // ignore: cast_nullable_to_non_nullable
@@ -451,6 +464,7 @@ class _$AppSettingsImpl implements _AppSettings {
     this.preferredInputType = 0,
     this.preferredOutputType = 100,
     this.aec3Enabled = false,
+    this.denoiserMode = 0,
     this.minVolumePercent = 0,
     this.playbackGainPercent = 100,
     this.piperNoiseScale = 0.667,
@@ -496,6 +510,9 @@ class _$AppSettingsImpl implements _AppSettings {
   @override
   @JsonKey()
   final bool aec3Enabled;
+  @override
+  @JsonKey()
+  final int denoiserMode;
   @override
   @JsonKey()
   final int minVolumePercent;
@@ -556,7 +573,7 @@ class _$AppSettingsImpl implements _AppSettings {
 
   @override
   String toString() {
-    return 'AppSettings(muteWhilePlaying: $muteWhilePlaying, muteWhilePlayingDelaySec: $muteWhilePlayingDelaySec, echoSuppression: $echoSuppression, communicationMode: $communicationMode, preferredInputType: $preferredInputType, preferredOutputType: $preferredOutputType, aec3Enabled: $aec3Enabled, minVolumePercent: $minVolumePercent, playbackGainPercent: $playbackGainPercent, piperNoiseScale: $piperNoiseScale, piperLengthScale: $piperLengthScale, piperNoiseW: $piperNoiseW, piperSentenceSilence: $piperSentenceSilence, keepAlive: $keepAlive, numberReplaceMode: $numberReplaceMode, landscapeDrawerMode: $landscapeDrawerMode, solidTopBar: $solidTopBar, drawingSaveRelativePath: $drawingSaveRelativePath, quickCardAutoSaveOnExit: $quickCardAutoSaveOnExit, asrSendToQuickSubtitle: $asrSendToQuickSubtitle, pushToTalkMode: $pushToTalkMode, pushToTalkConfirmInput: $pushToTalkConfirmInput, floatingOverlayEnabled: $floatingOverlayEnabled, floatingOverlayAutoDock: $floatingOverlayAutoDock, speakerVerifyEnabled: $speakerVerifyEnabled, speakerVerifyThreshold: $speakerVerifyThreshold)';
+    return 'AppSettings(muteWhilePlaying: $muteWhilePlaying, muteWhilePlayingDelaySec: $muteWhilePlayingDelaySec, echoSuppression: $echoSuppression, communicationMode: $communicationMode, preferredInputType: $preferredInputType, preferredOutputType: $preferredOutputType, aec3Enabled: $aec3Enabled, denoiserMode: $denoiserMode, minVolumePercent: $minVolumePercent, playbackGainPercent: $playbackGainPercent, piperNoiseScale: $piperNoiseScale, piperLengthScale: $piperLengthScale, piperNoiseW: $piperNoiseW, piperSentenceSilence: $piperSentenceSilence, keepAlive: $keepAlive, numberReplaceMode: $numberReplaceMode, landscapeDrawerMode: $landscapeDrawerMode, solidTopBar: $solidTopBar, drawingSaveRelativePath: $drawingSaveRelativePath, quickCardAutoSaveOnExit: $quickCardAutoSaveOnExit, asrSendToQuickSubtitle: $asrSendToQuickSubtitle, pushToTalkMode: $pushToTalkMode, pushToTalkConfirmInput: $pushToTalkConfirmInput, floatingOverlayEnabled: $floatingOverlayEnabled, floatingOverlayAutoDock: $floatingOverlayAutoDock, speakerVerifyEnabled: $speakerVerifyEnabled, speakerVerifyThreshold: $speakerVerifyThreshold)';
   }
 
   @override
@@ -581,6 +598,8 @@ class _$AppSettingsImpl implements _AppSettings {
                 other.preferredOutputType == preferredOutputType) &&
             (identical(other.aec3Enabled, aec3Enabled) ||
                 other.aec3Enabled == aec3Enabled) &&
+            (identical(other.denoiserMode, denoiserMode) ||
+                other.denoiserMode == denoiserMode) &&
             (identical(other.minVolumePercent, minVolumePercent) ||
                 other.minVolumePercent == minVolumePercent) &&
             (identical(other.playbackGainPercent, playbackGainPercent) ||
@@ -641,6 +660,7 @@ class _$AppSettingsImpl implements _AppSettings {
     preferredInputType,
     preferredOutputType,
     aec3Enabled,
+    denoiserMode,
     minVolumePercent,
     playbackGainPercent,
     piperNoiseScale,
@@ -685,6 +705,7 @@ abstract class _AppSettings implements AppSettings {
     final int preferredInputType,
     final int preferredOutputType,
     final bool aec3Enabled,
+    final int denoiserMode,
     final int minVolumePercent,
     final int playbackGainPercent,
     final double piperNoiseScale,
@@ -723,6 +744,8 @@ abstract class _AppSettings implements AppSettings {
   int get preferredOutputType;
   @override
   bool get aec3Enabled;
+  @override
+  int get denoiserMode;
   @override
   int get minVolumePercent;
   @override

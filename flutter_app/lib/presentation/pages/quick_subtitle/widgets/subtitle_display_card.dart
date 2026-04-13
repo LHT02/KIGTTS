@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/theme/app_dimensions.dart';
+import '../../../../core/router/app_router.dart';
 import '../../../cubits/quick_subtitle/quick_subtitle_cubit.dart';
 
 /// Large display card showing the current subtitle text.
@@ -29,6 +31,8 @@ class SubtitleDisplayCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
+    final cubit = context.read<QuickSubtitleCubit>();
+
     return GestureDetector(
       onLongPress: displayText.isNotEmpty
           ? () {
@@ -51,41 +55,80 @@ class SubtitleDisplayCard extends StatelessWidget {
           children: [
             // Main text area (scrollable for long text, centered for short)
             Expanded(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final textWidget = displayText.isEmpty
-                      ? Text(
-                          '选择或输入要显示的内容',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                          textAlign: TextAlign.center,
-                        )
-                      : Text(
-                          displayText,
-                          style: TextStyle(
-                            fontSize: fontSize.clamp(12, 120),
-                            fontWeight: bold
-                                ? FontWeight.bold
-                                : FontWeight.normal,
-                            color: theme.colorScheme.onSurface,
-                          ),
-                          textAlign: centered
-                              ? TextAlign.center
-                              : TextAlign.start,
-                        );
+              child: Stack(
+                children: [
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final minHeight =
+                          (constraints.maxHeight - AppDimensions.spacingLg * 2)
+                              .clamp(0.0, double.infinity)
+                              .toDouble();
+                      final textWidget = displayText.isEmpty
+                          ? Text(
+                              '选择或输入要显示的内容',
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                              textAlign: TextAlign.center,
+                            )
+                          : Text(
+                              displayText,
+                              style: TextStyle(
+                                fontSize: fontSize.clamp(12, 120),
+                                fontWeight: bold
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                                color: theme.colorScheme.onSurface,
+                              ),
+                              textAlign: centered
+                                  ? TextAlign.center
+                                  : TextAlign.start,
+                            );
 
-                  return SingleChildScrollView(
-                    padding: const EdgeInsets.all(AppDimensions.spacingLg),
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(
-                        minHeight: constraints.maxHeight -
-                            AppDimensions.spacingLg * 2,
-                      ),
-                      child: Center(child: textWidget),
+                      return SingleChildScrollView(
+                        padding: const EdgeInsets.fromLTRB(
+                          AppDimensions.spacingLg,
+                          AppDimensions.spacingLg,
+                          AppDimensions.spacingLg,
+                          AppDimensions.spacingLg,
+                        ),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: minHeight,
+                          ),
+                          child: Center(child: textWidget),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(10, 0, 10, 2),
+              child: Row(
+                children: [
+                  const Icon(Icons.text_fields_sharp, size: 18),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Slider(
+                      value: fontSize.clamp(28, 96),
+                      min: 28,
+                      max: 96,
+                      divisions: 68,
+                      label: '${fontSize.round()}sp',
+                      onChanged: (value) => cubit.setFontSize(value),
                     ),
-                  );
-                },
+                  ),
+                  SizedBox(
+                    width: 54,
+                    child: Text(
+                      '${fontSize.round()}sp',
+                      textAlign: TextAlign.end,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ],
               ),
             ),
             // Format toolbar
@@ -152,8 +195,14 @@ class _FormatToolbar extends StatelessWidget {
             active: false,
             activeColor: AppColors.primary,
             inactiveColor: iconColor,
-            onPressed: () {
-              // TODO: navigate to history sub-page
+            onPressed: () async {
+              final selected = await context.push<String>(
+                AppRoutes.quickSubtitleHistory,
+              );
+              if (!context.mounted || selected == null || selected.isEmpty) {
+                return;
+              }
+              cubit.setDisplayText(selected);
             },
           ),
         ],
