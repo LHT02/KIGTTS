@@ -4,6 +4,8 @@
 
 本文档集中维护项目相关模型与素材下载链接，避免链接分散在多个 README。
 
+> 说明：本文件描述的是当前安卓主软件 `android-app/` 与训练端相关的资源基线；仓库中的 `flutter_app/` 为并行 Flutter 分支版本，不作为当前安卓主软件资源加载行为的默认参考实现。
+
 当前安卓端的默认模型/后端策略：
 - 默认 TTS 后端为 **系统 TTS**，不再内置默认 Piper 语音包
 - 自定义离线 Piper 音色包仍可导入，格式为 `.kigvpk` 或兼容 `.zip`
@@ -50,6 +52,15 @@ powershell -ExecutionPolicy Bypass -File setup_assets.ps1
   - `silero_vad.onnx`
   - `punct/model.int8.onnx`
   - `punct-en/model.int8.onnx`
+- `speech_enhancement/gtcrn_simple.onnx`
+  - Sherpa GTCRN 语句级 / 流式语音增强模型
+  - 约 `523 KiB`
+- `speech_enhancement/dpdfnet2.onnx`
+  - Sherpa DPDFNet2 流式语音增强模型
+  - 约 `9.78 MiB`
+- `speech_enhancement/dpdfnet4.onnx`
+  - Sherpa DPDFNet4 流式语音增强模型
+  - 约 `11.17 MiB`
 - `speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
   - sherpa-onnx 官方说话人验证模型
   - 约 `26.97 MiB`
@@ -59,6 +70,12 @@ powershell -ExecutionPolicy Bypass -File setup_assets.ps1
 说明：
 - 系统 TTS 为默认内置朗读后端，不需要单独模型文件
 - 自定义 Piper 音色包仅在用户导入后才会出现在语音包列表中
+- 设置页里的 `AI 语音增强` 当前支持：
+  - 关闭
+  - Sherpa GTCRN（语句级）
+  - Sherpa GTCRN（流式）
+  - Sherpa DPDFNet2（流式）
+  - Sherpa DPDFNet4（流式）
 
 ## 2. 训练与推理相关上游项目
 

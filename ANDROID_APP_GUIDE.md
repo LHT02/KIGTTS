@@ -4,6 +4,12 @@
 
 本文档整理当前安卓主软件的功能模块、界面结构、交互逻辑、实现架构、文件格式与系统集成能力，作为后续开发、测试、开源说明和 UI 对齐的统一基线。
 
+> 重要边界说明：
+> - 当前安卓主软件主线实现只以 `android-app/` 为准。
+> - 仓库中的 `flutter_app/` 为另一位开发者维护的并行 Flutter 分支版本，用于独立验证/重构探索。
+> - `flutter_app/` 不应被视为当前安卓主软件的运行基线、问题回归基线或功能完成度基线。
+> - 当会话上下文、实验改动或临时回退过多时，建议优先对照 `github-main-clean` 最近几次提交与 [docs/android/ANDROID_MAIN_TODO.md](./docs/android/ANDROID_MAIN_TODO.md) 确认当前真实状态。
+
 ## 1. 产品定位与总览
 
 KIGTTS 安卓端是一款以**离线语音识别（ASR）+ 离线语音合成（TTS）**为核心的多功能沟通工具，当前已经发展为 6 个一级模块：
@@ -505,6 +511,20 @@ flowchart TD
 - `silero_vad.onnx`
 - `punct/model.int8.onnx`
 - `punct-en/model.int8.onnx`
+
+另外，APK 还内置了独立的 Sherpa 语音增强模型：
+
+- `speech_enhancement/gtcrn_simple.onnx`
+- `speech_enhancement/dpdfnet2.onnx`
+- `speech_enhancement/dpdfnet4.onnx`
+
+设置页的 `AI 语音增强` 当前支持 5 种模式：
+
+- 关闭
+- Sherpa GTCRN（语句级）
+- Sherpa GTCRN（流式）
+- Sherpa DPDFNet2（流式）
+- Sherpa DPDFNet4（流式）
 
 ### 5.2 语音包格式
 

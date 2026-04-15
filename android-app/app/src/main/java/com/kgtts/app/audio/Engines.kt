@@ -17,11 +17,19 @@ import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import com.k2fsa.sherpa.onnx.DenoisedAudio
 import com.k2fsa.sherpa.onnx.FeatureConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiser
+import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiserConfig
+import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiserDpdfNetModelConfig
+import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiserGtcrnModelConfig
+import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiserModelConfig
 import com.k2fsa.sherpa.onnx.OfflineRecognizer
 import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
+import com.k2fsa.sherpa.onnx.OnlineSpeechDenoiser
+import com.k2fsa.sherpa.onnx.OnlineSpeechDenoiserConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
@@ -1176,6 +1184,186 @@ private object SpeakerVerifier {
     }
 }
 
+private object SherpaSpeechEnhancer {
+    private const val GTCRN_ASSET_PATH = "speech_enhancement/gtcrn_simple.onnx"
+    private const val GTCRN_FILE_NAME = "gtcrn_simple.onnx"
+    private const val DPDFNET2_ASSET_PATH = "speech_enhancement/dpdfnet2.onnx"
+    private const val DPDFNET2_FILE_NAME = "dpdfnet2.onnx"
+    private const val DPDFNET4_ASSET_PATH = "speech_enhancement/dpdfnet4.onnx"
+    private const val DPDFNET4_FILE_NAME = "dpdfnet4.onnx"
+
+    private val lock = Any()
+    private val cachedModelFiles = mutableMapOf<String, File>()
+    private var offlineMode: Int = SpeechEnhancementMode.OFF
+    private var offlineDenoiser: OfflineSpeechDenoiser? = null
+    private var streamingMode: Int = SpeechEnhancementMode.OFF
+    private var streamingDenoiser: OnlineSpeechDenoiser? = null
+    private var streamingCarry = FloatArray(0)
+
+    fun processOffline(context: Context, mode: Int, samples: FloatArray, sampleRate: Int): Pair<FloatArray, Int> {
+        if (samples.isEmpty()) return samples to sampleRate
+        if (SpeechEnhancementMode.clamp(mode) != SpeechEnhancementMode.GTCRN_OFFLINE) {
+            return samples to sampleRate
+        }
+        return synchronized(lock) {
+            val denoiser = ensureOfflineDenoiserLocked(context, mode) ?: return@synchronized samples to sampleRate
+            val result = denoiser.run(samples, sampleRate)
+            result.samples.copyOf() to result.sampleRate
+        }
+    }
+
+    fun processStreamingChunk(context: Context, mode: Int, samples: FloatArray, sampleRate: Int): FloatArray {
+        if (samples.isEmpty()) return FloatArray(0)
+        if (!SpeechEnhancementMode.isStreaming(mode)) {
+            return samples
+        }
+        return synchronized(lock) {
+            val denoiser = ensureStreamingDenoiserLocked(context, mode) ?: return@synchronized samples
+            val frameShift = denoiser.frameShiftInSamples.coerceAtLeast(1)
+            val combined = concatFloatArrays(streamingCarry, samples)
+            val processLen = (combined.size / frameShift) * frameShift
+            if (processLen <= 0) {
+                streamingCarry = combined
+                return@synchronized FloatArray(0)
+            }
+            val current = combined.copyOfRange(0, processLen)
+            streamingCarry = if (processLen < combined.size) {
+                combined.copyOfRange(processLen, combined.size)
+            } else {
+                FloatArray(0)
+            }
+            val result = denoiser.run(current, sampleRate)
+            result.samples.copyOf()
+        }
+    }
+
+    fun resetStreaming() {
+        synchronized(lock) {
+            streamingCarry = FloatArray(0)
+            streamingDenoiser?.reset()
+        }
+    }
+
+    fun release() {
+        synchronized(lock) {
+            offlineDenoiser?.release()
+            offlineDenoiser = null
+            streamingDenoiser?.release()
+            streamingDenoiser = null
+            offlineMode = SpeechEnhancementMode.OFF
+            streamingMode = SpeechEnhancementMode.OFF
+            streamingCarry = FloatArray(0)
+        }
+    }
+
+    private fun ensureOfflineDenoiserLocked(context: Context, mode: Int): OfflineSpeechDenoiser? {
+        val normalized = SpeechEnhancementMode.clamp(mode)
+        if (normalized != SpeechEnhancementMode.GTCRN_OFFLINE) {
+            offlineDenoiser?.release()
+            offlineDenoiser = null
+            offlineMode = SpeechEnhancementMode.OFF
+            return null
+        }
+        if (offlineDenoiser != null && offlineMode == normalized) {
+            return offlineDenoiser
+        }
+        offlineDenoiser?.release()
+        offlineDenoiser = OfflineSpeechDenoiser(
+            null,
+            OfflineSpeechDenoiserConfig(
+                buildModelConfigLocked(context, normalized)
+            )
+        )
+        offlineMode = normalized
+        return offlineDenoiser
+    }
+
+    private fun ensureStreamingDenoiserLocked(context: Context, mode: Int): OnlineSpeechDenoiser? {
+        val normalized = SpeechEnhancementMode.clamp(mode)
+        if (!SpeechEnhancementMode.isStreaming(normalized)) {
+            streamingDenoiser?.release()
+            streamingDenoiser = null
+            streamingMode = SpeechEnhancementMode.OFF
+            streamingCarry = FloatArray(0)
+            return null
+        }
+        if (streamingDenoiser != null && streamingMode == normalized) {
+            return streamingDenoiser
+        }
+        streamingDenoiser?.release()
+        streamingCarry = FloatArray(0)
+        streamingDenoiser = OnlineSpeechDenoiser(
+            null,
+            OnlineSpeechDenoiserConfig(
+                buildModelConfigLocked(context, normalized)
+            )
+        )
+        streamingMode = normalized
+        return streamingDenoiser
+    }
+
+    private fun buildModelConfigLocked(context: Context, mode: Int): OfflineSpeechDenoiserModelConfig {
+        val normalized = SpeechEnhancementMode.clamp(mode)
+        return OfflineSpeechDenoiserModelConfig().apply {
+            numThreads = 2
+            debug = false
+            provider = "cpu"
+            when (normalized) {
+                SpeechEnhancementMode.GTCRN_OFFLINE,
+                SpeechEnhancementMode.GTCRN_STREAMING -> {
+                    gtcrn = OfflineSpeechDenoiserGtcrnModelConfig(
+                        ensureModelFileLocked(context, GTCRN_ASSET_PATH, GTCRN_FILE_NAME).absolutePath
+                    )
+                    dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig()
+                }
+                SpeechEnhancementMode.DPDFNET2_STREAMING -> {
+                    gtcrn = OfflineSpeechDenoiserGtcrnModelConfig()
+                    dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
+                        ensureModelFileLocked(context, DPDFNET2_ASSET_PATH, DPDFNET2_FILE_NAME).absolutePath
+                    )
+                }
+                SpeechEnhancementMode.DPDFNET4_STREAMING -> {
+                    gtcrn = OfflineSpeechDenoiserGtcrnModelConfig()
+                    dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
+                        ensureModelFileLocked(context, DPDFNET4_ASSET_PATH, DPDFNET4_FILE_NAME).absolutePath
+                    )
+                }
+                else -> {
+                    gtcrn = OfflineSpeechDenoiserGtcrnModelConfig()
+                    dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig()
+                }
+            }
+        }
+    }
+
+    private fun ensureModelFileLocked(context: Context, assetPath: String, fileName: String): File {
+        val cached = cachedModelFiles[fileName]
+        if (cached != null && cached.exists() && cached.length() > 0L) {
+            return cached
+        }
+        val outDir = File(context.filesDir, "models/speech_enhancement").apply { mkdirs() }
+        val outFile = File(outDir, fileName)
+        if (!outFile.exists() || outFile.length() <= 0L) {
+            context.assets.open(assetPath).use { input ->
+                outFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+        cachedModelFiles[fileName] = outFile
+        return outFile
+    }
+
+    private fun concatFloatArrays(first: FloatArray, second: FloatArray): FloatArray {
+        if (first.isEmpty()) return second.copyOf()
+        if (second.isEmpty()) return first.copyOf()
+        val out = FloatArray(first.size + second.size)
+        System.arraycopy(first, 0, out, 0, first.size)
+        System.arraycopy(second, 0, out, first.size, second.size)
+        return out
+    }
+}
+
 class RealtimeController(
     private val context: Context,
     private val scope: CoroutineScope,
@@ -1188,6 +1376,7 @@ class RealtimeController(
     private val onAec3Status: (String) -> Unit,
     private val onAec3Diag: (String) -> Unit,
     private val onSpeakerVerify: (Float, Boolean) -> Unit,
+    private val onStatus: (String) -> Unit,
     private val onError: (String) -> Unit,
     initialSuppressWhilePlaying: Boolean,
     initialUseVoiceCommunication: Boolean,
@@ -1195,6 +1384,7 @@ class RealtimeController(
     initialMinVolumePercent: Int,
     initialPlaybackGainPercent: Int,
     initialDenoiserMode: Int,
+    initialSpeechEnhancementMode: Int,
     initialPiperNoiseScale: Float,
     initialPiperLengthScale: Float,
     initialPiperNoiseW: Float,
@@ -1227,6 +1417,7 @@ class RealtimeController(
     @Volatile private var useCommunicationMode = initialCommunicationMode
     @Volatile private var minSegmentRms = (initialMinVolumePercent.coerceIn(0, 100) / 100.0)
     @Volatile private var denoiserMode = initialDenoiserMode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
+    @Volatile private var speechEnhancementMode = SpeechEnhancementMode.clamp(initialSpeechEnhancementMode)
     @Volatile private var suppressDelayMs = (initialSuppressDelaySec.coerceIn(0f, 5f) * 1000f).toLong()
     @Volatile private var piperNoiseScale = initialPiperNoiseScale.coerceIn(0f, 2f)
     @Volatile private var piperLengthScale = initialPiperLengthScale.coerceIn(0.1f, 5f)
@@ -1488,6 +1679,10 @@ class RealtimeController(
         scope.launch { onSpeakerVerify(similarity, passed) }
     }
 
+    private fun notifyStatus(msg: String) {
+        scope.launch { onStatus(msg) }
+    }
+
     private fun notifyError(msg: String) {
         scope.launch { onError(msg) }
     }
@@ -1546,6 +1741,13 @@ class RealtimeController(
                 else -> Unit
             }
         }
+    }
+
+    fun setSpeechEnhancementMode(mode: Int) {
+        val normalized = SpeechEnhancementMode.clamp(mode)
+        if (speechEnhancementMode == normalized) return
+        speechEnhancementMode = normalized
+        SherpaSpeechEnhancer.release()
     }
 
     private fun applyTtsSynthesisTuning() {
@@ -1961,6 +2163,7 @@ class RealtimeController(
             lastStreamingDecodeAtMs = 0L
             streamingDecodeBusy.set(false)
             stopRecorderOnlyLocked()
+            SherpaSpeechEnhancer.resetStreaming()
             ensureAec3()
             startRecorderLoop()
             true
@@ -2000,6 +2203,7 @@ class RealtimeController(
             if (asr == null || tts == null) return
             if (recorder == null) return
             stopRecorderOnlyLocked()
+            SherpaSpeechEnhancer.resetStreaming()
             ensureAec3()
             startRecorderLoop()
         }
@@ -2015,6 +2219,7 @@ class RealtimeController(
             }
             releaseNoiseProcessors()
             releaseSileroVadProcessor()
+            SherpaSpeechEnhancer.release()
             SpeakerVerifier.release()
             aec3?.release()
             aec3 = null
@@ -2055,6 +2260,7 @@ class RealtimeController(
         restoreCommunicationMode()
         resetNoiseProcessors()
         resetSileroVadProcessor()
+        SherpaSpeechEnhancer.resetStreaming()
         if (aec3 == null) {
             notifyAec3Status(if (useAec3) "待启动" else "未启用")
         }
@@ -2199,6 +2405,44 @@ class RealtimeController(
         }
     }
 
+    private fun disableSpeechEnhancement(mode: Int, cause: Throwable? = null) {
+        val label = SpeechEnhancementMode.labelOf(mode)
+        if (cause != null) {
+            AppLogger.e("Speech enhancement disabled mode=$label", cause)
+        } else {
+            AppLogger.i("Speech enhancement disabled mode=$label")
+        }
+        speechEnhancementMode = SpeechEnhancementMode.OFF
+        SherpaSpeechEnhancer.release()
+        notifyStatus("$label 初始化失败，已回退原始语音")
+    }
+
+    private fun prepareSpeechEnhancedAudio(samples: FloatArray, sourceSampleRate: Int): Pair<FloatArray, Int> {
+        val currentMode = SpeechEnhancementMode.clamp(speechEnhancementMode)
+        if (currentMode != SpeechEnhancementMode.GTCRN_OFFLINE || samples.isEmpty()) {
+            return samples to sourceSampleRate
+        }
+        return runCatching {
+            SherpaSpeechEnhancer.processOffline(context, currentMode, samples, sourceSampleRate)
+        }.getOrElse { error ->
+            disableSpeechEnhancement(currentMode, error)
+            samples to sourceSampleRate
+        }
+    }
+
+    private fun processRealtimeSpeechEnhancement(samples: FloatArray, sourceSampleRate: Int): FloatArray {
+        val currentMode = SpeechEnhancementMode.clamp(speechEnhancementMode)
+        if (!SpeechEnhancementMode.isStreaming(currentMode) || samples.isEmpty()) {
+            return samples
+        }
+        return runCatching {
+            SherpaSpeechEnhancer.processStreamingChunk(context, currentMode, samples, sourceSampleRate)
+        }.getOrElse { error ->
+            disableSpeechEnhancement(currentMode, error)
+            samples
+        }
+    }
+
     private fun applyCommunicationMode(enabled: Boolean) {
         val manager = audioManager ?: return
         try {
@@ -2320,9 +2564,12 @@ class RealtimeController(
         val minSegmentEnergy = minSegmentRms
         if (rms < minSegmentEnergy) return
         scope.launch(Dispatchers.IO) asrTask@{
+            val (effectiveAudio, effectiveSampleRate) = prepareSpeechEnhancedAudio(audio, sampleRate)
+            if (effectiveAudio.isEmpty()) return@asrTask
+            val effectiveRms = max(rms, rmsEnergy(effectiveAudio))
             val profileSnapshot = speakerProfiles
             if (speakerVerifyEnabled && profileSnapshot.isNotEmpty()) {
-                val segEmbedding = SpeakerVerifier.computeEmbedding(context, audio, sampleRate)
+                val segEmbedding = SpeakerVerifier.computeEmbedding(context, effectiveAudio, effectiveSampleRate)
                     ?: return@asrTask
                 var bestSimilarity = -1f
                 for (profile in profileSnapshot) {
@@ -2337,13 +2584,13 @@ class RealtimeController(
                 if (!passed) return@asrTask
             }
             val rawText = try {
-                asr?.transcribe(audio, sampleRate) ?: ""
+                asr?.transcribe(effectiveAudio, effectiveSampleRate) ?: ""
             } catch (e: Exception) {
                 AppLogger.e("ASR failed", e)
                 notifyError("ASR 失败: ${e.message}")
                 ""
             }
-            val text = filterAsrText(rawText, rms)
+            val text = filterAsrText(rawText, effectiveRms)
             if (text.isNotBlank()) {
                 if (suppressAsrAutoSpeak) {
                     val id = nextResultId()
@@ -2518,11 +2765,15 @@ class RealtimeController(
                         voicedMs = 0
                         continue
                     }
-                    for (i in 0 until read) {
-                        window.add(floatBuf[i])
+                    val recognitionBuf = processRealtimeSpeechEnhancement(floatBuf, sampleRate)
+                    if (recognitionBuf.isEmpty()) {
+                        continue
+                    }
+                    for (sample in recognitionBuf) {
+                        window.add(sample)
                     }
                     if (sileroVadEnabled) {
-                        acceptSileroVadWaveform(floatBuf)
+                        acceptSileroVadWaveform(recognitionBuf)
                         drainSileroVadSegments(flush = false).forEach { segment ->
                             if (classicVadEnabled && !passesClassicVadGate(segment)) return@forEach
                             processRecognizedSegment(segment)
@@ -2538,7 +2789,7 @@ class RealtimeController(
                     maybeDecodeStreamingSenseVoice(window, now)
                     if (classicVadEnabled && !sileroVadEnabled) {
                         val energy = sqrt(window.takeLast(min(400, window.size)).map { it * it }.average())
-                        val stepMs = read * 1000 / sampleRate
+                        val stepMs = recognitionBuf.size * 1000 / sampleRate
                         if (energy < silenceThreshold) {
                             silenceMs += stepMs
                         } else {

@@ -9,9 +9,21 @@
 - `android-app/`：Android 客户端（Kotlin + Compose）
 - `pc_trainer/`：Python 训练器（GUI + pipeline）
 - `Electron_Trainer/`：Electron 训练端（前端 + Python 后端）
+- `flutter_app/`：Flutter 试验/并行开发分支版本，由另一位开发者维护，不等同于当前安卓主软件实现
 - `ANDROID_APP_GUIDE.md`：安卓主软件功能与界面设计总览
 - `MODEL_ASSETS.md`：模型与素材下载索引（统一入口）
+- `docs/android/ANDROID_MAIN_TODO.md`：当前安卓主软件待办与调试基线
 - `要求.md`：需求与验收基线
+
+## 分支与实现边界
+
+- 当前主安卓软件以 `android-app/` 为准，这是正在维护和发版的 Kotlin/Compose 版本。
+- `flutter_app/` 是**另一位开发者维护的并行 Flutter 分支实现**，不属于当前安卓主软件主线，也不应作为当前 Android 问题排查的行为基线。
+- 若当前会话或文档上下文发生混乱，优先以：
+  - `github-main-clean` 最近几次提交
+  - `android-app/`
+  - [docs/android/ANDROID_MAIN_TODO.md](./docs/android/ANDROID_MAIN_TODO.md)
+  作为当前安卓主软件的真实基线。
 
 ## 快速开始
 
@@ -52,7 +64,7 @@ APK 输出目录：`android-app/app/build/outputs/apk/`
 - ASR：`sosv.zip` / `sosv-int8.zip`
 - TTS 音色包：`.kigvpk`（当前导出格式）或兼容导入 `.zip`
 - 安卓端默认朗读后端：`系统 TTS`
-- 安卓 APK 内置资源：`sosv-int8.zip`、sherpa speaker verify model、`espeak-ng-data.zip`
+- 安卓 APK 内置资源：`sosv-int8.zip`、Sherpa speech enhancement models（GTCRN / DPDFNet2 / DPDFNet4）、sherpa speaker verify model、`espeak-ng-data.zip`
 
 ## 许可证
 

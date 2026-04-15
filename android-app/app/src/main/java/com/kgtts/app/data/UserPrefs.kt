@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
 import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
+import com.lhtstudio.kigtts.app.audio.SpeechEnhancementMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -37,6 +38,8 @@ object UserPrefs {
     private val KEY_PREFERRED_OUTPUT_TYPE = intPreferencesKey("preferred_output_type")
     private val KEY_AEC3_ENABLED = booleanPreferencesKey("aec3_enabled")
     private val KEY_DENOISER_MODE = intPreferencesKey("denoiser_mode")
+    private val KEY_SPEECH_ENHANCEMENT_ENABLED = booleanPreferencesKey("speech_enhancement_enabled")
+    private val KEY_SPEECH_ENHANCEMENT_MODE = intPreferencesKey("speech_enhancement_mode")
     private val KEY_CLASSIC_VAD_ENABLED = booleanPreferencesKey("classic_vad_enabled")
     private val KEY_SILERO_VAD_ENABLED = booleanPreferencesKey("silero_vad_enabled")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
@@ -84,6 +87,7 @@ object UserPrefs {
         val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
         val aec3Enabled: Boolean = false,
         val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
+        val speechEnhancementMode: Int = SpeechEnhancementMode.OFF,
         val classicVadEnabled: Boolean = true,
         val sileroVadEnabled: Boolean = false,
         val minVolumePercent: Int = 2,
@@ -179,6 +183,14 @@ object UserPrefs {
         val legacySpeaker = this[KEY_COMMUNICATION_SPEAKER] ?: false
         var classicVadEnabled = this[KEY_CLASSIC_VAD_ENABLED] ?: true
         var sileroVadEnabled = this[KEY_SILERO_VAD_ENABLED] ?: false
+        val legacySpeechEnhancementEnabled = this[KEY_SPEECH_ENHANCEMENT_ENABLED] ?: false
+        val speechEnhancementMode = if (contains(KEY_SPEECH_ENHANCEMENT_MODE)) {
+            SpeechEnhancementMode.clamp(this[KEY_SPEECH_ENHANCEMENT_MODE] ?: SpeechEnhancementMode.OFF)
+        } else if (legacySpeechEnhancementEnabled) {
+            SpeechEnhancementMode.GTCRN_OFFLINE
+        } else {
+            SpeechEnhancementMode.OFF
+        }
         if (!classicVadEnabled && !sileroVadEnabled) {
             classicVadEnabled = true
             sileroVadEnabled = false
@@ -195,6 +207,7 @@ object UserPrefs {
             aec3Enabled = this[KEY_AEC3_ENABLED] ?: false,
             denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.RNNOISE)
                 .coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX),
+            speechEnhancementMode = speechEnhancementMode,
             classicVadEnabled = classicVadEnabled,
             sileroVadEnabled = sileroVadEnabled,
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
@@ -277,6 +290,13 @@ object UserPrefs {
     suspend fun setDenoiserMode(context: Context, mode: Int) {
         context.dataStore.edit { prefs ->
             prefs[KEY_DENOISER_MODE] = mode.coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX)
+        }
+    }
+
+    suspend fun setSpeechEnhancementMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SPEECH_ENHANCEMENT_MODE] = SpeechEnhancementMode.clamp(mode)
+            prefs[KEY_SPEECH_ENHANCEMENT_ENABLED] = SpeechEnhancementMode.isEnabled(mode)
         }
     }
 

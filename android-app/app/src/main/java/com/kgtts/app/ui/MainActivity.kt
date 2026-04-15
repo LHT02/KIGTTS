@@ -207,6 +207,7 @@ import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
 import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
 import com.lhtstudio.kigtts.app.audio.AudioLoopbackTester
 import com.lhtstudio.kigtts.app.audio.AudioTestConfig
+import com.lhtstudio.kigtts.app.audio.SpeechEnhancementMode
 import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
 import com.lhtstudio.kigtts.app.data.ModelRepository
 import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
@@ -513,6 +514,7 @@ data class UiState(
     val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
     val aec3Enabled: Boolean = false,
     val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
+    val speechEnhancementMode: Int = SpeechEnhancementMode.OFF,
     val aec3Status: String = "未启用",
     val aec3Diag: String = "AEC3 诊断：未启用",
     val classicVadEnabled: Boolean = true,
@@ -984,6 +986,7 @@ class MainViewModel(
             preferredOutputType = settings.preferredOutputType,
             aec3Enabled = settings.aec3Enabled,
             denoiserMode = settings.denoiserMode,
+            speechEnhancementMode = settings.speechEnhancementMode,
             aec3Status = nextAec3Status,
             aec3Diag = nextAec3Diag,
             classicVadEnabled = settings.classicVadEnabled,
@@ -2865,6 +2868,15 @@ class MainViewModel(
         }
     }
 
+    fun setSpeechEnhancementMode(mode: Int) {
+        val normalized = SpeechEnhancementMode.clamp(mode)
+        uiState = uiState.copy(speechEnhancementMode = normalized)
+        realtimeHost?.setSpeechEnhancementMode(normalized)
+        viewModelScope.launch {
+            UserPrefs.setSpeechEnhancementMode(appContext, normalized)
+        }
+    }
+
     private fun currentAudioTestConfig(): AudioTestConfig {
         return AudioTestConfig(
             audioSource = if (uiState.echoSuppression) {
@@ -2996,6 +3008,7 @@ class MainViewModel(
             host.setPreferredInputType(settings.preferredInputType)
             host.setPreferredOutputType(settings.preferredOutputType)
             host.setDenoiserMode(settings.denoiserMode)
+            host.setSpeechEnhancementMode(settings.speechEnhancementMode)
             host.setClassicVadEnabled(settings.classicVadEnabled)
             host.setSileroVadEnabled(settings.sileroVadEnabled)
             host.setNumberReplaceMode(settings.numberReplaceMode)
@@ -13834,6 +13847,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
     var denoiserModeExpanded by remember { mutableStateOf(false) }
+    var speechEnhancementExpanded by remember { mutableStateOf(false) }
     var showSpeakerEnrollDialog by remember { mutableStateOf(false) }
     var speakerEnrollStep by remember { mutableIntStateOf(0) } // 0准备 1句1 2句2 3句3 4结果
     var speakerEnrollCountingDown by remember { mutableStateOf(false) }
@@ -14048,6 +14062,28 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         onValueChange = { viewModel.setMinVolumePercent(it.toInt()) },
                         valueRange = 0f..100f
                     )
+                    Md2SettingDropdownRow(
+                        title = "AI 语音增强",
+                        value = SpeechEnhancementMode.labelOf(state.speechEnhancementMode),
+                        expanded = speechEnhancementExpanded,
+                        onExpandedChange = { speechEnhancementExpanded = it },
+                        supportingText = when (state.speechEnhancementMode) {
+                            SpeechEnhancementMode.GTCRN_OFFLINE -> "在一句话结束后先增强再识别与说话人验证，最稳但会增加少量延迟。"
+                            SpeechEnhancementMode.GTCRN_STREAMING -> "边收音边增强，适合实时字幕，资源占用较低。"
+                            SpeechEnhancementMode.DPDFNET2_STREAMING -> "流式增强，降噪更强，资源占用中等。"
+                            SpeechEnhancementMode.DPDFNET4_STREAMING -> "流式增强里效果更强，但更吃性能和电量。"
+                            else -> "关闭后仅使用原有降噪与 VAD。"
+                        }
+                    ) {
+                        SpeechEnhancementMode.options.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    speechEnhancementExpanded = false
+                                    viewModel.setSpeechEnhancementMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
                     Md2SettingSwitchRow(
                         title = "原有阈值式 VAD",
                         checked = state.classicVadEnabled,

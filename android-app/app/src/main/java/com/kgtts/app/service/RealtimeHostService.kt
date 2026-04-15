@@ -251,6 +251,10 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setDenoiserMode(mode)
     }
 
+    fun setSpeechEnhancementMode(mode: Int) {
+        controller?.setSpeechEnhancementMode(mode)
+    }
+
     fun setClassicVadEnabled(enabled: Boolean) {
         controller?.setClassicVadEnabled(enabled)
     }
@@ -617,6 +621,11 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
                     updateStatus("说话人验证未通过(${String.format("%.2f", similarity)})")
                 }
             },
+            onStatus = { msg ->
+                updateState { state ->
+                    if (state.running) state.copy(status = msg) else state
+                }
+            },
             onError = { msg ->
                 updateState {
                     it.copy(
@@ -639,6 +648,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialPreferredOutputType = currentSettings.preferredOutputType,
             initialUseAec3 = currentSettings.aec3Enabled,
             initialDenoiserMode = currentSettings.denoiserMode,
+            initialSpeechEnhancementMode = currentSettings.speechEnhancementMode,
             initialClassicVadEnabled = currentSettings.classicVadEnabled,
             initialSileroVadEnabled = currentSettings.sileroVadEnabled,
             initialNumberReplaceMode = currentSettings.numberReplaceMode,
@@ -743,6 +753,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setPreferredInputType(settings.preferredInputType)
         controller?.setPreferredOutputType(settings.preferredOutputType)
         controller?.setDenoiserMode(settings.denoiserMode)
+        controller?.setSpeechEnhancementMode(settings.speechEnhancementMode)
         controller?.setClassicVadEnabled(settings.classicVadEnabled)
         controller?.setSileroVadEnabled(settings.sileroVadEnabled)
         controller?.setNumberReplaceMode(settings.numberReplaceMode)

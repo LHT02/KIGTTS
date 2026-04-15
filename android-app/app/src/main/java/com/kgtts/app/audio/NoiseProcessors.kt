@@ -38,6 +38,39 @@ object AudioDenoiserMode {
     }
 }
 
+object SpeechEnhancementMode {
+    const val OFF = 0
+    const val GTCRN_OFFLINE = 1
+    const val GTCRN_STREAMING = 2
+    const val DPDFNET2_STREAMING = 3
+    const val DPDFNET4_STREAMING = 4
+
+    val options: List<Pair<Int, String>> = listOf(
+        OFF to "关闭",
+        GTCRN_OFFLINE to "GTCRN 句级增强",
+        GTCRN_STREAMING to "GTCRN 流式增强",
+        DPDFNET2_STREAMING to "DPDFNet2 流式增强",
+        DPDFNET4_STREAMING to "DPDFNet4 流式增强"
+    )
+
+    fun clamp(mode: Int): Int {
+        return options.firstOrNull { it.first == mode }?.first ?: OFF
+    }
+
+    fun isEnabled(mode: Int): Boolean = clamp(mode) != OFF
+
+    fun isStreaming(mode: Int): Boolean {
+        return when (clamp(mode)) {
+            GTCRN_STREAMING, DPDFNET2_STREAMING, DPDFNET4_STREAMING -> true
+            else -> false
+        }
+    }
+
+    fun labelOf(mode: Int): String {
+        return options.firstOrNull { it.first == clamp(mode) }?.second ?: options.first().second
+    }
+}
+
 private class RnNoiseNative private constructor() {
     companion object {
         private val loaded by lazy {
