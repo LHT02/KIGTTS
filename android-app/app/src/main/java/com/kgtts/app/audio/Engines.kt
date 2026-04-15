@@ -33,6 +33,7 @@ import com.k2fsa.sherpa.onnx.OnlineSpeechDenoiserConfig
 import com.k2fsa.sherpa.onnx.SileroVadModelConfig
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
+import com.k2fsa.sherpa.onnx.SpeakerEmbeddingManager
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import com.lhtstudio.kigtts.app.data.EspeakData
@@ -1088,6 +1089,7 @@ private object SpeakerVerifier {
     private const val MODEL_ASSET_PATH = "speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx"
     private const val MODEL_FILE_NAME = "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx"
     private const val MAX_ANALYZE_SAMPLES = 16000 * 8
+    private const val REGISTERED_SPEAKER_NAME = "__self__"
 
     private val lock = Any()
     private var extractor: SpeakerEmbeddingExtractor? = null
@@ -1132,6 +1134,51 @@ private object SpeakerVerifier {
         }
         if (na <= 1e-12 || nb <= 1e-12) return 0f
         return (dot / (sqrt(na) * sqrt(nb))).toFloat().coerceIn(-1f, 1f)
+    }
+
+    fun registeredSpeakerName(): String = REGISTERED_SPEAKER_NAME
+
+    fun combineProfilesOfficialStyle(profiles: List<FloatArray>): FloatArray? {
+        if (profiles.isEmpty()) return null
+        val dim = profiles.minOfOrNull { it.size } ?: return null
+        if (dim <= 0) return null
+        val out = FloatArray(dim)
+        profiles.forEach { profile ->
+            for (i in 0 until dim) {
+                out[i] += profile[i]
+            }
+        }
+        var sumSq = 0.0
+        for (v in out) {
+            sumSq += v * v
+        }
+        val norm = sqrt(sumSq)
+        if (norm <= 1e-8) return null
+        for (i in out.indices) {
+            out[i] = (out[i] / norm).toFloat()
+        }
+        return out
+    }
+
+    fun createManager(context: Context, profiles: List<FloatArray>): SpeakerEmbeddingManager? {
+        val normalizedProfiles = profiles.mapNotNull { profile ->
+            if (profile.isEmpty()) null else profile.copyOf()
+        }
+        if (normalizedProfiles.isEmpty()) return null
+        return synchronized(lock) {
+            val activeExtractor = ensureExtractor(context) ?: return@synchronized null
+            val manager = SpeakerEmbeddingManager(activeExtractor.dim())
+            val added = runCatching {
+                manager.add(REGISTERED_SPEAKER_NAME, normalizedProfiles.toTypedArray())
+            }.onFailure {
+                AppLogger.e("Speaker manager add failed", it)
+            }.getOrDefault(false)
+            if (!added) {
+                runCatching { manager.release() }
+                return@synchronized null
+            }
+            manager
+        }
     }
 
     fun release() {
@@ -1512,10 +1559,12 @@ class RealtimeController(
     @Volatile private var sileroVadEnabled = initialSileroVadEnabled
     @Volatile private var allowSystemAecWithAec3 = initialAllowSystemAecWithAec3
     @Volatile private var speakerVerifyEnabled = initialSpeakerVerifyEnabled
-    @Volatile private var speakerVerifyThreshold = initialSpeakerVerifyThreshold.coerceIn(0.4f, 0.95f)
-    @Volatile private var speakerProfiles: List<FloatArray> =
-        initialSpeakerProfiles.mapNotNull { p -> if (p.isEmpty()) null else p.copyOf() }
+    @Volatile private var speakerVerifyThreshold = initialSpeakerVerifyThreshold.coerceIn(0.05f, 0.95f)
+    @Volatile private var speakerProfiles: List<FloatArray> = emptyList()
+    @Volatile private var speakerVerifyReferenceProfile: FloatArray? = null
     @Volatile private var speakerLastSimilarity: Float = -1f
+    private val speakerVerifyLock = Any()
+    private var speakerVerifyManager: SpeakerEmbeddingManager? = null
     private val lastRenderMs = AtomicLong(0L)
     private val lastCaptureMs = AtomicLong(0L)
     private val renderFrames = AtomicLong(0L)
@@ -1768,6 +1817,7 @@ class RealtimeController(
     }
 
     init {
+        rebuildSpeakerVerifyState(initialSpeakerProfiles)
         player.setUseCommunicationAttributes(useCommunicationMode)
         player.setPreferredOutputType(preferredOutputType)
         player.setPlaybackGainPercent(initialPlaybackGainPercent)
@@ -1971,19 +2021,15 @@ class RealtimeController(
     }
 
     fun setSpeakerVerifyThreshold(threshold: Float) {
-        speakerVerifyThreshold = threshold.coerceIn(0.4f, 0.95f)
+        speakerVerifyThreshold = threshold.coerceIn(0.05f, 0.95f)
     }
 
     fun setSpeakerProfiles(profiles: List<FloatArray>) {
-        speakerProfiles = profiles.mapNotNull { p -> if (p.isEmpty()) null else p.copyOf() }
-        if (speakerProfiles.isEmpty()) {
-            speakerLastSimilarity = -1f
-        }
+        rebuildSpeakerVerifyState(profiles)
     }
 
     fun clearSpeakerProfiles() {
-        speakerProfiles = emptyList()
-        speakerLastSimilarity = -1f
+        rebuildSpeakerVerifyState(emptyList())
     }
 
     fun hasSpeakerProfiles(): Boolean {
@@ -2004,6 +2050,43 @@ class RealtimeController(
 
     fun latestSpeakerSimilarity(): Float {
         return speakerLastSimilarity
+    }
+
+    private fun rebuildSpeakerVerifyState(profiles: List<FloatArray>) {
+        val normalizedProfiles = profiles.mapNotNull { profile ->
+            if (profile.isEmpty()) null else profile.copyOf()
+        }
+        synchronized(speakerVerifyLock) {
+            releaseSpeakerVerifyStateLocked()
+            speakerProfiles = normalizedProfiles
+            speakerVerifyReferenceProfile = SpeakerVerifier.combineProfilesOfficialStyle(normalizedProfiles)
+            speakerVerifyManager = SpeakerVerifier.createManager(context, normalizedProfiles)
+        }
+        speakerLastSimilarity = -1f
+    }
+
+    private fun releaseSpeakerVerifyStateLocked() {
+        speakerVerifyManager?.release()
+        speakerVerifyManager = null
+        speakerVerifyReferenceProfile = null
+    }
+
+    private fun verifySpeakerEmbedding(embedding: FloatArray): Pair<Float, Boolean>? {
+        return synchronized(speakerVerifyLock) {
+            val manager = speakerVerifyManager ?: return@synchronized null
+            val reference = speakerVerifyReferenceProfile ?: return@synchronized null
+            val similarity = SpeakerVerifier.cosineSimilarity(reference, embedding)
+            val passed = runCatching {
+                manager.verify(
+                    SpeakerVerifier.registeredSpeakerName(),
+                    embedding,
+                    speakerVerifyThreshold
+                )
+            }.onFailure {
+                AppLogger.e("Speaker verification failed", it)
+            }.getOrDefault(false)
+            similarity to passed
+        }
     }
 
     private fun enqueueTts(text: String): Long {
@@ -2300,6 +2383,9 @@ class RealtimeController(
             releaseNoiseProcessors()
             releaseSileroVadProcessor()
             SherpaSpeechEnhancer.release()
+            synchronized(speakerVerifyLock) {
+                releaseSpeakerVerifyStateLocked()
+            }
             SpeakerVerifier.release()
             aec3?.release()
             aec3 = null
@@ -2651,16 +2737,11 @@ class RealtimeController(
             if (speakerVerifyEnabled && profileSnapshot.isNotEmpty()) {
                 val segEmbedding = SpeakerVerifier.computeEmbedding(context, effectiveAudio, effectiveSampleRate)
                     ?: return@asrTask
-                var bestSimilarity = -1f
-                for (profile in profileSnapshot) {
-                    val similarity = SpeakerVerifier.cosineSimilarity(profile, segEmbedding)
-                    if (similarity > bestSimilarity) {
-                        bestSimilarity = similarity
-                    }
-                }
-                speakerLastSimilarity = bestSimilarity
-                val passed = bestSimilarity >= speakerVerifyThreshold
-                notifySpeakerVerify(bestSimilarity, passed)
+                val verification = verifySpeakerEmbedding(segEmbedding) ?: return@asrTask
+                val similarity = verification.first
+                val passed = verification.second
+                speakerLastSimilarity = similarity
+                notifySpeakerVerify(similarity, passed)
                 if (!passed) return@asrTask
             }
             val rawText = try {

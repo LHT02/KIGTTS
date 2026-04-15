@@ -285,10 +285,12 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
 
     fun setSpeakerProfiles(profiles: List<FloatArray>) {
         controller?.setSpeakerProfiles(profiles)
+        updateState { it.copy(speakerLastSimilarity = -1f) }
     }
 
     fun clearSpeakerProfiles() {
         controller?.clearSpeakerProfiles()
+        updateState { it.copy(speakerLastSimilarity = -1f) }
     }
 
     suspend fun restartRecorder() {

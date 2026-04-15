@@ -542,7 +542,7 @@ data class UiState(
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
     val speakerVerifyEnabled: Boolean = false,
-    val speakerVerifyThreshold: Float = 0.72f,
+    val speakerVerifyThreshold: Float = 0.5f,
     val speakerProfileReady: Boolean = false,
     val speakerProfiles: List<SpeakerProfileUiItem> = emptyList(),
     val speakerLastSimilarity: Float = -1f,
@@ -1014,7 +1014,7 @@ class MainViewModel(
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
             speakerProfileReady = hasProfiles,
-            speakerProfiles = speakerProfiles.map { SpeakerProfileUiItem(id = it.id, name = it.name) },
+            speakerProfiles = speakerProfileUiItems(),
             speakerLastSimilarity = if (speakerVerifyEnabled) uiState.speakerLastSimilarity else -1f,
             pushToTalkPressed = if (settings.pushToTalkMode) uiState.pushToTalkPressed else false,
             pushToTalkStreamingText = if (settings.pushToTalkMode) uiState.pushToTalkStreamingText else ""
@@ -2468,7 +2468,9 @@ class MainViewModel(
     }
 
     private fun speakerProfileUiItems(): List<SpeakerProfileUiItem> {
-        return speakerProfiles.map { SpeakerProfileUiItem(id = it.id, name = it.name) }
+        return speakerProfiles.mapIndexed { index, profile ->
+            SpeakerProfileUiItem(id = profile.id, name = "样本 ${index + 1}")
+        }
     }
 
     private fun speakerProfileVectors(): List<FloatArray> {
@@ -2482,12 +2484,12 @@ class MainViewModel(
             UserPrefs.setSpeakerVerifyEnabled(appContext, enabled)
         }
         if (enabled && speakerProfiles.isEmpty()) {
-            uiState = uiState.copy(status = "说话人验证已开启，请先注册说话人")
+            uiState = uiState.copy(status = "说话人验证已开启，请先采集本人语音样本")
         }
     }
 
     fun setSpeakerVerifyThreshold(threshold: Float) {
-        val clamped = threshold.coerceIn(0.4f, 0.95f)
+        val clamped = threshold.coerceIn(0.05f, 0.95f)
         uiState = uiState.copy(speakerVerifyThreshold = clamped)
         realtimeHost?.setSpeakerVerifyThreshold(clamped)
         viewModelScope.launch {
@@ -2502,7 +2504,7 @@ class MainViewModel(
             speakerProfileReady = false,
             speakerProfiles = emptyList(),
             speakerLastSimilarity = -1f,
-            status = "已清除说话人注册信息"
+            status = "已清除本人语音样本"
         )
         realtimeHost?.let { host ->
             host.setSpeakerVerifyEnabled(false)
@@ -2524,7 +2526,7 @@ class MainViewModel(
             speakerProfileReady = hasProfiles,
             speakerProfiles = speakerProfileUiItems(),
             speakerLastSimilarity = if (hasProfiles) uiState.speakerLastSimilarity else -1f,
-            status = if (hasProfiles) "已移除说话人" else "已清除说话人注册信息"
+            status = if (hasProfiles) "已移除注册样本" else "已清除本人语音样本"
         )
         realtimeHost?.let { host ->
             host.setSpeakerVerifyEnabled(keepVerify)
@@ -2537,22 +2539,30 @@ class MainViewModel(
     }
 
     fun applySpeakerProfile(profile: FloatArray): Boolean {
-        if (speakerProfiles.size >= MAX_SPEAKER_PROFILES) {
+        return applySpeakerProfiles(listOf(profile))
+    }
+
+    fun applySpeakerProfiles(profiles: List<FloatArray>): Boolean {
+        val normalizedProfiles = profiles
+            .mapNotNull { profile -> if (profile.isEmpty()) null else profile.copyOf() }
+            .take(MAX_SPEAKER_PROFILES)
+        if (normalizedProfiles.isEmpty()) {
             return false
         }
-        val nextIndex = speakerProfiles.size + 1
-        val item = UserPrefs.SpeakerVerifyProfile(
-            id = "spk-${SystemClock.elapsedRealtime()}-$nextIndex",
-            name = "说话人 $nextIndex",
-            vector = profile.copyOf()
-        )
-        speakerProfiles = speakerProfiles.toMutableList().apply { add(item) }
+        val baseId = SystemClock.elapsedRealtime()
+        speakerProfiles = normalizedProfiles.mapIndexed { index, profile ->
+            UserPrefs.SpeakerVerifyProfile(
+                id = "spk-$baseId-${index + 1}",
+                name = "样本 ${index + 1}",
+                vector = profile
+            )
+        }.toMutableList()
         realtimeHost?.setSpeakerProfiles(speakerProfileVectors())
         uiState = uiState.copy(
             speakerProfileReady = true,
             speakerProfiles = speakerProfileUiItems(),
-            speakerLastSimilarity = 1f,
-            status = "说话人注册成功（${speakerProfiles.size}/$MAX_SPEAKER_PROFILES）"
+            speakerLastSimilarity = -1f,
+            status = "本人语音样本已保存（${speakerProfiles.size}/$MAX_SPEAKER_PROFILES）"
         )
         viewModelScope.launch {
             UserPrefs.setSpeakerVerifyProfiles(appContext, speakerProfiles)
@@ -2566,7 +2576,7 @@ class MainViewModel(
         persist: Boolean = true
     ): SpeakerEnrollResult {
         if (uiState.running) {
-            val msg = "请先停止麦克风再注册说话人"
+            val msg = "请先停止麦克风再采集本人样本"
             uiState = uiState.copy(status = msg)
             return SpeakerEnrollResult(success = false, message = msg)
         }
@@ -13891,28 +13901,6 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
             toast(context, "未选择目录")
         }
     }
-    fun combineSpeakerProfiles(samples: List<FloatArray>): FloatArray? {
-        if (samples.isEmpty()) return null
-        val dim = samples.minOfOrNull { it.size } ?: return null
-        if (dim <= 0) return null
-        val out = FloatArray(dim)
-        samples.forEach { s ->
-            for (i in 0 until dim) {
-                out[i] += s[i]
-            }
-        }
-        for (i in out.indices) {
-            out[i] /= samples.size.toFloat()
-        }
-        var sumSq = 0.0
-        for (v in out) sumSq += v * v
-        val norm = kotlin.math.sqrt(sumSq)
-        if (norm <= 1e-8) return null
-        for (i in out.indices) {
-            out[i] = (out[i] / norm).toFloat()
-        }
-        return out
-    }
     fun startSpeakerEnrollStepCapture(step: Int) {
         if (speakerEnrollReading || speakerEnrollCountingDown) return
         if (step !in 1..3) return
@@ -13957,25 +13945,20 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                     speakerEnrollRemainingSec = 4f
                     speakerEnrollMessage = "第 $step 句录制成功"
                 } else {
-                    val combined = combineSpeakerProfiles(speakerEnrollSamples.filterNotNull())
-                    if (combined == null) {
-                        speakerEnrollRetryDialog = true
-                        speakerEnrollMessage = "合并注册信息失败，请重录第三句"
-                    } else {
-                        if (viewModel.applySpeakerProfile(combined)) {
-                            if (speakerEnrollOpenedByToggle) {
-                                viewModel.setSpeakerVerifyEnabled(true)
-                            }
-                            speakerEnrollSuccess = true
-                            speakerEnrollStep = 4
-                            speakerEnrollProgress = 1f
-                            speakerEnrollMessage = "说话人注册成功"
-                        } else {
-                            speakerEnrollSuccess = false
-                            speakerEnrollStep = 4
-                            speakerEnrollProgress = 0f
-                            speakerEnrollMessage = "注册失败，请稍后重试"
+                    val collectedSamples = speakerEnrollSamples.filterNotNull()
+                    if (viewModel.applySpeakerProfiles(collectedSamples)) {
+                        if (speakerEnrollOpenedByToggle) {
+                            viewModel.setSpeakerVerifyEnabled(true)
                         }
+                        speakerEnrollSuccess = true
+                        speakerEnrollStep = 4
+                        speakerEnrollProgress = 1f
+                        speakerEnrollMessage = "本人语音样本采集完成"
+                    } else {
+                        speakerEnrollSuccess = false
+                        speakerEnrollStep = 4
+                        speakerEnrollProgress = 0f
+                        speakerEnrollMessage = "样本保存失败，请稍后重试"
                     }
                 }
             } else {
@@ -14155,13 +14138,13 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                                 speakerEnrollLevel = 0f
                                 speakerEnrollRemainingSec = 4f
                                 speakerEnrollSuccess = false
-                                speakerEnrollMessage = "请按页面引导完成注册。"
+                                speakerEnrollMessage = "请按页面引导完成本人样本采集。"
                                 speakerEnrollRetryDialog = false
                                 speakerEnrollOpenedByToggle = true
                                 showSpeakerEnrollDialog = true
                             }
                         },
-                        supportingText = "注册：${state.speakerProfiles.size}/3"
+                        supportingText = "样本：${state.speakerProfiles.size}/3"
                     )
                     state.speakerProfiles.forEachIndexed { idx, profile ->
                         Card(
@@ -14177,13 +14160,13 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "${idx + 1}. ${profile.name}",
+                                    text = profile.name,
                                     modifier = Modifier.weight(1f),
                                     style = MaterialTheme.typography.bodySmall
                                 )
                                 Md2IconButton(
                                     icon = "delete",
-                                    contentDescription = "删除说话人",
+                                    contentDescription = "删除样本",
                                     onClick = { viewModel.removeSpeakerProfileAt(idx) }
                                 )
                             }
@@ -14196,7 +14179,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                     Slider(
                         value = state.speakerVerifyThreshold,
                         onValueChange = { viewModel.setSpeakerVerifyThreshold(it) },
-                        valueRange = 0.4f..0.95f
+                        valueRange = 0.05f..0.95f
                     )
                     if (state.speakerLastSimilarity >= 0f) {
                         Text(
@@ -14218,15 +14201,15 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             speakerEnrollLevel = 0f
                             speakerEnrollRemainingSec = 4f
                             speakerEnrollSuccess = false
-                            speakerEnrollMessage = "请按页面引导完成注册。"
+                            speakerEnrollMessage = "请按页面引导完成本人样本采集。"
                             speakerEnrollRetryDialog = false
                             speakerEnrollOpenedByToggle = false
                             showSpeakerEnrollDialog = true
-                        }, enabled = viewModel.canAddSpeakerProfile()) {
-                            Text("注册说话人")
+                        }) {
+                            Text(if (state.speakerProfiles.isEmpty()) "采集本人样本" else "重新采集样本")
                         }
                         Md2TextButton(onClick = { viewModel.clearSpeakerProfile() }) {
-                            Text("清除注册")
+                            Text("清空样本")
                         }
                     }
                 }
@@ -14790,10 +14773,10 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             speakerEnrollLevel = 0f
                             speakerEnrollRemainingSec = 4f
                             speakerEnrollSuccess = false
-                            speakerEnrollMessage = "请按页面引导完成注册。"
+                            speakerEnrollMessage = "请按页面引导完成本人样本采集。"
                             speakerEnrollRetryDialog = false
                         }) {
-                            Text("重新注册")
+                            Text("重新采集")
                         }
                     }
                 }

@@ -110,7 +110,7 @@ object UserPrefs {
         val floatingOverlayEnabled: Boolean = false,
         val floatingOverlayAutoDock: Boolean = false,
         val speakerVerifyEnabled: Boolean = false,
-        val speakerVerifyThreshold: Float = 0.72f,
+        val speakerVerifyThreshold: Float = 0.5f,
         val speakerVerifyProfileCsv: String = "",
         val speakerVerifyBackendVersion: Int = 0,
         val allowSystemAecWithAec3: Boolean = true
@@ -232,7 +232,7 @@ object UserPrefs {
             floatingOverlayEnabled = this[KEY_FLOATING_OVERLAY_ENABLED] ?: false,
             floatingOverlayAutoDock = this[KEY_FLOATING_OVERLAY_AUTO_DOCK] ?: false,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
-            speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.72f).coerceIn(0.4f, 0.95f),
+            speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
             speakerVerifyProfileCsv = this[KEY_SPEAKER_VERIFY_PROFILE] ?: "",
             speakerVerifyBackendVersion = this[KEY_SPEAKER_VERIFY_BACKEND_VERSION] ?: 0,
             allowSystemAecWithAec3 = true
@@ -436,7 +436,7 @@ object UserPrefs {
 
     suspend fun setSpeakerVerifyThreshold(context: Context, threshold: Float) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_SPEAKER_VERIFY_THRESHOLD] = threshold.coerceIn(0.4f, 0.95f)
+            prefs[KEY_SPEAKER_VERIFY_THRESHOLD] = threshold.coerceIn(0.05f, 0.95f)
         }
     }
 
