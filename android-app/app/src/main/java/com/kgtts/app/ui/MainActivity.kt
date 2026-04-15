@@ -209,6 +209,7 @@ import com.lhtstudio.kigtts.app.audio.AudioLoopbackTester
 import com.lhtstudio.kigtts.app.audio.AudioTestConfig
 import com.lhtstudio.kigtts.app.audio.SpeechEnhancementMode
 import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
+import com.lhtstudio.kigtts.app.audio.VadMode
 import com.lhtstudio.kigtts.app.data.ModelRepository
 import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.VoicePackInfo
@@ -2244,6 +2245,15 @@ class MainViewModel(
         persistVadFlags(classicEnabled, sileroEnabled)
     }
 
+    fun setVadMode(mode: Int) {
+        val (classicEnabled, sileroEnabled) = VadMode.toFlags(mode)
+        uiState = uiState.copy(
+            classicVadEnabled = classicEnabled,
+            sileroVadEnabled = sileroEnabled
+        )
+        persistVadFlags(classicEnabled, sileroEnabled)
+    }
+
     fun setPlaybackGainPercent(percent: Int) {
         val clamped = snapPlaybackGainPercent(percent)
         uiState = uiState.copy(playbackGainPercent = clamped)
@@ -2886,7 +2896,8 @@ class MainViewModel(
             },
             preferredInputType = uiState.preferredInputType,
             preferredOutputType = uiState.preferredOutputType,
-            useCommunicationMode = uiState.communicationMode
+            useCommunicationMode = uiState.communicationMode,
+            speechEnhancementMode = uiState.speechEnhancementMode
         )
     }
 
@@ -13848,6 +13859,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     var outputTypeExpanded by remember { mutableStateOf(false) }
     var denoiserModeExpanded by remember { mutableStateOf(false) }
     var speechEnhancementExpanded by remember { mutableStateOf(false) }
+    var vadModeExpanded by remember { mutableStateOf(false) }
     var showSpeakerEnrollDialog by remember { mutableStateOf(false) }
     var speakerEnrollStep by remember { mutableIntStateOf(0) } // 0准备 1句1 2句2 3句3 4结果
     var speakerEnrollCountingDown by remember { mutableStateOf(false) }
@@ -14084,18 +14096,26 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             ) { Text(label) }
                         }
                     }
-                    Md2SettingSwitchRow(
-                        title = "原有阈值式 VAD",
-                        checked = state.classicVadEnabled,
-                        onCheckedChange = { viewModel.setClassicVadEnabled(it) },
-                        supportingText = "使用现有音量阈值、静音时长和 voiced ratio 断句。至少保持开启一项 VAD。"
-                    )
-                    Md2SettingSwitchRow(
-                        title = "Silero VAD",
-                        checked = state.sileroVadEnabled,
-                        onCheckedChange = { viewModel.setSileroVadEnabled(it) },
-                        supportingText = "使用模型级语音活动检测辅助断句，对轻声和彩噪更稳。至少保持开启一项 VAD。"
-                    )
+                    Md2SettingDropdownRow(
+                        title = "语音活动检测",
+                        value = VadMode.labelOf(VadMode.fromFlags(state.classicVadEnabled, state.sileroVadEnabled)),
+                        expanded = vadModeExpanded,
+                        onExpandedChange = { vadModeExpanded = it },
+                        supportingText = when (VadMode.fromFlags(state.classicVadEnabled, state.sileroVadEnabled)) {
+                            VadMode.SILERO -> "仅使用 SileroVAD 做语音活动检测，对轻声和彩噪更稳。"
+                            VadMode.HYBRID -> "同时使用阈值式VAD和 SileroVAD，兼顾静音门限与模型断句。"
+                            else -> "仅使用现有音量阈值、静音时长和 voiced ratio 断句。"
+                        }
+                    ) {
+                        VadMode.options.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    vadModeExpanded = false
+                                    viewModel.setVadMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
                     Md2SettingDropdownRow(
                         title = "数字替换",
                         value = numberReplaceOptions.getOrElse(state.numberReplaceMode) { numberReplaceOptions[0] },
@@ -14435,7 +14455,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         }
                     }
                     Text(
-                        "用于测试当前麦克风收音和本地回放，不会进入识别或朗读队列。测试前请先停止主语音链路。",
+                        "用于测试当前麦克风收音和本地回放。回放会套用当前 AI 语音增强设置，不会进入识别或朗读队列。测试前请先停止主语音链路。",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }

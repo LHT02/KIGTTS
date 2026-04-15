@@ -71,6 +71,42 @@ object SpeechEnhancementMode {
     }
 }
 
+object VadMode {
+    const val CLASSIC = 0
+    const val SILERO = 1
+    const val HYBRID = 2
+
+    val options: List<Pair<Int, String>> = listOf(
+        CLASSIC to "阈值式VAD",
+        SILERO to "SileroVAD",
+        HYBRID to "混合VAD"
+    )
+
+    fun clamp(mode: Int): Int {
+        return options.firstOrNull { it.first == mode }?.first ?: CLASSIC
+    }
+
+    fun fromFlags(classicEnabled: Boolean, sileroEnabled: Boolean): Int {
+        return when {
+            classicEnabled && sileroEnabled -> HYBRID
+            sileroEnabled -> SILERO
+            else -> CLASSIC
+        }
+    }
+
+    fun toFlags(mode: Int): Pair<Boolean, Boolean> {
+        return when (clamp(mode)) {
+            SILERO -> false to true
+            HYBRID -> true to true
+            else -> true to false
+        }
+    }
+
+    fun labelOf(mode: Int): String {
+        return options.firstOrNull { it.first == clamp(mode) }?.second ?: options.first().second
+    }
+}
+
 private class RnNoiseNative private constructor() {
     companion object {
         private val loaded by lazy {
@@ -294,7 +330,8 @@ data class AudioTestConfig(
     val audioSource: Int,
     val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
     val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
-    val useCommunicationMode: Boolean = false
+    val useCommunicationMode: Boolean = false,
+    val speechEnhancementMode: Int = SpeechEnhancementMode.OFF
 )
 
 class AudioLoopbackTester(
@@ -437,14 +474,43 @@ class AudioLoopbackTester(
         }
         applyCommunicationMode(config.useCommunicationMode)
         applyPreferredOutput(track, config.preferredOutputType)
-        val data = clip.copyOf()
+        val rawData = clip.copyOf()
         playJob = scope.launch(Dispatchers.IO) {
             try {
-                publish { it.copy(playing = true, status = "音频测试：回放中", level = 0f) }
+                val mode = SpeechEnhancementMode.clamp(config.speechEnhancementMode)
+                val playbackData = if (SpeechEnhancementMode.isEnabled(mode)) {
+                    publish {
+                        it.copy(
+                            playing = true,
+                            status = "音频测试：正在应用${SpeechEnhancementMode.labelOf(mode)}",
+                            level = 0f
+                        )
+                    }
+                    val enhanced = preparePlaybackClip(rawData, mode)
+                    if (enhanced.isNotEmpty()) {
+                        enhanced
+                    } else {
+                        rawData
+                    }
+                } else {
+                    rawData
+                }
+                val playbackLabel = if (SpeechEnhancementMode.isEnabled(mode)) {
+                    SpeechEnhancementMode.labelOf(mode)
+                } else {
+                    "原始录音"
+                }
+                publish {
+                    it.copy(
+                        playing = true,
+                        status = "音频测试：回放中（$playbackLabel）",
+                        level = 0f
+                    )
+                }
                 track.play()
-                track.write(data, 0, data.size, AudioTrack.WRITE_BLOCKING)
+                track.write(playbackData, 0, playbackData.size, AudioTrack.WRITE_BLOCKING)
                 while (isActive && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                    if (track.playbackHeadPosition >= data.size) break
+                    if (track.playbackHeadPosition >= playbackData.size) break
                     delay(30)
                 }
                 publish { it.copy(playing = false, status = "音频测试：回放完成", level = 0f) }
@@ -493,6 +559,33 @@ class AudioLoopbackTester(
             offset += chunk.size
         }
         return out
+    }
+
+    private fun preparePlaybackClip(data: ShortArray, mode: Int): ShortArray {
+        if (data.isEmpty()) return data
+        return try {
+            val floatSamples = FloatArray(data.size) { index ->
+                data[index].toFloat() / 32768f
+            }
+            val (enhanced, _) = SherpaSpeechEnhancer.processPreview(
+                context = context,
+                mode = mode,
+                samples = floatSamples,
+                sampleRate = sampleRate
+            )
+            if (enhanced.isEmpty()) {
+                data
+            } else {
+                ShortArray(enhanced.size) { index ->
+                    (enhanced[index].coerceIn(-1f, 1f) * 32767f).roundToInt().toShort()
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.e("AudioLoopbackTester speech enhancement failed", e)
+            data
+        } finally {
+            SherpaSpeechEnhancer.resetStreaming()
+        }
     }
 
     private fun applyCommunicationMode(enabled: Boolean) {

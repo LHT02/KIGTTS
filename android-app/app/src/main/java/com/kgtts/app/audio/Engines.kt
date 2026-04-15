@@ -1184,7 +1184,7 @@ private object SpeakerVerifier {
     }
 }
 
-private object SherpaSpeechEnhancer {
+internal object SherpaSpeechEnhancer {
     private const val GTCRN_ASSET_PATH = "speech_enhancement/gtcrn_simple.onnx"
     private const val GTCRN_FILE_NAME = "gtcrn_simple.onnx"
     private const val DPDFNET2_ASSET_PATH = "speech_enhancement/dpdfnet2.onnx"
@@ -1219,21 +1219,46 @@ private object SherpaSpeechEnhancer {
         }
         return synchronized(lock) {
             val denoiser = ensureStreamingDenoiserLocked(context, mode) ?: return@synchronized samples
+            processStreamingChunkLocked(denoiser, samples, sampleRate)
+        }
+    }
+
+    fun processPreview(context: Context, mode: Int, samples: FloatArray, sampleRate: Int): Pair<FloatArray, Int> {
+        if (samples.isEmpty()) return samples to sampleRate
+        val normalized = SpeechEnhancementMode.clamp(mode)
+        if (!SpeechEnhancementMode.isEnabled(normalized)) {
+            return samples to sampleRate
+        }
+        if (normalized == SpeechEnhancementMode.GTCRN_OFFLINE) {
+            return processOffline(context, normalized, samples, sampleRate)
+        }
+        if (!SpeechEnhancementMode.isStreaming(normalized)) {
+            return samples to sampleRate
+        }
+        return synchronized(lock) {
+            val denoiser = ensureStreamingDenoiserLocked(context, normalized) ?: return@synchronized samples to sampleRate
             val frameShift = denoiser.frameShiftInSamples.coerceAtLeast(1)
-            val combined = concatFloatArrays(streamingCarry, samples)
-            val processLen = (combined.size / frameShift) * frameShift
-            if (processLen <= 0) {
-                streamingCarry = combined
-                return@synchronized FloatArray(0)
+            streamingCarry = FloatArray(0)
+            denoiser.reset()
+            val out = ArrayList<FloatArray>()
+            var offset = 0
+            val chunkSize = max(frameShift * 8, frameShift)
+            while (offset < samples.size) {
+                val next = min(samples.size, offset + chunkSize)
+                val chunk = samples.copyOfRange(offset, next)
+                val result = processStreamingChunkLocked(denoiser, chunk, sampleRate)
+                if (result.isNotEmpty()) {
+                    out += result
+                }
+                offset = next
             }
-            val current = combined.copyOfRange(0, processLen)
-            streamingCarry = if (processLen < combined.size) {
-                combined.copyOfRange(processLen, combined.size)
-            } else {
-                FloatArray(0)
+            val tail = flushStreamingLocked(denoiser, sampleRate)
+            if (tail.isNotEmpty()) {
+                out += tail
             }
-            val result = denoiser.run(current, sampleRate)
-            result.samples.copyOf()
+            denoiser.reset()
+            streamingCarry = FloatArray(0)
+            concatFloatArrays(out, samples.size) to sampleRate
         }
     }
 
@@ -1254,6 +1279,40 @@ private object SherpaSpeechEnhancer {
             streamingMode = SpeechEnhancementMode.OFF
             streamingCarry = FloatArray(0)
         }
+    }
+
+    private fun processStreamingChunkLocked(
+        denoiser: OnlineSpeechDenoiser,
+        samples: FloatArray,
+        sampleRate: Int
+    ): FloatArray {
+        if (samples.isEmpty()) return FloatArray(0)
+        val frameShift = denoiser.frameShiftInSamples.coerceAtLeast(1)
+        val combined = concatFloatArrays(streamingCarry, samples)
+        val processLen = (combined.size / frameShift) * frameShift
+        if (processLen <= 0) {
+            streamingCarry = combined
+            return FloatArray(0)
+        }
+        val current = combined.copyOfRange(0, processLen)
+        streamingCarry = if (processLen < combined.size) {
+            combined.copyOfRange(processLen, combined.size)
+        } else {
+            FloatArray(0)
+        }
+        val result = denoiser.run(current, sampleRate)
+        return result.samples.copyOf()
+    }
+
+    private fun flushStreamingLocked(denoiser: OnlineSpeechDenoiser, sampleRate: Int): FloatArray {
+        val carry = streamingCarry
+        if (carry.isEmpty()) return FloatArray(0)
+        val frameShift = denoiser.frameShiftInSamples.coerceAtLeast(1)
+        val padded = FloatArray(frameShift)
+        System.arraycopy(carry, 0, padded, 0, carry.size)
+        streamingCarry = FloatArray(0)
+        val result = denoiser.run(padded, sampleRate).samples
+        return result.copyOf(min(result.size, carry.size))
     }
 
     private fun ensureOfflineDenoiserLocked(context: Context, mode: Int): OfflineSpeechDenoiser? {
@@ -1360,6 +1419,27 @@ private object SherpaSpeechEnhancer {
         val out = FloatArray(first.size + second.size)
         System.arraycopy(first, 0, out, 0, first.size)
         System.arraycopy(second, 0, out, first.size, second.size)
+        return out
+    }
+
+    private fun concatFloatArrays(chunks: List<FloatArray>, expectedSize: Int): FloatArray {
+        if (chunks.isEmpty()) return FloatArray(0)
+        val totalSize = chunks.sumOf { it.size }
+        val out = FloatArray(totalSize)
+        var offset = 0
+        for (chunk in chunks) {
+            System.arraycopy(chunk, 0, out, offset, chunk.size)
+            offset += chunk.size
+        }
+        if (expectedSize > 0 && out.size != expectedSize) {
+            return if (out.size > expectedSize) {
+                out.copyOf(expectedSize)
+            } else {
+                FloatArray(expectedSize).also { padded ->
+                    System.arraycopy(out, 0, padded, 0, out.size)
+                }
+            }
+        }
         return out
     }
 }
