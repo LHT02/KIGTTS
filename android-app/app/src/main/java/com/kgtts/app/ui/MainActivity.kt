@@ -7378,9 +7378,9 @@ fun AppScaffold(viewModel: MainViewModel) {
                 window.isNavigationBarContrastEnforced = false
             }
             WindowCompat.getInsetsController(window, window.decorView)
-                ?.isAppearanceLightStatusBars = topBarColor.luminance() > 0.5f
+                .isAppearanceLightStatusBars = topBarColor.luminance() > 0.5f
             WindowCompat.getInsetsController(window, window.decorView)
-                ?.isAppearanceLightNavigationBars = !isDarkTheme
+                .isAppearanceLightNavigationBars = !isDarkTheme
         }
     }
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
@@ -8490,7 +8490,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     }
     LaunchedEffect(drawingImmersive, inMultiWindowMode) {
         val window = activity?.window ?: return@LaunchedEffect
-        val controller = WindowCompat.getInsetsController(window, window.decorView) ?: return@LaunchedEffect
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
         if (drawingImmersive && !inMultiWindowMode) {
             controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.statusBars())
@@ -8833,7 +8833,7 @@ private fun AppDrawerContent(
 }
 
 @Composable
-fun ModelScreen(viewModel: MainViewModel, state: UiState) {
+fun ModelScreen(state: UiState) {
     Column(
         modifier = Modifier
             .padding(horizontal = 16.dp)
@@ -12180,7 +12180,6 @@ private class QuickSubtitleItemRecyclerAdapter(
         }
         val row = items[position]
         holder.bind(
-            itemId = row.id,
             text = row.text,
             isDragged = draggingItemId == row.id,
             canDelete = items.size > 1,
@@ -12285,7 +12284,6 @@ private class QuickSubtitleItemRecyclerAdapter(
         private val composeView: ComposeView
     ) : RecyclerView.ViewHolder(composeView) {
         fun bind(
-            itemId: Long,
             text: String,
             isDragged: Boolean,
             canDelete: Boolean,
@@ -12295,7 +12293,6 @@ private class QuickSubtitleItemRecyclerAdapter(
         ) {
             composeView.setContent {
                 QuickSubtitleEditableRow(
-                    itemId = itemId,
                     value = text,
                     isDragged = isDragged,
                     canDelete = canDelete,
@@ -12311,7 +12308,6 @@ private class QuickSubtitleItemRecyclerAdapter(
 @Composable
 @OptIn(ExperimentalComposeUiApi::class)
 private fun QuickSubtitleEditableRow(
-    itemId: Long,
     value: String,
     isDragged: Boolean,
     canDelete: Boolean,
@@ -13211,7 +13207,7 @@ fun DrawingBoardScreen(
                             while (true) {
                                 var drawingActive = false
                                 var transformActive = false
-                                var drawPointerId: androidx.compose.ui.input.pointer.PointerId? = null
+                                var drawPointerId: androidx.compose.ui.input.pointer.PointerId?
                                 var trackedA: androidx.compose.ui.input.pointer.PointerId? = null
                                 var trackedB: androidx.compose.ui.input.pointer.PointerId? = null
                                 var lastFocus = Offset.Zero

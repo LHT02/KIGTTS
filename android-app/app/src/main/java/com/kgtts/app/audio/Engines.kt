@@ -180,7 +180,7 @@ class AsrEngine(private val context: Context, private val modelDir: File) : AsrM
         stream.acceptWaveform(samples, sr)
         recognizer.decode(stream)
         val result = recognizer.getResult(stream)
-        val text = result?.text ?: ""
+        val text = result.text
         stream.release()
         return text
     }
@@ -1604,7 +1604,6 @@ class RealtimeController(
     )
 
     private class SileroVadProcessor(
-        context: Context,
         modelFile: File,
         sampleRate: Int,
         numThreads: Int = 2
@@ -2524,7 +2523,6 @@ class RealtimeController(
         val modelFile = currentSileroVadModelFile ?: return null
         return runCatching {
             SileroVadProcessor(
-                context = context,
                 modelFile = modelFile,
                 sampleRate = sampleRate
             )
