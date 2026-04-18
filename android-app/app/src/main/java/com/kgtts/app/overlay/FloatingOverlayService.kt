@@ -2161,31 +2161,29 @@ class FloatingOverlayService : Service() {
                     val currentCard =
                         if (quickCards.isEmpty()) null else quickCards.getOrNull(pager?.currentItem ?: 0)
                     val cachedHeight = miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)]
-                    val targetHeight = when {
-                        cachedHeight != null -> cachedHeight + paddingTop + paddingBottom
-                        currentChild != null -> {
-                            val childWidthSpec = MeasureSpec.makeMeasureSpec(
-                                contentWidth,
-                                MeasureSpec.EXACTLY
-                            )
-                            val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
-                            currentChild.measure(childWidthSpec, childHeightSpec)
-                            currentChild.measuredHeight.also {
-                                miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
-                            } + paddingTop + paddingBottom
-                        }
-                        else -> {
-                            measureMiniQuickCardPageHeight(contentWidth, currentCard).also {
-                                miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
-                            } + paddingTop + paddingBottom
-                        }
-                    }.coerceAtLeast(
-                        if (isPhoneLandscapeUi()) {
-                            landscapeOverlayContentHeight()
-                        } else {
-                            dp(320)
-                        }
-                    )
+                    val targetHeight = if (isPhoneLandscapeUi()) {
+                        landscapeOverlayContentHeight()
+                    } else {
+                        when {
+                            cachedHeight != null -> cachedHeight + paddingTop + paddingBottom
+                            currentChild != null -> {
+                                val childWidthSpec = MeasureSpec.makeMeasureSpec(
+                                    contentWidth,
+                                    MeasureSpec.EXACTLY
+                                )
+                                val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+                                currentChild.measure(childWidthSpec, childHeightSpec)
+                                currentChild.measuredHeight.also {
+                                    miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
+                                } + paddingTop + paddingBottom
+                            }
+                            else -> {
+                                measureMiniQuickCardPageHeight(contentWidth, currentCard).also {
+                                    miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
+                                } + paddingTop + paddingBottom
+                            }
+                        }.coerceAtLeast(dp(320))
+                    }
                     val exactHeight = MeasureSpec.makeMeasureSpec(targetHeight, MeasureSpec.EXACTLY)
                     super.onMeasure(widthMeasureSpec, exactHeight)
                 }
@@ -4308,17 +4306,15 @@ class FloatingOverlayService : Service() {
 
     private fun measureMiniQuickCardPageHeight(contentWidth: Int, card: QuickCard?): Int {
         val previewContainer = miniQuickCardPreviewContainer ?: return dp(320)
+        if (isPhoneLandscapeUi()) {
+            return landscapeOverlayContentHeight() - previewContainer.paddingTop - previewContainer.paddingBottom
+        }
         val probe = createMiniQuickCardPage(card)
         val childWidthSpec = View.MeasureSpec.makeMeasureSpec(contentWidth.coerceAtLeast(0), View.MeasureSpec.EXACTLY)
         val childHeightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         probe.measure(childWidthSpec, childHeightSpec)
-        val minHeight = if (isPhoneLandscapeUi()) {
-            landscapeOverlayContentHeight()
-        } else {
-            dp(320)
-        }
         return probe.measuredHeight.coerceAtLeast(
-            minHeight - previewContainer.paddingTop - previewContainer.paddingBottom
+            dp(320) - previewContainer.paddingTop - previewContainer.paddingBottom
         )
     }
 
@@ -4331,10 +4327,11 @@ class FloatingOverlayService : Service() {
                 overlayContentWidthPx(phoneMaxDp = 360, tabletMaxDp = 400) - if (landscapePhone) dp(120) else dp(76)
             )
         )
+        val verticalPadding = if (landscapePhone) 0 else dp(10)
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            setPadding(0, dp(10), 0, dp(10))
+            setPadding(0, verticalPadding, 0, verticalPadding)
             addView(
                 buildOverlayQuickCardCard(
                     card = card,
@@ -4718,10 +4715,17 @@ class FloatingOverlayService : Service() {
                             buildLandscapePanelQuickCardContent(card, contentWidthPx)
                         OverlayQuickCardRenderStyle.Preview ->
                             buildLandscapePreviewQuickCardContent(card, contentWidthPx)
-                    }
+                }
                 addView(
                     content,
-                    LinearLayout.LayoutParams(contentWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    LinearLayout.LayoutParams(
+                        contentWidthPx,
+                        if (renderStyle == OverlayQuickCardRenderStyle.Panel && isPhoneLandscapeUi()) {
+                            landscapeOverlayContentHeight() - outerPadding * 2
+                        } else {
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        }
+                    )
                 )
             } else {
                 val themeColor = parseQuickCardThemeColor(card.themeColor)
@@ -4785,9 +4789,13 @@ class FloatingOverlayService : Service() {
     private fun buildLandscapePanelQuickCardContent(card: QuickCard, contentWidthPx: Int): View {
         val themeColor = parseQuickCardThemeColor(card.themeColor)
         val onThemeColor = quickCardOnColor(themeColor)
-        val heroHeight = min(dp(132), max(dp(112), (contentWidthPx * 0.54f).roundToInt()))
+        val innerHeight = landscapeOverlayContentHeight() - dp(20)
+        val footerHeight = dp(58)
+        val gap = dp(8)
+        val heroHeight = max(dp(104), innerHeight - footerHeight - gap)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            minimumHeight = innerHeight
             val hero = FrameLayout(this@FloatingOverlayService).apply {
                 background = roundedRectDrawable(overlayRadiusDp, themeColor)
                 clipChildren = true
@@ -4804,15 +4812,15 @@ class FloatingOverlayService : Service() {
             addView(
                 LinearLayout(this@FloatingOverlayService).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.TOP
-                    setPadding(0, dp(8), 0, 0)
+                    gravity = Gravity.CENTER_VERTICAL
                     addView(
                         LinearLayout(this@FloatingOverlayService).apply {
                             orientation = LinearLayout.VERTICAL
+                            gravity = Gravity.CENTER_VERTICAL
                             addView(
                                 TextView(this@FloatingOverlayService).apply {
                                     setTextColor(overlayOnSurfaceColor())
-                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
                                     typeface = Typeface.DEFAULT_BOLD
                                     maxLines = 1
                                     ellipsize = TextUtils.TruncateAt.END
@@ -4836,9 +4844,19 @@ class FloatingOverlayService : Service() {
                         )
                     )
                     addView(spaceView(dp(8), 1))
-                    addView(createOverlayQuickCardLogoView())
+                    addView(
+                        createOverlayQuickCardLogoView(),
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            gravity = Gravity.BOTTOM
+                        }
+                    )
                 },
-                LinearLayout.LayoutParams(contentWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT)
+                LinearLayout.LayoutParams(contentWidthPx, footerHeight).apply {
+                    topMargin = gap
+                }
             )
         }
     }

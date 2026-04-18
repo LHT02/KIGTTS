@@ -7387,6 +7387,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val layoutDirection = LocalLayoutDirection.current
     val displayCutoutPadding = WindowInsets.displayCutout.asPaddingValues()
+    val navigationBarsPadding = WindowInsets.navigationBars.asPaddingValues()
     val landscapeCutoutStart = if (isLandscape && !inMultiWindowMode) {
         displayCutoutPadding.calculateStartPadding(layoutDirection)
     } else {
@@ -7397,6 +7398,18 @@ fun AppScaffold(viewModel: MainViewModel) {
     } else {
         0.dp
     }
+    val landscapeNavBarStart = if (isLandscape && !inMultiWindowMode) {
+        navigationBarsPadding.calculateStartPadding(layoutDirection)
+    } else {
+        0.dp
+    }
+    val landscapeNavBarEnd = if (isLandscape && !inMultiWindowMode) {
+        navigationBarsPadding.calculateEndPadding(layoutDirection)
+    } else {
+        0.dp
+    }
+    val landscapeChromeStartInset = maxOf(landscapeCutoutStart, landscapeNavBarStart)
+    val landscapeChromeEndInset = maxOf(landscapeCutoutEnd, landscapeNavBarEnd)
     val hiddenDrawerWidth = remember(configuration.screenWidthDp) {
         val screenWidth = configuration.screenWidthDp.dp
         val targetWidth = UiTokens.DrawerWidthExpanded
@@ -7405,9 +7418,9 @@ fun AppScaffold(viewModel: MainViewModel) {
         val maxAllowed = (screenWidth - compatEdgeGap).coerceAtLeast(0.dp)
         if (maxAllowed <= 0.dp) screenWidth else minOf(targetWidth, maxAllowed)
     }
-    val permanentDrawerCollapsedWidth = UiTokens.DrawerWidthCollapsed + landscapeCutoutStart
-    val permanentDrawerExpandedWidth = UiTokens.DrawerWidthExpanded + landscapeCutoutStart
-    val hiddenDrawerSurfaceWidth = hiddenDrawerWidth + landscapeCutoutStart
+    val permanentDrawerCollapsedWidth = UiTokens.DrawerWidthCollapsed + landscapeChromeStartInset
+    val permanentDrawerExpandedWidth = UiTokens.DrawerWidthExpanded + landscapeChromeStartInset
+    val hiddenDrawerSurfaceWidth = hiddenDrawerWidth + landscapeChromeStartInset
     val usePermanentDrawer =
         isLandscape && state.landscapeDrawerMode == UserPrefs.DRAWER_MODE_PERMANENT
     val basePage = page
@@ -7859,7 +7872,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(if (!inMultiWindowMode) Modifier.statusBarsPadding() else Modifier)
-                    .padding(start = landscapeCutoutStart, end = landscapeCutoutEnd),
+                    .padding(start = landscapeChromeStartInset, end = landscapeChromeEndInset),
                 title = {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -8558,7 +8571,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                     showHeader = false,
                                     showTopDivider = false,
                                     topInset = 8.dp,
-                                    horizontalStartInset = landscapeCutoutStart,
+                                    horizontalStartInset = landscapeChromeStartInset,
                                     onSelect = { page = it }
                                 )
                             } else {
@@ -8609,7 +8622,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                     showHeader = false,
                                     showTopDivider = false,
                                     topInset = 8.dp,
-                                    horizontalStartInset = landscapeCutoutStart,
+                                    horizontalStartInset = landscapeChromeStartInset,
                                     onSelect = {
                                         page = it
                                         drawerExpanded = false
@@ -8662,7 +8675,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 showHeader = true,
                                 showTopDivider = true,
                                 topInset = 12.dp,
-                                horizontalStartInset = landscapeCutoutStart,
+                                horizontalStartInset = landscapeChromeStartInset,
                                 onSelect = {
                                     page = it
                                     scope.launch { drawerState.close() }
