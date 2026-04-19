@@ -120,6 +120,9 @@ class FloatingOverlayService : Service() {
     private var fabButton: FrameLayout? = null
     private var fabIconView: ImageView? = null
     private var pendingFabRestoreTapEdge: String? = null
+    private var fabRestoreAnimationStartedOnDown = false
+    private var fabRightDockRestoreDeferred = false
+    private var fabDragMaxXOverride: Int? = null
     private var panelRoot: FrameLayout? = null
     private var panelContent: LinearLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
@@ -690,6 +693,10 @@ class FloatingOverlayService : Service() {
         return fabDockVisibleWidthPx() + fabDockOuterPaddingPx()
     }
 
+    private fun fabExpandedWindowWidthPx(): Int {
+        return dp(FAB_SIZE_DP) + fabDockOuterPaddingPx() * 2
+    }
+
     private fun fabWindowWidthPx(): Int {
         val paramsWidth = fabParams?.width ?: 0
         return when {
@@ -706,6 +713,14 @@ class FloatingOverlayService : Service() {
             0
         } else {
             max(0, screenWidth - dockWindowWidth)
+        }
+    }
+
+    private fun expandedFabXForEdge(edge: String, screenWidth: Int): Int {
+        return if (edge == FAB_EDGE_LEFT) {
+            fabSnapLeftX()
+        } else {
+            max(0, screenWidth - fabExpandedWindowWidthPx())
         }
     }
 
@@ -754,7 +769,7 @@ class FloatingOverlayService : Service() {
             root.clipToPadding = false
             root.gravity = Gravity.END
             root.setPadding(outerPadding, dp(14), outerPadding, dp(14))
-            params.width = WindowManager.LayoutParams.WRAP_CONTENT
+            params.width = fabExpandedWindowWidthPx()
             spacer?.visibility = View.VISIBLE
             host.clipChildren = false
             host.clipToPadding = false
@@ -779,9 +794,19 @@ class FloatingOverlayService : Service() {
         fabSnapAnimator?.cancel()
         val anchor = currentOrientationFabAnchor()
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
-        applyFabAnchor(params, anchor, displayWidth(), displayHeight())
+        val screenWidth = displayWidth()
+        val screenHeight = displayHeight()
+        val minY = fabMinY()
+        val maxY = fabMaxY(screenHeight)
         fabIdleDocked = false
         updateFabDockLayout(anchor.edge)
+        params.x = expandedFabXForEdge(anchor.edge, screenWidth)
+        params.y =
+            if (maxY <= minY) {
+                minY
+            } else {
+                (minY + (maxY - minY) * anchor.verticalRatio.coerceIn(0f, 1f)).roundToInt()
+            }
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
         if (animateRestore) animateFabRestoreFromDockEdge(anchor.edge)
@@ -2917,16 +2942,22 @@ class FloatingOverlayService : Service() {
         val params = fabParams ?: return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                pendingFabRestoreTapEdge =
+                fabDragMaxXOverride = null
+                val restoreEdge =
                     if (fabIdleDocked) {
                         currentOrientationFabAnchor()?.edge
                             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
                     } else {
                         null
-                    }
-                cancelFabIdleDock(restoreFab = true, animateRestore = false)
+                }
+                pendingFabRestoreTapEdge = restoreEdge
+                fabRestoreAnimationStartedOnDown = false
+                fabRightDockRestoreDeferred = restoreEdge == FAB_EDGE_RIGHT
+                cancelFabIdleDock(restoreFab = false, animateRestore = false)
                 fabSnapAnimator?.cancel()
-                resetFabRestoreAnimation()
+                if (restoreEdge == null) {
+                    resetFabRestoreAnimation()
+                }
                 downRawX = event.rawX
                 downRawY = event.rawY
                 downWinX = params.x
@@ -2941,9 +2972,24 @@ class FloatingOverlayService : Service() {
                 if (draggingFab) {
                     pendingFabRestoreTapEdge = null
                     resetFabRestoreAnimation()
+                    if (fabIdleDocked) {
+                        val dragEdge = currentOrientationFabAnchor()?.edge
+                            ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+                        fabIdleDocked = false
+                        fabRightDockRestoreDeferred = false
+                        fabDragMaxXOverride = if (dragEdge == FAB_EDGE_RIGHT) downWinX else null
+                        updateFabDockLayout(dragEdge)
+                        fabRoot?.alpha = 1f
+                        resetFabRestoreAnimation()
+                    } else if (fabRightDockRestoreDeferred) {
+                        fabRightDockRestoreDeferred = false
+                        fabDragMaxXOverride = downWinX
+                        updateFabDockLayout(FAB_EDGE_RIGHT)
+                        fabRoot?.alpha = 1f
+                    }
                     params.x = downWinX + dx
                     params.y = downWinY + dy
-                    clampFabToScreen()
+                    clampFabToScreen(maxXOverride = fabDragMaxXOverride)
                     windowManager.updateViewLayout(fabRoot, params)
                     if (!panelVisible) updatePanelPosition()
                     if (!miniVisible) updateMiniPanelPosition()
@@ -2955,19 +3001,36 @@ class FloatingOverlayService : Service() {
                 pendingFabRestoreTapEdge = null
                 if (!draggingFab) {
                     if (tapRestoreEdge != null) {
+                        if (fabIdleDocked || fabRightDockRestoreDeferred) {
+                            cancelFabIdleDock(restoreFab = true, animateRestore = false)
+                        }
                         animateFabRestoreFromDockEdge(tapRestoreEdge) { togglePanel() }
                     } else {
                         togglePanel()
                     }
                 } else {
+                    if (fabRightDockRestoreDeferred) {
+                        fabIdleDocked = false
+                        updateFabDockLayout(
+                            buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+                        )
+                        runCatching { windowManager.updateViewLayout(fabRoot, params) }
+                    }
+                    fabDragMaxXOverride = null
                     resetFabRestoreAnimation()
                     snapFabToEdge()
                 }
+                fabRestoreAnimationStartedOnDown = false
+                fabRightDockRestoreDeferred = false
+                fabDragMaxXOverride = null
                 draggingFab = false
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
                 pendingFabRestoreTapEdge = null
+                fabRestoreAnimationStartedOnDown = false
+                fabRightDockRestoreDeferred = false
+                fabDragMaxXOverride = null
                 resetFabRestoreAnimation()
                 if (draggingFab) snapFabToEdge()
                 draggingFab = false
@@ -7510,9 +7573,9 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun clampFabToScreen() {
+    private fun clampFabToScreen(maxXOverride: Int? = null) {
         val params = fabParams ?: return
-        val maxX = fabMaxX(displayWidth())
+        val maxX = maxXOverride ?: fabMaxX(displayWidth())
         val maxY = fabMaxY(displayHeight())
         params.x = params.x.coerceIn(0, maxX)
         params.y = params.y.coerceIn(fabMinY(), maxY)
