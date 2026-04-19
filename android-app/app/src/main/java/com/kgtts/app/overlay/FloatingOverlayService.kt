@@ -119,6 +119,7 @@ class FloatingOverlayService : Service() {
     private var fabButtonHost: FrameLayout? = null
     private var fabButton: FrameLayout? = null
     private var fabIconView: ImageView? = null
+    private var pendingFabRestoreTapEdge: String? = null
     private var panelRoot: FrameLayout? = null
     private var panelContent: LinearLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
@@ -769,7 +770,7 @@ class FloatingOverlayService : Service() {
         root.requestLayout()
     }
 
-    private fun restoreFabFromIdleDock() {
+    private fun restoreFabFromIdleDock(animateRestore: Boolean = false) {
         if (!fabIdleDocked) return
         val params = fabParams ?: return
         val root = fabRoot ?: return
@@ -783,6 +784,41 @@ class FloatingOverlayService : Service() {
         updateFabDockLayout(anchor.edge)
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
+        if (animateRestore) animateFabRestoreFromDockEdge(anchor.edge)
+    }
+
+    private fun resetFabRestoreAnimation() {
+        fabButton?.animate()?.cancel()
+        fabButton?.translationX = 0f
+    }
+
+    private fun animateFabRestoreFromDockEdge(edge: String, endAction: (() -> Unit)? = null) {
+        val button = fabButton ?: run {
+            endAction?.invoke()
+            return
+        }
+        val buttonWidth =
+            button.measuredWidth.takeIf { it > 0 }
+                ?: button.width.takeIf { it > 0 }
+                ?: dp(FAB_SIZE_DP)
+        val startTranslation =
+            if (edge == FAB_EDGE_LEFT) {
+                -(buttonWidth - fabDockExposedWidthPx()).toFloat()
+            } else {
+                fabDockShadowPaddingPx().toFloat()
+            }
+        if (abs(startTranslation) < 0.5f) {
+            endAction?.invoke()
+            return
+        }
+        button.animate().cancel()
+        button.translationX = startTranslation
+        button.animate()
+            .translationX(0f)
+            .setDuration(160L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction { endAction?.invoke() }
+            .start()
     }
 
     private fun applyFabIdleDockVisualState() {
@@ -797,10 +833,10 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun cancelFabIdleDock(restoreFab: Boolean) {
+    private fun cancelFabIdleDock(restoreFab: Boolean, animateRestore: Boolean = false) {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
-        if (restoreFab) restoreFabFromIdleDock()
+        if (restoreFab) restoreFabFromIdleDock(animateRestore)
     }
 
     private fun dockFabIdleNow() {
@@ -2881,8 +2917,16 @@ class FloatingOverlayService : Service() {
         val params = fabParams ?: return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                cancelFabIdleDock(restoreFab = true)
+                pendingFabRestoreTapEdge =
+                    if (fabIdleDocked) {
+                        currentOrientationFabAnchor()?.edge
+                            ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+                    } else {
+                        null
+                    }
+                cancelFabIdleDock(restoreFab = true, animateRestore = false)
                 fabSnapAnimator?.cancel()
+                resetFabRestoreAnimation()
                 downRawX = event.rawX
                 downRawY = event.rawY
                 downWinX = params.x
@@ -2895,6 +2939,8 @@ class FloatingOverlayService : Service() {
                 val dy = (event.rawY - downRawY).roundToInt()
                 if (!draggingFab && (abs(dx) > dp(6) || abs(dy) > dp(6))) draggingFab = true
                 if (draggingFab) {
+                    pendingFabRestoreTapEdge = null
+                    resetFabRestoreAnimation()
                     params.x = downWinX + dx
                     params.y = downWinY + dy
                     clampFabToScreen()
@@ -2905,11 +2951,24 @@ class FloatingOverlayService : Service() {
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (!draggingFab) togglePanel() else snapFabToEdge()
+                val tapRestoreEdge = pendingFabRestoreTapEdge
+                pendingFabRestoreTapEdge = null
+                if (!draggingFab) {
+                    if (tapRestoreEdge != null) {
+                        animateFabRestoreFromDockEdge(tapRestoreEdge) { togglePanel() }
+                    } else {
+                        togglePanel()
+                    }
+                } else {
+                    resetFabRestoreAnimation()
+                    snapFabToEdge()
+                }
                 draggingFab = false
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                pendingFabRestoreTapEdge = null
+                resetFabRestoreAnimation()
                 if (draggingFab) snapFabToEdge()
                 draggingFab = false
                 refreshFabIdleDockState()
@@ -3825,7 +3884,9 @@ class FloatingOverlayService : Service() {
     private fun overlayContentLeftPx(contentWidth: Int): Int {
         val sideMargin = dp(16)
         if (!isTabletLandscapeUi()) {
-            return ((displayWidth() - contentWidth) / 2).coerceAtLeast(sideMargin)
+            val landscapePhoneBias = if (isPhoneLandscapeUi()) dp(16) else 0
+            return (((displayWidth() - contentWidth) / 2) - landscapePhoneBias)
+                .coerceIn(sideMargin, max(sideMargin, displayWidth() - contentWidth - sideMargin))
         }
         val regionCenter = if (isFabAnchoredRight()) {
             displayWidth() * 3 / 4
@@ -3838,7 +3899,8 @@ class FloatingOverlayService : Service() {
 
     private fun overlayContentTopPx(contentHeight: Int): Int {
         val topBottomMargin = dp(20)
-        return ((displayHeight() - contentHeight) / 2)
+        val portraitBias = if (!isLandscapeUi()) dp(16) else 0
+        return (((displayHeight() - contentHeight) / 2) - portraitBias)
             .coerceIn(topBottomMargin, max(topBottomMargin, displayHeight() - contentHeight - topBottomMargin))
     }
 

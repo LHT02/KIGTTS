@@ -245,6 +245,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -4194,11 +4195,12 @@ private fun QuickCardScannerScreen(
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
     }
-    val scanner = remember { createQrMlKitScanner() }
+    val scanner = remember(lifecycleOwner) { createQrMlKitScanner() }
     val mainExecutor = remember(context) { ContextCompat.getMainExecutor(context) }
-    val analyzerExecutor = remember { Executors.newSingleThreadExecutor() }
+    val analyzerExecutor = remember(lifecycleOwner) { Executors.newSingleThreadExecutor() }
     val scanned = remember { AtomicBoolean(false) }
     val analyzing = remember { AtomicBoolean(false) }
+    val disposed = remember(lifecycleOwner) { AtomicBoolean(false) }
     val onResultState = rememberUpdatedState(onResult)
     val onCandidatesState = rememberUpdatedState(onCandidates)
     var cameraReady by remember { mutableStateOf(false) }
@@ -4240,12 +4242,19 @@ private fun QuickCardScannerScreen(
     }
 
     DisposableEffect(previewView, lifecycleOwner) {
+        disposed.set(false)
+        scanned.set(false)
+        analyzing.set(false)
+        cameraReady = false
         val providerFuture = ProcessCameraProvider.getInstance(context)
         val listener = Runnable {
+            if (disposed.get()) return@Runnable
             val provider = runCatching { providerFuture.get() }.getOrNull()
             if (provider == null) {
-                toast(context, "相机初始化失败")
-                onOpenFailed()
+                if (!disposed.get()) {
+                    toast(context, "相机初始化失败")
+                    onOpenFailed()
+                }
                 return@Runnable
             }
             val preview = Preview.Builder().build().also {
@@ -4256,45 +4265,50 @@ private fun QuickCardScannerScreen(
                 .build()
 
             analysis.setAnalyzer(analyzerExecutor) { imageProxy ->
-                if (scanned.get() || !analyzing.compareAndSet(false, true)) {
+                if (disposed.get() || scanned.get() || !analyzing.compareAndSet(false, true)) {
                     imageProxy.close()
                     return@setAnalyzer
                 }
-                val mediaImage = imageProxy.image
-                if (mediaImage == null) {
-                    analyzing.set(false)
-                    imageProxy.close()
-                    return@setAnalyzer
-                }
-                val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                scanner.process(inputImage)
-                    .addOnSuccessListener(analyzerExecutor) { barcodes ->
-                        val mlTexts = barcodes.decodedQrTexts()
+                try {
+                    val mediaImage = imageProxy.image
+                    if (mediaImage != null && !disposed.get()) {
+                        val inputImage =
+                            InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                        val mlTexts = runBlocking {
+                            awaitTask(scanner.process(inputImage))?.decodedQrTexts().orEmpty()
+                        }
                         when {
                             mlTexts.size > 1 && scanned.compareAndSet(false, true) -> {
-                                mainExecutor.execute { onCandidatesState.value(mlTexts) }
+                                mainExecutor.execute {
+                                    if (!disposed.get()) {
+                                        onCandidatesState.value(mlTexts)
+                                    }
+                                }
                             }
                             mlTexts.size == 1 && scanned.compareAndSet(false, true) -> {
-                                mainExecutor.execute { onResultState.value(mlTexts.first()) }
-                            }
-                            else -> {
-                                val zxingText = decodeQrFromImageProxy(imageProxy)?.trim().orEmpty()
-                                if (zxingText.isNotEmpty() && scanned.compareAndSet(false, true)) {
-                                    mainExecutor.execute { onResultState.value(zxingText) }
+                                val result = mlTexts.first()
+                                mainExecutor.execute {
+                                    if (!disposed.get()) {
+                                        onResultState.value(result)
+                                    }
                                 }
                             }
                         }
                     }
-                    .addOnFailureListener(analyzerExecutor) {
+                    if (!scanned.get() && !disposed.get()) {
                         val zxingText = decodeQrFromImageProxy(imageProxy)?.trim().orEmpty()
                         if (zxingText.isNotEmpty() && scanned.compareAndSet(false, true)) {
-                            mainExecutor.execute { onResultState.value(zxingText) }
+                            mainExecutor.execute {
+                                if (!disposed.get()) {
+                                    onResultState.value(zxingText)
+                                }
+                            }
                         }
                     }
-                    .addOnCompleteListener(analyzerExecutor) {
-                        analyzing.set(false)
-                        imageProxy.close()
-                    }
+                } finally {
+                    analyzing.set(false)
+                    imageProxy.close()
+                }
             }
 
             runCatching {
@@ -4305,6 +4319,10 @@ private fun QuickCardScannerScreen(
                     preview,
                     analysis
                 )
+                if (disposed.get()) {
+                    provider.unbindAll()
+                    return@runCatching
+                }
                 boundCamera = camera
                 flashAvailable = camera.cameraInfo.hasFlashUnit()
                 torchEnabled = camera.cameraInfo.torchState.value == TorchState.ON
@@ -4315,14 +4333,18 @@ private fun QuickCardScannerScreen(
                 }
                 cameraReady = true
             }.onFailure {
-                AppLogger.e("quickCard scanner bind failed", it)
-                toast(context, "无法打开相机")
-                onOpenFailed()
+                if (!disposed.get()) {
+                    AppLogger.e("quickCard scanner bind failed", it)
+                    toast(context, "无法打开相机")
+                    onOpenFailed()
+                }
             }
         }
         providerFuture.addListener(listener, mainExecutor)
         onDispose {
+            disposed.set(true)
             boundCamera = null
+            cameraReady = false
             runCatching {
                 if (providerFuture.isDone) {
                     providerFuture.get().unbindAll()
@@ -4402,138 +4424,56 @@ private fun QuickCardScannerScreen(
                 )
             }
 
-            if (isLandscape) {
-                val sliderHeight = finderSize
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .offset(x = finderSize / 2f + 34.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Card(
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        backgroundColor = Color.White.copy(alpha = 0.14f),
-                        elevation = 0.dp
-                    ) {
-                        CompositionLocalProvider(
-                            LocalContentColor provides if (cameraReady && flashAvailable) {
-                                Color.White
-                            } else {
-                                Color.White.copy(alpha = 0.42f)
-                            }
-                        ) {
-                            Box(modifier = Modifier.padding(6.dp)) {
-                                Md2IconButton(
-                                    icon = if (torchEnabled) "flash_on" else "flash_off",
-                                    contentDescription = "手电筒",
-                                    onClick = {
-                                        val camera = boundCamera ?: return@Md2IconButton
-                                        val enabled = !torchEnabled
-                                        camera.cameraControl.enableTorch(enabled)
-                                        torchEnabled = enabled
-                                    },
-                                    enabled = cameraReady && flashAvailable
-                                )
-                            }
-                        }
-                    }
-                    Card(
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        backgroundColor = Color.White.copy(alpha = 0.14f),
-                        elevation = 0.dp
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            MsIcon("zoom_in", contentDescription = "放大", tint = Color.White)
-                            Md2VerticalSlider(
-                                value = zoomRatio,
-                                onValueChange = { target ->
-                                    val camera = boundCamera ?: return@Md2VerticalSlider
-                                    val resolved = target.coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
-                                    camera.cameraControl.setZoomRatio(resolved)
-                                    zoomRatio = resolved
-                                },
-                                valueRange = minZoomRatio..maxZoomRatio.coerceAtLeast(minZoomRatio),
-                                modifier = Modifier
-                                    .height(sliderHeight)
-                                    .width(32.dp)
-                            )
-                        }
-                    }
-                }
-            } else {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .offset(y = finderSize / 2f + if (isLandscape) 24.dp else 32.dp)
+                    .padding(horizontal = if (isLandscape) 20.dp else 28.dp)
+                    .fillMaxWidth(if (isLandscape) 0.62f else 0.78f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Row(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .offset(y = finderSize / 2f + 32.dp)
-                        .padding(horizontal = 28.dp)
-                        .fillMaxWidth(0.78f),
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Card(
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        backgroundColor = Color.White.copy(alpha = 0.14f),
-                        elevation = 0.dp,
+                    MsIcon("zoom_in", contentDescription = "放大", tint = Color.White)
+                    Slider(
+                        value = zoomRatio,
+                        onValueChange = { target ->
+                            val camera = boundCamera ?: return@Slider
+                            val resolved = target.coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
+                            camera.cameraControl.setZoomRatio(resolved)
+                            zoomRatio = resolved
+                        },
+                        valueRange = minZoomRatio..maxZoomRatio.coerceAtLeast(minZoomRatio),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colors.primary,
+                            activeTrackColor = MaterialTheme.colors.primary,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.35f)
+                        ),
                         modifier = Modifier.weight(1f)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            MsIcon("zoom_in", contentDescription = "放大", tint = Color.White)
-                            Slider(
-                                value = zoomRatio,
-                                onValueChange = { target ->
-                                    val camera = boundCamera ?: return@Slider
-                                    val resolved = target.coerceIn(minZoomRatio, maxZoomRatio.coerceAtLeast(minZoomRatio))
-                                    camera.cameraControl.setZoomRatio(resolved)
-                                    zoomRatio = resolved
-                                },
-                                valueRange = minZoomRatio..maxZoomRatio.coerceAtLeast(minZoomRatio),
-                                colors = SliderDefaults.colors(
-                                    thumbColor = MaterialTheme.colors.primary,
-                                    activeTrackColor = MaterialTheme.colors.primary,
-                                    inactiveTrackColor = Color.White.copy(alpha = 0.35f)
-                                ),
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
+                    )
+                }
+                CompositionLocalProvider(
+                    LocalContentColor provides if (cameraReady && flashAvailable) {
+                        Color.White
+                    } else {
+                        Color.White.copy(alpha = 0.42f)
                     }
-                    Card(
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        backgroundColor = Color.White.copy(alpha = 0.14f),
-                        elevation = 0.dp
-                    ) {
-                        CompositionLocalProvider(
-                            LocalContentColor provides if (cameraReady && flashAvailable) {
-                                Color.White
-                            } else {
-                                Color.White.copy(alpha = 0.42f)
-                            }
-                        ) {
-                            Box(modifier = Modifier.padding(6.dp)) {
-                                Md2IconButton(
-                                    icon = if (torchEnabled) "flash_on" else "flash_off",
-                                    contentDescription = "手电筒",
-                                    onClick = {
-                                        val camera = boundCamera ?: return@Md2IconButton
-                                        val enabled = !torchEnabled
-                                        camera.cameraControl.enableTorch(enabled)
-                                        torchEnabled = enabled
-                                    },
-                                    enabled = cameraReady && flashAvailable
-                                )
-                            }
-                        }
-                    }
+                ) {
+                    Md2IconButton(
+                        icon = if (torchEnabled) "flash_on" else "flash_off",
+                        contentDescription = "手电筒",
+                        onClick = {
+                            val camera = boundCamera ?: return@Md2IconButton
+                            val enabled = !torchEnabled
+                            camera.cameraControl.enableTorch(enabled)
+                            torchEnabled = enabled
+                        },
+                        enabled = cameraReady && flashAvailable
+                    )
                 }
             }
         }
