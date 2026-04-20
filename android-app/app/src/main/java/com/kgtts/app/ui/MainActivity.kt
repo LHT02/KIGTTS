@@ -1400,13 +1400,13 @@ class MainViewModel(
         return dir
     }
 
-    private fun defaultQuickCardDraft(type: QuickCardType, editId: Long, isNew: Boolean, prefillLink: String = ""): QuickCardDraft {
+    private fun defaultQuickCardDraft(editId: Long, isNew: Boolean, prefillLink: String = ""): QuickCardDraft {
         return QuickCardDraft(
             editId = editId,
             isNew = isNew,
-            type = type,
-            title = "名片名字",
-            note = "愿你的生活充满诗与远方",
+            type = QuickCardType.Text,
+            title = "名片标题",
+            note = "名片备注",
             themeColor = "#038387",
             link = prefillLink.trim(),
             portraitImagePath = "",
@@ -1446,8 +1446,7 @@ class MainViewModel(
         for (i in 0 until cardsArr.length()) {
             val obj = cardsArr.optJSONObject(i) ?: continue
             val id = obj.optLong("id", i.toLong() + 1L).coerceAtLeast(1L)
-            val type = QuickCardType.fromWire(obj.optString("type", QuickCardType.Text.wireValue))
-            val title = obj.optString("title", "名片名字")
+            val title = obj.optString("title", "")
             val note = obj.optString("note", "")
             val themeColor = obj.optString("themeColor", "#038387")
             val link = obj.optString("link", "")
@@ -1455,7 +1454,7 @@ class MainViewModel(
             val landscapeImagePath = obj.optString("landscapeImagePath", "")
             parsedCards += QuickCard(
                 id = id,
-                type = type,
+                type = QuickCardType.Text,
                 title = title,
                 note = note,
                 themeColor = normalizeQuickCardColor(themeColor),
@@ -1484,7 +1483,7 @@ class MainViewModel(
                 cardsArr.put(
                     JSONObject().apply {
                         put("id", c.id)
-                        put("type", c.type.wireValue)
+                        put("type", QuickCardType.Text.wireValue)
                         put("title", c.title)
                         put("note", c.note)
                         put("themeColor", c.themeColor)
@@ -1555,9 +1554,9 @@ class MainViewModel(
         quickCardPreviewCardId = null
     }
 
-    fun beginCreateQuickCard(type: QuickCardType, prefillLink: String = "") {
+    fun beginCreateQuickCard(@Suppress("UNUSED_PARAMETER") type: QuickCardType, prefillLink: String = "") {
         val id = quickCardsNextId++
-        quickCardDraft = defaultQuickCardDraft(type = type, editId = id, isNew = true, prefillLink = prefillLink)
+        quickCardDraft = defaultQuickCardDraft(editId = id, isNew = true, prefillLink = prefillLink)
     }
 
     fun beginEditQuickCard(cardId: Long) {
@@ -1594,31 +1593,17 @@ class MainViewModel(
         }
     }
 
-    private fun normalizeQuickCardType(draft: QuickCardDraft): QuickCardType {
-        val hasPortrait = draft.portraitImagePath.isNotBlank()
-        val hasLandscape = draft.landscapeImagePath.isNotBlank()
-        var type = draft.type
-        if (type == QuickCardType.Image && !hasPortrait && !hasLandscape) {
-            type = QuickCardType.Qr
-        }
-        if (type == QuickCardType.Qr && draft.link.trim().isEmpty()) {
-            type = QuickCardType.Text
-        }
-        return type
-    }
-
     private fun normalizedQuickCardFromDraft(draft: QuickCardDraft): QuickCard {
         val id = draft.editId ?: -1L
         val normalized = draft.copy(
-            title = draft.title.trim().ifEmpty { "名片名字" },
+            title = draft.title.trim(),
             note = draft.note.trim(),
             themeColor = normalizeQuickCardColor(draft.themeColor),
             link = draft.link.trim()
         )
-        val type = normalizeQuickCardType(normalized)
         return QuickCard(
             id = id,
-            type = type,
+            type = QuickCardType.Text,
             title = normalized.title,
             note = normalized.note,
             themeColor = normalized.themeColor,
@@ -3565,7 +3550,6 @@ private fun QuickCardMainScreen(
     val context = LocalContext.current
     val cards = viewModel.quickCards
     val isLandscape = androidx.compose.ui.platform.LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    var showCreateDialog by remember { mutableStateOf(false) }
     val previewCardId = viewModel.quickCardPreviewCardId
     val previewCard = remember(cards, previewCardId) {
         previewCardId?.let { id -> cards.firstOrNull { it.id == id } }
@@ -3579,9 +3563,9 @@ private fun QuickCardMainScreen(
         }
     }
 
-    val topActions = remember(cameraPermissionLauncher, context) {
+    val topActions = remember(cameraPermissionLauncher, context, onCreateCard) {
         QuickCardTopBarActions(
-            onNew = { showCreateDialog = true },
+            onNew = { onCreateCard(QuickCardType.Text, "") },
             onScan = {
                 val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
@@ -3644,7 +3628,7 @@ private fun QuickCardMainScreen(
                             },
                             onCardClick = { card ->
                                 if (card == null) {
-                                    showCreateDialog = true
+                                    onCreateCard(QuickCardType.Text, "")
                                 } else {
                                     viewModel.openQuickCardPreview(card.id)
                                 }
@@ -3696,7 +3680,7 @@ private fun QuickCardMainScreen(
                             },
                             onCardClick = { card ->
                                 if (card == null) {
-                                    showCreateDialog = true
+                                    onCreateCard(QuickCardType.Text, "")
                                 } else {
                                     viewModel.openQuickCardPreview(card.id)
                                 }
@@ -3808,44 +3792,6 @@ private fun QuickCardMainScreen(
         }
     }
 
-    if (showCreateDialog) {
-        AlertDialog(
-            onDismissRequest = { showCreateDialog = false },
-            title = { Text("新建名片") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("选择名片类型")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Md2OutlinedButton(
-                            onClick = {
-                                showCreateDialog = false
-                                onCreateCard(QuickCardType.Image, "")
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("图片名片") }
-                        Md2OutlinedButton(
-                            onClick = {
-                                showCreateDialog = false
-                                onCreateCard(QuickCardType.Qr, "")
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("二维码名片") }
-                    }
-                    Md2OutlinedButton(
-                        onClick = {
-                            showCreateDialog = false
-                            onCreateCard(QuickCardType.Text, "")
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("文字名片") }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                Md2TextButton(onClick = { showCreateDialog = false }) { Text("取消") }
-            }
-        )
-    }
 }
 
 @Composable
@@ -4142,17 +4088,13 @@ private fun QuickCardSortRow(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = card.title.ifBlank { "名片名字" },
+                    text = card.title.ifBlank { "未命名名片" },
                     style = MaterialTheme.typography.subtitle1,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = when (card.type) {
-                        QuickCardType.Image -> "图片名片"
-                        QuickCardType.Qr -> "二维码名片"
-                        QuickCardType.Text -> "文字名片"
-                    },
+                    text = "快捷名片",
                     style = MaterialTheme.typography.caption,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -5054,15 +4996,10 @@ private fun QuickCardPreviewCard(
         elevation = UiTokens.CardElevation
     ) {
         if (card == null) {
-            val placeholderModifier = if (landscape) {
-                Modifier.fillMaxSize()
-            } else {
-                Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(QUICK_CARD_CONTENT_ASPECT_PORTRAIT)
-            }
             Box(
-                modifier = placeholderModifier
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(quickCardDisplayAspect(landscape))
                     .padding(16.dp)
                     .clip(RoundedCornerShape(UiTokens.Radius))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
@@ -5077,25 +5014,254 @@ private fun QuickCardPreviewCard(
             return@Card
         }
 
-        if (landscape) {
-            QuickCardLandscapeContent(card = card, onEdit = onEdit, onShare = onShare)
-        } else {
-            QuickCardPortraitContent(card = card, onEdit = onEdit, onShare = onShare)
-        }
+        QuickCardUnifiedContent(card = card, landscape = landscape, onEdit = onEdit, onShare = onShare)
     }
 }
 
 @Composable
 private fun QuickCardBrandLogo(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    light: Boolean? = null
 ) {
-    val logoRes = if (isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
+    val logoRes = if (light ?: isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
     Image(
         painter = androidx.compose.ui.res.painterResource(id = logoRes),
         contentDescription = "KIGTTS",
         modifier = modifier.height(18.dp),
         contentScale = ContentScale.Fit
     )
+}
+
+@Composable
+private fun QuickCardUnifiedContent(
+    card: QuickCard,
+    landscape: Boolean,
+    onEdit: (QuickCard) -> Unit,
+    onShare: (QuickCard) -> Unit
+) {
+    val context = LocalContext.current
+    val theme = quickCardThemeColor(card.themeColor)
+    val onTheme = quickCardThemeOnColor(theme)
+    val linkText = card.link.trim()
+    val imageBitmap = rememberQuickCardBitmap(card.heroImagePath(landscape))
+    val qrBitmap = rememberQuickCardQrBitmap(linkText)
+    val hasLink = linkText.isNotEmpty()
+    val hasImage = imageBitmap != null
+    val foreground = if (hasImage) Color.White else onTheme
+    val titleText = card.title.trim()
+    val noteText = card.note.trim()
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(quickCardDisplayAspect(landscape))
+            .clip(RoundedCornerShape(UiTokens.Radius))
+            .background(theme)
+    ) {
+        if (hasImage) {
+            Image(
+                bitmap = imageBitmap!!.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .fillMaxWidth()
+                    .height(92.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Black.copy(alpha = 0.42f), Color.Transparent)
+                        )
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .height(86.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.46f))
+                        )
+                    )
+            )
+        } else {
+            QuickCardDecorativeBackgroundText(
+                text = titleText,
+                color = foreground.copy(alpha = 0.22f),
+                landscape = landscape,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 16.dp, top = 14.dp, end = 72.dp)
+        ) {
+            if (titleText.isNotEmpty()) {
+                Text(
+                    text = titleText,
+                    color = foreground,
+                    style = MaterialTheme.typography.h6,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (noteText.isNotEmpty()) {
+                Text(
+                    text = noteText,
+                    color = foreground.copy(alpha = 0.9f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        QuickCardOverlayIconButton(
+            icon = "edit",
+            contentDescription = "编辑名片",
+            tint = foreground,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 8.dp, end = 8.dp)
+        ) { onEdit(card) }
+
+        if (hasLink) {
+            Card(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .fillMaxWidth(if (landscape) 0.28f else 0.46f)
+                    .aspectRatio(1f),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = Color.White,
+                elevation = UiTokens.CardElevation
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (qrBitmap != null) {
+                        Image(
+                            bitmap = qrBitmap.asImageBitmap(),
+                            contentDescription = "二维码",
+                            modifier = Modifier.fillMaxSize(0.86f)
+                        )
+                    }
+                }
+            }
+        }
+
+        if (hasLink) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth(if (landscape) 0.56f else 0.74f)
+                    .padding(start = 14.dp, bottom = 10.dp, end = 8.dp),
+                horizontalAlignment = Alignment.Start
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    QuickCardOverlayIconButton(
+                        icon = "open_in_new",
+                        contentDescription = "打开链接",
+                        tint = foreground
+                    ) { openQuickCardLink(context, linkText) }
+                    QuickCardOverlayIconButton(
+                        icon = "share",
+                        contentDescription = "分享链接",
+                        tint = foreground
+                    ) { onShare(card) }
+                }
+                Text(
+                    text = linkText,
+                    color = foreground,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
+        QuickCardBrandLogo(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 14.dp, bottom = 14.dp),
+            light = hasImage || foreground == Color.White
+        )
+    }
+}
+
+@Composable
+private fun QuickCardDecorativeBackgroundText(
+    text: String,
+    color: Color,
+    landscape: Boolean,
+    modifier: Modifier = Modifier
+) {
+    if (text.isBlank()) return
+    var textWidthPx by remember(text) { mutableIntStateOf(0) }
+    Box(modifier = modifier) {
+        if (landscape) {
+            Text(
+                text = text,
+                color = color,
+                fontWeight = FontWeight.Bold,
+                fontSize = 64.sp,
+                softWrap = false,
+                maxLines = 1,
+                overflow = TextOverflow.Visible,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .graphicsLayer(clip = false)
+                    .width(520.dp)
+                    .padding(start = 12.dp, bottom = 6.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(68.dp)
+                    .background(Brush.horizontalGradient(listOf(Color.Transparent, color.copy(alpha = 0.18f))))
+            )
+        } else {
+            val topPad = 10.dp
+            val topPadPx = with(LocalDensity.current) { topPad.toPx() }
+            Text(
+                text = text,
+                color = color,
+                fontWeight = FontWeight.Bold,
+                fontSize = 88.sp,
+                softWrap = false,
+                maxLines = 1,
+                overflow = TextOverflow.Visible,
+                onTextLayout = { textWidthPx = it.size.width },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(end = 10.dp)
+                    .graphicsLayer(
+                        rotationZ = 90f,
+                        transformOrigin = TransformOrigin(1f, 0f),
+                        translationY = textWidthPx.toFloat() + topPadPx,
+                        clip = false
+                    )
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .fillMaxWidth()
+                    .height(72.dp)
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, color.copy(alpha = 0.18f))))
+            )
+        }
+    }
 }
 
 @Composable
@@ -5136,18 +5302,22 @@ private fun QuickCardPortraitContent(
                 Column(
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(
-                        card.title.ifBlank { "名片名字" },
-                        style = MaterialTheme.typography.h6,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        card.note.ifBlank { "愿你的生活充满诗与远方" },
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (card.title.isNotBlank()) {
+                        Text(
+                            card.title.trim(),
+                            style = MaterialTheme.typography.h6,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (card.note.isNotBlank()) {
+                        Text(
+                            card.note.trim(),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
                 Spacer(Modifier.width(6.dp))
                 Md2IconButton(
@@ -5207,18 +5377,22 @@ private fun QuickCardLandscapeContent(
                 .fillMaxHeight()
                 .padding(vertical = 2.dp)
         ) {
-            Text(
-                card.title.ifBlank { "名片名字" },
-                style = MaterialTheme.typography.h6,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                card.note.ifBlank { "愿你的生活充满诗与远方" },
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
+            if (card.title.isNotBlank()) {
+                Text(
+                    card.title.trim(),
+                    style = MaterialTheme.typography.h6,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (card.note.isNotBlank()) {
+                Text(
+                    card.note.trim(),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Spacer(Modifier.height(4.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -5385,7 +5559,7 @@ private fun QuickCardHeroArea(
             }
 
             QuickCardType.Text -> {
-                val watermark = card.title.ifBlank { "名片名字" }
+                val watermark = card.title.trim()
                 var portraitWatermarkWidthPx by remember(watermark) { mutableIntStateOf(0) }
                 BoxWithConstraints(
                     modifier = Modifier.fillMaxSize()
@@ -5456,14 +5630,16 @@ private fun QuickCardHeroArea(
                         .fillMaxSize()
                         .padding(start = 12.dp, end = 12.dp, bottom = 12.dp, top = 16.dp)
                 ) {
-                    Text(
-                        text = card.title.ifBlank { "名片名字" },
-                        color = onTheme,
-                        style = MaterialTheme.typography.h5,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (card.title.isNotBlank()) {
+                        Text(
+                            text = card.title.trim(),
+                            color = onTheme,
+                            style = MaterialTheme.typography.h5,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     if (card.note.isNotBlank()) {
                         Text(
                             text = card.note,
@@ -5517,11 +5693,12 @@ private fun QuickCardOverlayIconButton(
     icon: String,
     contentDescription: String,
     tint: Color,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     IconButton(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .size(34.dp)
             .clip(CircleShape)
     ) {
@@ -5598,8 +5775,8 @@ private fun QuickCardEditorScreen(
     fun launchQuickCardCrop(uri: Uri) {
         val options = CropImageOptions(
             fixAspectRatio = true,
-            aspectRatioX = if (cropLandscape) 5 else 3,
-            aspectRatioY = if (cropLandscape) 3 else 5,
+            aspectRatioX = 16,
+            aspectRatioY = 9,
             activityTitle = "裁剪名片图片",
             cropMenuCropButtonTitle = "确认",
             activityMenuIconColor = 0xFFFFFFFF.toInt(),
@@ -5689,26 +5866,6 @@ private fun QuickCardEditorScreen(
             Spacer(Modifier.height(UiTokens.PageTopBlank))
 
         Md2SettingsCard("基础信息") {
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                QuickCardTypeChip(
-                    selected = draft.type == QuickCardType.Image,
-                    label = "图片名片",
-                    onClick = { viewModel.updateQuickCardDraft { it.copy(type = QuickCardType.Image) } }
-                )
-                QuickCardTypeChip(
-                    selected = draft.type == QuickCardType.Qr,
-                    label = "二维码名片",
-                    onClick = { viewModel.updateQuickCardDraft { it.copy(type = QuickCardType.Qr) } }
-                )
-                QuickCardTypeChip(
-                    selected = draft.type == QuickCardType.Text,
-                    label = "文字名片",
-                    onClick = { viewModel.updateQuickCardDraft { it.copy(type = QuickCardType.Text) } }
-                )
-            }
             Md2OutlinedField(
                 value = draft.title,
                 onValueChange = { viewModel.updateQuickCardDraft { old -> old.copy(title = it) } },
@@ -5785,35 +5942,38 @@ private fun QuickCardEditorScreen(
             }
         }
 
-        if (draft.type == QuickCardType.Image) {
-            Md2SettingsCard("图片") {
-                QuickCardImagePathRow(
-                    title = "竖屏图片",
-                    path = draft.portraitImagePath,
-                    onClear = { viewModel.clearQuickCardDraftImage(landscape = false) },
-                    onPick = {
-                        cropLandscape = false
-                        if (uiState.useBuiltinGallery) {
-                            showBuiltinGalleryPicker = true
-                        } else {
-                            imagePicker.launch("image/*")
-                        }
+        Md2SettingsCard("背景图片") {
+            QuickCardImagePathRow(
+                title = "竖屏背景图",
+                path = draft.portraitImagePath,
+                onClear = { viewModel.clearQuickCardDraftImage(landscape = false) },
+                onPick = {
+                    cropLandscape = false
+                    if (uiState.useBuiltinGallery) {
+                        showBuiltinGalleryPicker = true
+                    } else {
+                        imagePicker.launch("image/*")
                     }
-                )
-                QuickCardImagePathRow(
-                    title = "横屏图片",
-                    path = draft.landscapeImagePath,
-                    onClear = { viewModel.clearQuickCardDraftImage(landscape = true) },
-                    onPick = {
-                        cropLandscape = true
-                        if (uiState.useBuiltinGallery) {
-                            showBuiltinGalleryPicker = true
-                        } else {
-                            imagePicker.launch("image/*")
-                        }
+                }
+            )
+            QuickCardImagePathRow(
+                title = "横屏背景图",
+                path = draft.landscapeImagePath,
+                onClear = { viewModel.clearQuickCardDraftImage(landscape = true) },
+                onPick = {
+                    cropLandscape = true
+                    if (uiState.useBuiltinGallery) {
+                        showBuiltinGalleryPicker = true
+                    } else {
+                        imagePicker.launch("image/*")
                     }
-                )
-            }
+                }
+            )
+            Text(
+                text = "未设置图片时使用主题色背景，并显示装饰文字。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Row(
@@ -9768,11 +9928,14 @@ private fun QuickSubtitleNavHost(
     }
 }
 
-private const val QUICK_CARD_ASPECT_PORTRAIT = 0.52f
-private const val QUICK_CARD_ASPECT_LANDSCAPE = 2.75f
+private const val QUICK_CARD_ASPECT_PORTRAIT = 9f / 16f
+private const val QUICK_CARD_ASPECT_LANDSCAPE = 16f / 9f
 private const val QUICK_CARD_LANDSCAPE_CARD_WIDTH_FRACTION = 0.94f
-private const val QUICK_CARD_CONTENT_ASPECT_PORTRAIT = 1f / 1.67f
-private const val QUICK_CARD_CONTENT_ASPECT_LANDSCAPE = 1.67f
+private const val QUICK_CARD_CONTENT_ASPECT_PORTRAIT = QUICK_CARD_ASPECT_PORTRAIT
+private const val QUICK_CARD_CONTENT_ASPECT_LANDSCAPE = QUICK_CARD_ASPECT_LANDSCAPE
+
+private fun quickCardDisplayAspect(landscape: Boolean): Float =
+    if (landscape) QUICK_CARD_ASPECT_LANDSCAPE else QUICK_CARD_ASPECT_PORTRAIT
 
 private fun quickCardThemeColor(hex: String): Color {
     return runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrElse { UiTokens.Primary }
@@ -9793,9 +9956,9 @@ private fun QuickCard.heroImagePath(landscape: Boolean): String {
 private fun QuickCardDraft.toPreviewCard(): QuickCard {
     return QuickCard(
         id = editId ?: -1L,
-        type = type,
-        title = title.ifBlank { "名片名字" },
-        note = note,
+        type = QuickCardType.Text,
+        title = title.trim(),
+        note = note.trim(),
         themeColor = themeColor,
         link = link,
         portraitImagePath = portraitImagePath,

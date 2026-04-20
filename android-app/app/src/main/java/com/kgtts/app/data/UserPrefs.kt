@@ -63,6 +63,7 @@ object UserPrefs {
     private val KEY_FLOATING_OVERLAY_AUTO_DOCK = booleanPreferencesKey("floating_overlay_auto_dock")
     private val KEY_FLOATING_OVERLAY_SHORTCUTS = stringPreferencesKey("floating_overlay_shortcuts")
     private val KEY_FLOATING_OVERLAY_LAYOUT = stringPreferencesKey("floating_overlay_layout")
+    private val KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE = floatPreferencesKey("floating_overlay_quick_subtitle_font_size")
     private val KEY_QUICK_SUBTITLE_CONFIG = stringPreferencesKey("quick_subtitle_config")
     private val KEY_QUICK_CARD_CONFIG = stringPreferencesKey("quick_card_config")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
@@ -602,6 +603,17 @@ object UserPrefs {
     suspend fun setFloatingOverlayLayout(context: Context, json: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_FLOATING_OVERLAY_LAYOUT] = json
+        }
+    }
+
+    suspend fun getFloatingOverlayQuickSubtitleFontSize(context: Context): Float? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE]
+    }
+
+    suspend fun setFloatingOverlayQuickSubtitleFontSize(context: Context, sizeSp: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE] = sizeSp
         }
     }
 

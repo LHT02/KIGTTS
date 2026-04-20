@@ -39,8 +39,9 @@ object QuickCardRenderCache {
     fun loadQr(content: String, sizePx: Int = defaultQrSizePx): Bitmap? {
         val normalized = content.trim()
         if (normalized.isEmpty()) return null
+        val cacheKey = "$sizePx:$normalized"
         synchronized(qrCache) {
-            qrCache.get(normalized)?.let { return it }
+            qrCache.get(cacheKey)?.let { return it }
         }
         val bitmap = runCatching {
             val matrix = QRCodeWriter().encode(normalized, BarcodeFormat.QR_CODE, sizePx, sizePx)
@@ -53,7 +54,7 @@ object QuickCardRenderCache {
             }
         }.getOrNull() ?: return null
         synchronized(qrCache) {
-            qrCache.put(normalized, bitmap)
+            qrCache.put(cacheKey, bitmap)
         }
         return bitmap
     }
