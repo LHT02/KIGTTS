@@ -4082,6 +4082,9 @@ private fun QuickCardNavHost(
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
 ) {
     val context = LocalContext.current
+    DisposableEffect(Unit) {
+        onDispose { onTopBarActionsChange(null) }
+    }
     val navigateDecodedQrResult: (String, String) -> Unit = { decoded, popRoute ->
         if (isWeChatQrContent(decoded)) {
             if (isPackageInstalled(context, WECHAT_PACKAGE_NAME)) {
@@ -4325,38 +4328,49 @@ private fun QuickCardMainScreen(
         previewCardId?.let { id -> cards.firstOrNull { it.id == id } }
     }
     val closePreview: () -> Unit = { viewModel.closeQuickCardPreview() }
+    val onCreateCardState = rememberUpdatedState(onCreateCard)
+    val onOpenScannerState = rememberUpdatedState(onOpenScanner)
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
-            onOpenScanner()
+            onOpenScannerState.value()
         } else {
             toast(context, "未授予相机权限")
         }
     }
 
-    val topActions = remember(cameraPermissionLauncher, context, onCreateCard) {
+    val topActions = remember(cameraPermissionLauncher, context) {
         QuickCardTopBarActions(
-            onNew = { onCreateCard(QuickCardType.Text, "") },
+            onNew = { onCreateCardState.value(QuickCardType.Text, "") },
             onScan = {
                 val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
                 if (granted) {
-                    onOpenScanner()
+                    onOpenScannerState.value()
                 } else {
                     cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 }
             }
         )
     }
-    SideEffect {
+    LaunchedEffect(topActions) {
         onTopBarActionsChange(topActions)
-    }
-    DisposableEffect(Unit) {
-        onDispose { onTopBarActionsChange(null) }
     }
 
     val pageCount = (cards.size + 1).coerceAtLeast(1) // always keep a trailing "new card" page
     val selectedPage = if (cards.isEmpty()) 0 else viewModel.quickCardSelectedIndex.coerceIn(0, cards.lastIndex)
     var pagerPageIndex by rememberSaveable { mutableIntStateOf(selectedPage) }
+    var showSortHint by rememberSaveable { mutableStateOf(false) }
+    val canShowSortHint = cards.size > 1
+    LaunchedEffect(canShowSortHint) {
+        if (canShowSortHint && !quickCardSortHintShownThisProcess) {
+            quickCardSortHintShownThisProcess = true
+            showSortHint = true
+            delay(2_000)
+            showSortHint = false
+        } else if (!canShowSortHint) {
+            showSortHint = false
+        }
+    }
     LaunchedEffect(pageCount, selectedPage) {
         val maxPage = (pageCount - 1).coerceAtLeast(0)
         if (pagerPageIndex > maxPage) {
@@ -4384,37 +4398,44 @@ private fun QuickCardMainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     key("quick_card_pager_landscape") {
-                        QuickCardPagerView(
-                            cards = cards,
-                            currentIndex = pagerPageIndex,
-                            landscape = true,
-                            modifier = Modifier.fillMaxSize(),
-                            onPageChanged = { page ->
-                                val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                                pagerPageIndex = safePage
-                                if (cards.isNotEmpty() && safePage < cards.size) {
-                                    viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            QuickCardPagerView(
+                                cards = cards,
+                                currentIndex = pagerPageIndex,
+                                landscape = true,
+                                modifier = Modifier.fillMaxSize(),
+                                onPageChanged = { page ->
+                                    val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                    pagerPageIndex = safePage
+                                    if (cards.isNotEmpty() && safePage < cards.size) {
+                                        viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                                    }
+                                },
+                                onCardClick = { card ->
+                                    if (card == null) {
+                                        onCreateCard(QuickCardType.Text, "")
+                                    } else {
+                                        viewModel.openQuickCardPreview(card.id)
+                                    }
+                                },
+                                onCardLongPress = { card ->
+                                    if (card != null) {
+                                        onOpenSort()
+                                    }
+                                },
+                                onEdit = { card ->
+                                    onOpenEditor(card.id)
+                                },
+                                onShare = { target ->
+                                    shareQuickCard(context, target, true)
                                 }
-                            },
-                            onCardClick = { card ->
-                                if (card == null) {
-                                    onCreateCard(QuickCardType.Text, "")
-                                } else {
-                                    viewModel.openQuickCardPreview(card.id)
-                                }
-                            },
-                            onCardLongPress = { card ->
-                                if (card != null) {
-                                    onOpenSort()
-                                }
-                            },
-                            onEdit = { card ->
-                                onOpenEditor(card.id)
-                            },
-                            onShare = { target ->
-                                shareQuickCard(context, target, true)
-                            }
-                        )
+                            )
+                            QuickCardSortHintOverlay(
+                                visible = showSortHint,
+                                landscape = true,
+                                onDismiss = { showSortHint = false }
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -4435,38 +4456,45 @@ private fun QuickCardMainScreen(
                         .fillMaxWidth()
                 ) {
                     key("quick_card_pager_portrait") {
-                        QuickCardPagerView(
-                            cards = cards,
-                            currentIndex = pagerPageIndex,
-                            landscape = false,
-                            modifier = Modifier
-                                .fillMaxSize(),
-                            onPageChanged = { page ->
-                                val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                                pagerPageIndex = safePage
-                                if (cards.isNotEmpty() && safePage < cards.size) {
-                                    viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            QuickCardPagerView(
+                                cards = cards,
+                                currentIndex = pagerPageIndex,
+                                landscape = false,
+                                modifier = Modifier
+                                    .fillMaxSize(),
+                                onPageChanged = { page ->
+                                    val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                    pagerPageIndex = safePage
+                                    if (cards.isNotEmpty() && safePage < cards.size) {
+                                        viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                                    }
+                                },
+                                onCardClick = { card ->
+                                    if (card == null) {
+                                        onCreateCard(QuickCardType.Text, "")
+                                    } else {
+                                        viewModel.openQuickCardPreview(card.id)
+                                    }
+                                },
+                                onCardLongPress = { card ->
+                                    if (card != null) {
+                                        onOpenSort()
+                                    }
+                                },
+                                onEdit = { card ->
+                                    onOpenEditor(card.id)
+                                },
+                                onShare = { target ->
+                                    shareQuickCard(context, target, false)
                                 }
-                            },
-                            onCardClick = { card ->
-                                if (card == null) {
-                                    onCreateCard(QuickCardType.Text, "")
-                                } else {
-                                    viewModel.openQuickCardPreview(card.id)
-                                }
-                            },
-                            onCardLongPress = { card ->
-                                if (card != null) {
-                                    onOpenSort()
-                                }
-                            },
-                            onEdit = { card ->
-                                onOpenEditor(card.id)
-                            },
-                            onShare = { target ->
-                                shareQuickCard(context, target, false)
-                            }
-                        )
+                            )
+                            QuickCardSortHintOverlay(
+                                visible = showSortHint,
+                                landscape = false,
+                                onDismiss = { showSortHint = false }
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -4565,6 +4593,61 @@ private fun QuickCardMainScreen(
 }
 
 @Composable
+private fun QuickCardSortHintOverlay(
+    visible: Boolean,
+    landscape: Boolean,
+    onDismiss: () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(animationSpec = tween(170, easing = FastOutSlowInEasing)),
+        exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                        onDismiss()
+                    }
+                }
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(
+                        horizontal = if (landscape) 54.dp else 38.dp,
+                        vertical = if (landscape) 18.dp else 26.dp
+                    )
+                    .fillMaxWidth(if (landscape) 0.62f else 0.82f)
+                    .heightIn(min = 46.dp)
+                    .background(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.42f)
+                            )
+                        ),
+                        shape = RoundedCornerShape(UiTokens.Radius)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Text(
+                    text = "长按对名片进行排序。",
+                    color = Color.White.copy(alpha = 0.86f),
+                    style = MaterialTheme.typography.caption,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun QuickCardSortScreen(
     viewModel: MainViewModel,
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
@@ -4574,16 +4657,14 @@ private fun QuickCardSortScreen(
     val topBlank = UiTokens.PageTopBlank
     val bottomBlank = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 8.dp
 
-    SideEffect {
-        onTopBarActionsChange(
-            QuickCardTopBarActions(
-                onConfirm = onDone,
-                canConfirm = true
-            )
+    val topActions = remember(onDone) {
+        QuickCardTopBarActions(
+            onConfirm = onDone,
+            canConfirm = true
         )
     }
-    DisposableEffect(Unit) {
-        onDispose { onTopBarActionsChange(null) }
+    LaunchedEffect(topActions) {
+        onTopBarActionsChange(topActions)
     }
 
     CenteredPageColumn(
@@ -6554,6 +6635,7 @@ private fun QuickCardEditorScreen(
     BackHandler {
         requestExitEditor()
     }
+    val requestExitEditorState = rememberUpdatedState { requestExitEditor() }
 
     val isExisting = !draft.isNew && draft.editId != null
     LaunchedEffect(draft.themeColor) {
@@ -6565,32 +6647,31 @@ private fun QuickCardEditorScreen(
             themeLight = hsl[2]
         }
     }
-    val editorActions = if (!isExisting) {
-        QuickCardTopBarActions(
-            onNew = {},
-            onScan = {},
-            onBackRequest = { requestExitEditor() }
-        )
-    } else {
-        QuickCardTopBarActions(
-            onNew = {},
-            onScan = {},
-            onCopy = {
-                val copied = viewModel.duplicateEditingQuickCard()
-                if (copied != null) toast(context, "已复制名片")
-            },
-            onDelete = { showDeleteConfirm = true },
-            onBackRequest = { requestExitEditor() },
-            canCopy = true,
-            canDelete = true
-        )
+    val editorActions = remember(isExisting, context, viewModel) {
+        if (!isExisting) {
+            QuickCardTopBarActions(
+                onNew = {},
+                onScan = {},
+                onBackRequest = { requestExitEditorState.value() }
+            )
+        } else {
+            QuickCardTopBarActions(
+                onNew = {},
+                onScan = {},
+                onCopy = {
+                    val copied = viewModel.duplicateEditingQuickCard()
+                    if (copied != null) toast(context, "已复制名片")
+                },
+                onDelete = { showDeleteConfirm = true },
+                onBackRequest = { requestExitEditorState.value() },
+                canCopy = true,
+                canDelete = true
+            )
+        }
     }
 
-    SideEffect {
+    LaunchedEffect(editorActions) {
         onTopBarActionsChange(editorActions)
-    }
-    DisposableEffect(Unit) {
-        onDispose { onTopBarActionsChange(null) }
     }
 
     CenteredPageColumn(
@@ -7227,6 +7308,7 @@ private val SoundboardAudioFileExtensions = setOf(
 )
 
 private const val TTS_DISABLED_MESSAGE = "TTS已禁用，如需打开，请打开顶部音频状态菜单将“禁用TTS”选项关闭"
+private var quickCardSortHintShownThisProcess = false
 
 class MainActivity : ComponentActivity() {
     private var lastDecorFitsSystemWindows: Boolean = false
@@ -8974,17 +9056,14 @@ fun AppScaffold(viewModel: MainViewModel) {
                         basePage == pageSoundboard && soundboardRoute == SoundboardRoutes.Editor
                     val showQuickCardMainActions =
                         basePage == pageQuickCard &&
-                                quickCardRoute == QuickCardRoutes.Main &&
-                                quickCardActions != null
+                                quickCardRoute == QuickCardRoutes.Main
                     val showQuickCardEditorActions =
                         basePage == pageQuickCard &&
                                 quickCardRoute == QuickCardRoutes.Editor &&
-                                quickCardActions != null &&
-                                (quickCardActions.canCopy || quickCardActions.canDelete)
+                                viewModel.quickCardDraft?.isNew == false
                     val showQuickCardSortActions =
                         basePage == pageQuickCard &&
-                                quickCardRoute == QuickCardRoutes.Sort &&
-                                quickCardActions?.canConfirm == true
+                                quickCardRoute == QuickCardRoutes.Sort
                     val showQuickCardWebActions =
                         basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Web
                     val showDrawingActions = basePage == pageDrawing
@@ -9225,7 +9304,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                             ) {
                                 IconButton(
                                     onClick = { quickCardActions?.onConfirm?.invoke() },
-                                    enabled = showQuickCardSortActions
+                                    enabled = showQuickCardSortActions && quickCardActions?.canConfirm == true
                                 ) {
                                     MsIcon("check", contentDescription = "保存排序并返回")
                                 }
