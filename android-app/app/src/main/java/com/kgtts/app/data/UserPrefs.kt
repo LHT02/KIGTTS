@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
 import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
+import com.lhtstudio.kigtts.app.audio.SpeechEnhancementMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -23,6 +24,12 @@ object UserPrefs {
     const val DRAWER_MODE_HIDDEN = 0
     const val DRAWER_MODE_PERMANENT = 1
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
+    const val SILERO_VAD_MIN_THRESHOLD = 0.05f
+    const val SILERO_VAD_MAX_THRESHOLD = 0.95f
+    const val SILERO_VAD_DEFAULT_THRESHOLD = 0.5f
+    const val SILERO_VAD_MIN_PRE_ROLL_MS = 0
+    const val SILERO_VAD_MAX_PRE_ROLL_MS = 800
+    const val SILERO_VAD_DEFAULT_PRE_ROLL_MS = 300
 
     private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
@@ -37,8 +44,12 @@ object UserPrefs {
     private val KEY_PREFERRED_OUTPUT_TYPE = intPreferencesKey("preferred_output_type")
     private val KEY_AEC3_ENABLED = booleanPreferencesKey("aec3_enabled")
     private val KEY_DENOISER_MODE = intPreferencesKey("denoiser_mode")
+    private val KEY_SPEECH_ENHANCEMENT_ENABLED = booleanPreferencesKey("speech_enhancement_enabled")
+    private val KEY_SPEECH_ENHANCEMENT_MODE = intPreferencesKey("speech_enhancement_mode")
     private val KEY_CLASSIC_VAD_ENABLED = booleanPreferencesKey("classic_vad_enabled")
     private val KEY_SILERO_VAD_ENABLED = booleanPreferencesKey("silero_vad_enabled")
+    private val KEY_SILERO_VAD_THRESHOLD = floatPreferencesKey("silero_vad_threshold")
+    private val KEY_SILERO_VAD_PRE_ROLL_MS = intPreferencesKey("silero_vad_pre_roll_ms")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -60,8 +71,13 @@ object UserPrefs {
     private val KEY_FLOATING_OVERLAY_AUTO_DOCK = booleanPreferencesKey("floating_overlay_auto_dock")
     private val KEY_FLOATING_OVERLAY_SHORTCUTS = stringPreferencesKey("floating_overlay_shortcuts")
     private val KEY_FLOATING_OVERLAY_LAYOUT = stringPreferencesKey("floating_overlay_layout")
+    private val KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE = floatPreferencesKey("floating_overlay_quick_subtitle_font_size")
     private val KEY_QUICK_SUBTITLE_CONFIG = stringPreferencesKey("quick_subtitle_config")
+    private val KEY_SOUNDBOARD_CONFIG = stringPreferencesKey("soundboard_config")
     private val KEY_QUICK_CARD_CONFIG = stringPreferencesKey("quick_card_config")
+    private val KEY_TTS_DISABLED = booleanPreferencesKey("tts_disabled")
+    private val KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED = booleanPreferencesKey("soundboard_keyword_trigger_enabled")
+    private val KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD = booleanPreferencesKey("allow_quick_text_trigger_soundboard")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
@@ -84,8 +100,11 @@ object UserPrefs {
         val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
         val aec3Enabled: Boolean = false,
         val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
+        val speechEnhancementMode: Int = SpeechEnhancementMode.OFF,
         val classicVadEnabled: Boolean = true,
         val sileroVadEnabled: Boolean = false,
+        val sileroVadThreshold: Float = SILERO_VAD_DEFAULT_THRESHOLD,
+        val sileroVadPreRollMs: Int = SILERO_VAD_DEFAULT_PRE_ROLL_MS,
         val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
@@ -105,8 +124,11 @@ object UserPrefs {
         val pushToTalkConfirmInput: Boolean = false,
         val floatingOverlayEnabled: Boolean = false,
         val floatingOverlayAutoDock: Boolean = false,
+        val ttsDisabled: Boolean = false,
+        val soundboardKeywordTriggerEnabled: Boolean = false,
+        val allowQuickTextTriggerSoundboard: Boolean = false,
         val speakerVerifyEnabled: Boolean = false,
-        val speakerVerifyThreshold: Float = 0.72f,
+        val speakerVerifyThreshold: Float = 0.5f,
         val speakerVerifyProfileCsv: String = "",
         val speakerVerifyBackendVersion: Int = 0,
         val allowSystemAecWithAec3: Boolean = true
@@ -179,6 +201,14 @@ object UserPrefs {
         val legacySpeaker = this[KEY_COMMUNICATION_SPEAKER] ?: false
         var classicVadEnabled = this[KEY_CLASSIC_VAD_ENABLED] ?: true
         var sileroVadEnabled = this[KEY_SILERO_VAD_ENABLED] ?: false
+        val legacySpeechEnhancementEnabled = this[KEY_SPEECH_ENHANCEMENT_ENABLED] ?: false
+        val speechEnhancementMode = if (contains(KEY_SPEECH_ENHANCEMENT_MODE)) {
+            SpeechEnhancementMode.clamp(this[KEY_SPEECH_ENHANCEMENT_MODE] ?: SpeechEnhancementMode.OFF)
+        } else if (legacySpeechEnhancementEnabled) {
+            SpeechEnhancementMode.GTCRN_OFFLINE
+        } else {
+            SpeechEnhancementMode.OFF
+        }
         if (!classicVadEnabled && !sileroVadEnabled) {
             classicVadEnabled = true
             sileroVadEnabled = false
@@ -195,8 +225,13 @@ object UserPrefs {
             aec3Enabled = this[KEY_AEC3_ENABLED] ?: false,
             denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.RNNOISE)
                 .coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX),
+            speechEnhancementMode = speechEnhancementMode,
             classicVadEnabled = classicVadEnabled,
             sileroVadEnabled = sileroVadEnabled,
+            sileroVadThreshold = (this[KEY_SILERO_VAD_THRESHOLD] ?: SILERO_VAD_DEFAULT_THRESHOLD)
+                .coerceIn(SILERO_VAD_MIN_THRESHOLD, SILERO_VAD_MAX_THRESHOLD),
+            sileroVadPreRollMs = (this[KEY_SILERO_VAD_PRE_ROLL_MS] ?: SILERO_VAD_DEFAULT_PRE_ROLL_MS)
+                .coerceIn(SILERO_VAD_MIN_PRE_ROLL_MS, SILERO_VAD_MAX_PRE_ROLL_MS),
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
@@ -218,8 +253,11 @@ object UserPrefs {
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
             floatingOverlayEnabled = this[KEY_FLOATING_OVERLAY_ENABLED] ?: false,
             floatingOverlayAutoDock = this[KEY_FLOATING_OVERLAY_AUTO_DOCK] ?: false,
+            ttsDisabled = this[KEY_TTS_DISABLED] ?: false,
+            soundboardKeywordTriggerEnabled = this[KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED] ?: false,
+            allowQuickTextTriggerSoundboard = this[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] ?: false,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
-            speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.72f).coerceIn(0.4f, 0.95f),
+            speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
             speakerVerifyProfileCsv = this[KEY_SPEAKER_VERIFY_PROFILE] ?: "",
             speakerVerifyBackendVersion = this[KEY_SPEAKER_VERIFY_BACKEND_VERSION] ?: 0,
             allowSystemAecWithAec3 = true
@@ -280,6 +318,13 @@ object UserPrefs {
         }
     }
 
+    suspend fun setSpeechEnhancementMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SPEECH_ENHANCEMENT_MODE] = SpeechEnhancementMode.clamp(mode)
+            prefs[KEY_SPEECH_ENHANCEMENT_ENABLED] = SpeechEnhancementMode.isEnabled(mode)
+        }
+    }
+
     suspend fun setClassicVadEnabled(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_CLASSIC_VAD_ENABLED] = enabled
@@ -289,6 +334,24 @@ object UserPrefs {
     suspend fun setSileroVadEnabled(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_SILERO_VAD_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setSileroVadThreshold(context: Context, threshold: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SILERO_VAD_THRESHOLD] = threshold.coerceIn(
+                SILERO_VAD_MIN_THRESHOLD,
+                SILERO_VAD_MAX_THRESHOLD
+            )
+        }
+    }
+
+    suspend fun setSileroVadPreRollMs(context: Context, preRollMs: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SILERO_VAD_PRE_ROLL_MS] = preRollMs.coerceIn(
+                SILERO_VAD_MIN_PRE_ROLL_MS,
+                SILERO_VAD_MAX_PRE_ROLL_MS
+            )
         }
     }
 
@@ -408,6 +471,24 @@ object UserPrefs {
         }
     }
 
+    suspend fun setTtsDisabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_TTS_DISABLED] = enabled
+        }
+    }
+
+    suspend fun setSoundboardKeywordTriggerEnabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setAllowQuickTextTriggerSoundboard(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] = enabled
+        }
+    }
+
     suspend fun setSpeakerVerifyEnabled(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_SPEAKER_VERIFY_ENABLED] = enabled
@@ -416,7 +497,7 @@ object UserPrefs {
 
     suspend fun setSpeakerVerifyThreshold(context: Context, threshold: Float) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_SPEAKER_VERIFY_THRESHOLD] = threshold.coerceIn(0.4f, 0.95f)
+            prefs[KEY_SPEAKER_VERIFY_THRESHOLD] = threshold.coerceIn(0.05f, 0.95f)
         }
     }
 
@@ -563,6 +644,17 @@ object UserPrefs {
         }
     }
 
+    suspend fun getSoundboardConfig(context: Context): String? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_SOUNDBOARD_CONFIG]
+    }
+
+    suspend fun setSoundboardConfig(context: Context, json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SOUNDBOARD_CONFIG] = json
+        }
+    }
+
     suspend fun getFloatingOverlayShortcuts(context: Context): String? {
         val prefs = context.dataStore.data.first()
         return prefs[KEY_FLOATING_OVERLAY_SHORTCUTS]
@@ -582,6 +674,17 @@ object UserPrefs {
     suspend fun setFloatingOverlayLayout(context: Context, json: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_FLOATING_OVERLAY_LAYOUT] = json
+        }
+    }
+
+    suspend fun getFloatingOverlayQuickSubtitleFontSize(context: Context): Float? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE]
+    }
+
+    suspend fun setFloatingOverlayQuickSubtitleFontSize(context: Context, sizeSp: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE] = sizeSp
         }
     }
 

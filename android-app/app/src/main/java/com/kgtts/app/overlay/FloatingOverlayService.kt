@@ -22,6 +22,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.drawable.Drawable
@@ -46,6 +47,7 @@ import android.view.ViewConfiguration
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
@@ -58,6 +60,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
@@ -67,14 +70,13 @@ import com.lhtstudio.kigtts.app.service.RealtimeHostService
 import com.lhtstudio.kigtts.app.service.RealtimeHostState
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.qrcode.QRCodeWriter
 import com.lhtstudio.kigtts.app.R
 import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
 import com.lhtstudio.kigtts.app.ui.QuickCard
 import com.lhtstudio.kigtts.app.ui.QuickCardType
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.LauncherMenuShortcuts
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -119,6 +121,7 @@ class FloatingOverlayService : Service() {
     private var fabButtonHost: FrameLayout? = null
     private var fabButton: FrameLayout? = null
     private var fabIconView: ImageView? = null
+    private var fabTouchDockEdge: String? = null
     private var panelRoot: FrameLayout? = null
     private var panelContent: LinearLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
@@ -135,6 +138,10 @@ class FloatingOverlayService : Service() {
     private var panelStatusTriggerContainer: LinearLayout? = null
     private var panelTopStripView: LinearLayout? = null
     private var panelStatusDetailRefs: OverlayStatusDetailRefs? = null
+    private var panelBodyContainer: LinearLayout? = null
+    private var panelCardView: LinearLayout? = null
+    private var panelBottomBarView: FrameLayout? = null
+    private var panelLandscapeRailView: LinearLayout? = null
     private var panelBuiltInContainer: LinearLayout? = null
     private var panelShortcutContainer: LinearLayout? = null
     private var panelShortcutScroll: ScrollView? = null
@@ -166,15 +173,27 @@ class FloatingOverlayService : Service() {
     private var miniStatusTriggerContainer: LinearLayout? = null
     private var miniTopStripView: LinearLayout? = null
     private var miniStatusDetailRefs: OverlayStatusDetailRefs? = null
+    private var miniBodyContainer: LinearLayout? = null
+    private var miniBodyHostView: FrameLayout? = null
+    private var miniBottomBarView: FrameLayout? = null
+    private var miniLandscapeRailView: LinearLayout? = null
     private var miniSubtitleTextView: TextView? = null
+    private var miniSubtitleCardView: LinearLayout? = null
     private var miniSubtitleSeekBar: SeekBar? = null
     private var miniQuickItemsContainer: FrameLayout? = null
     private var miniQuickItemsRecyclerView: RecyclerView? = null
+    private var miniQuickItemsLayoutManager: LinearLayoutManager? = null
     private var miniQuickItemsAdapter: MiniQuickTextAdapter? = null
     private var miniQuickItemsLeftFadeView: View? = null
     private var miniQuickItemsRightFadeView: View? = null
     private var miniQuickRow: LinearLayout? = null
+    private var miniQuickRowCardView: LinearLayout? = null
+    private var miniQuickRowDividerView: View? = null
+    private var miniQuickItemsScrollerView: FrameLayout? = null
+    private var miniQuickSwitcherView: LinearLayout? = null
     private var miniGroupIconView: TextView? = null
+    private var miniGroupPrevButtonView: TextView? = null
+    private var miniGroupNextButtonView: TextView? = null
     private var miniQuickCollapseButton: TextView? = null
     private var miniSubtitleBody: LinearLayout? = null
     private var miniQuickCardBody: LinearLayout? = null
@@ -280,6 +299,9 @@ class FloatingOverlayService : Service() {
     private var quickSubtitleInputText = ""
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
+    private var topStatusLastContent = ""
+    private var topStatusShowingText = false
+    private var topStatusResetJob: Job? = null
     private var miniQuickItemsCollapsed = false
     private var miniMode = MiniOverlayMode.Subtitle
     private var miniPreviewMode = MiniPreviewMode.None
@@ -325,6 +347,11 @@ class FloatingOverlayService : Service() {
         QuickCard
     }
 
+    private enum class OverlayQuickCardRenderStyle {
+        Panel,
+        Preview
+    }
+
     private data class OverlayAppShortcut(
         val packageName: String,
         val className: String,
@@ -358,6 +385,7 @@ class FloatingOverlayService : Service() {
         val inputLabel: TextView,
         val outputLabel: TextView,
         val pttIcon: TextView,
+        val ttsIcon: TextView,
         val volumeLabel: TextView,
         val volumeSeekBar: SeekBar
     )
@@ -462,6 +490,20 @@ class FloatingOverlayService : Service() {
 
         override fun onBindViewHolder(holder: TextViewHolder, position: Int) {
             val item = items.getOrNull(position).orEmpty()
+            val landscapePhone = isPhoneLandscapeUi()
+            holder.root.layoutParams = RecyclerView.LayoutParams(
+                if (landscapePhone) ViewGroup.LayoutParams.MATCH_PARENT else dp(112),
+                if (landscapePhone) dp(74) else dp(104)
+            )
+            holder.root.minimumWidth = if (landscapePhone) 0 else dp(112)
+            holder.root.minimumHeight = if (landscapePhone) dp(74) else dp(104)
+            holder.root.setPadding(
+                if (landscapePhone) dp(12) else dp(14),
+                if (landscapePhone) dp(10) else dp(8),
+                if (landscapePhone) dp(12) else dp(14),
+                if (landscapePhone) dp(10) else dp(20)
+            )
+            holder.textView.maxLines = if (landscapePhone) 2 else 3
             holder.textView.text = item
             holder.root.setOnClickListener {
                 if (item.isBlank()) return@setOnClickListener
@@ -538,7 +580,7 @@ class FloatingOverlayService : Service() {
         max(fabMinY(), screenHeight - fabVisibleHeightPx())
 
     private fun fabMaxX(screenWidth: Int = displayWidth()): Int =
-        max(0, screenWidth - max(fabRoot?.measuredWidth ?: 0, dp(FAB_SIZE_DP)))
+        max(0, screenWidth - fabWindowWidthPx())
 
     private fun fabSnapLeftX(): Int = fabEdgePaddingPx()
 
@@ -630,21 +672,6 @@ class FloatingOverlayService : Service() {
         if (converted != null) saveOverlayLauncherLayout()
     }
 
-    private fun fabButtonHalfExposureOffset(): Int {
-        val rootWidth =
-            fabRoot?.measuredWidth?.takeIf { it > 0 }
-                ?: fabRoot?.width?.takeIf { it > 0 }
-                ?: (dp(FAB_SIZE_DP) + dp(28))
-        val buttonWidth =
-            fabButton?.measuredWidth?.takeIf { it > 0 }
-                ?: fabButton?.width?.takeIf { it > 0 }
-                ?: dp(FAB_SIZE_DP)
-        val rightPadding = fabRoot?.paddingRight ?: dp(14)
-        val byButton = rightPadding + buttonWidth / 2
-        val byRootHalf = rootWidth / 2
-        return max(byButton, byRootHalf)
-    }
-
     private fun fabDockExposedWidthPx(): Int {
         val buttonWidth =
             fabButton?.measuredWidth?.takeIf { it > 0 }
@@ -652,6 +679,8 @@ class FloatingOverlayService : Service() {
                 ?: dp(FAB_SIZE_DP)
         return max(1, buttonWidth / 2)
     }
+
+    private fun fabDockOuterPaddingPx(): Int = dp(14)
 
     private fun fabDockShadowPaddingPx(): Int = dp(8)
 
@@ -663,41 +692,87 @@ class FloatingOverlayService : Service() {
         return fabDockExposedWidthPx() + fabDockShadowPaddingPx()
     }
 
+    private fun fabDockWindowWidthPx(): Int {
+        return fabDockVisibleWidthPx() + fabDockOuterPaddingPx()
+    }
+
+    private fun fabExpandedWindowWidthPx(): Int {
+        return dp(FAB_SIZE_DP) + fabDockOuterPaddingPx() * 2
+    }
+
+    private fun fabWindowWidthPx(): Int {
+        val paramsWidth = fabParams?.width ?: 0
+        return when {
+            paramsWidth > 0 -> paramsWidth
+            fabRoot?.measuredWidth?.takeIf { it > 0 } != null -> fabRoot!!.measuredWidth
+            fabRoot?.width?.takeIf { it > 0 } != null -> fabRoot!!.width
+            else -> dp(FAB_SIZE_DP) + fabDockOuterPaddingPx() * 2
+        }
+    }
+
+    private fun cancelFabSnapAnimation() {
+        val animator = fabSnapAnimator
+        fabSnapAnimator = null
+        animator?.cancel()
+    }
+
     private fun dockedFabXForEdge(edge: String, screenWidth: Int): Int {
-        val visibleWidth = fabDockVisibleWidthPx()
+        val dockWindowWidth = fabDockWindowWidthPx()
         return if (edge == FAB_EDGE_LEFT) {
             0
         } else {
-            max(0, screenWidth - visibleWidth)
+            max(0, screenWidth - dockWindowWidth)
         }
+    }
+
+    private fun expandedFabXForEdge(edge: String, screenWidth: Int): Int {
+        return if (edge == FAB_EDGE_LEFT) {
+            fabSnapLeftX()
+        } else {
+            max(0, screenWidth - fabExpandedWindowWidthPx())
+        }
+    }
+
+    private fun expandedFabDragStartX(edge: String, currentX: Int, currentWindowWidth: Int): Int {
+        if (edge != FAB_EDGE_RIGHT) return currentX
+        val maxExpandedX = max(0, displayWidth() - fabExpandedWindowWidthPx())
+        return (currentX + currentWindowWidth - fabExpandedWindowWidthPx())
+            .coerceIn(0, maxExpandedX)
     }
 
     private fun updateFabDockLayout(edge: String) {
         val root = fabRoot ?: return
+        val params = fabParams ?: return
         val host = fabButtonHost ?: return
         val button = fabButton ?: return
         val spacer = fabSpacerView
-        val rootLayoutParams = root.layoutParams as? ViewGroup.MarginLayoutParams
         val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return
         val buttonLayoutParams = button.layoutParams as? FrameLayout.LayoutParams ?: return
         val buttonWidth =
             button.measuredWidth.takeIf { it > 0 }
                 ?: button.width.takeIf { it > 0 }
                 ?: dp(FAB_SIZE_DP)
+        val outerPadding = fabDockOuterPaddingPx()
         if (fabIdleDocked) {
             val exposedWidth = fabDockExposedWidthPx()
             val shadowPadding = fabDockShadowPaddingPx()
             val visibleWidth = fabDockVisibleWidthPx()
             root.clipChildren = false
             root.clipToPadding = false
-            root.gravity = if (edge == FAB_EDGE_LEFT) Gravity.START else Gravity.END
-            root.setPadding(0, dp(14), 0, dp(14))
-            rootLayoutParams?.width = ViewGroup.LayoutParams.WRAP_CONTENT
+            root.gravity = Gravity.END
+            root.setPadding(
+                if (edge == FAB_EDGE_LEFT) 0 else outerPadding,
+                dp(14),
+                if (edge == FAB_EDGE_LEFT) outerPadding else 0,
+                dp(14)
+            )
+            params.width = fabDockWindowWidthPx()
             spacer?.visibility = View.VISIBLE
             host.clipChildren = true
             host.clipToPadding = true
             hostLayoutParams.width = visibleWidth
             hostLayoutParams.height = dp(FAB_SIZE_DP)
+            hostLayoutParams.gravity = Gravity.START
             buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
             button.translationX =
                 if (edge == FAB_EDGE_LEFT) {
@@ -709,39 +784,102 @@ class FloatingOverlayService : Service() {
             root.clipChildren = false
             root.clipToPadding = false
             root.gravity = Gravity.END
-            root.setPadding(dp(14), dp(14), dp(14), dp(14))
-            rootLayoutParams?.width = ViewGroup.LayoutParams.WRAP_CONTENT
+            root.setPadding(outerPadding, dp(14), outerPadding, dp(14))
+            params.width = fabExpandedWindowWidthPx()
             spacer?.visibility = View.VISIBLE
             host.clipChildren = false
             host.clipToPadding = false
             hostLayoutParams.width = dp(FAB_SIZE_DP)
             hostLayoutParams.height = dp(FAB_SIZE_DP)
+            hostLayoutParams.gravity = Gravity.START
             buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
             button.translationX = 0f
         }
         host.layoutParams = hostLayoutParams
         button.layoutParams = buttonLayoutParams
-        if (rootLayoutParams != null) {
-            root.layoutParams = rootLayoutParams
-        }
         host.requestLayout()
         root.requestLayout()
     }
 
-    private fun restoreFabFromIdleDock() {
+    private fun restoreFabFromIdleDock(animateRestore: Boolean = false) {
         if (!fabIdleDocked) return
         val params = fabParams ?: return
         val root = fabRoot ?: return
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
-        fabSnapAnimator?.cancel()
+        cancelFabSnapAnimation()
         val anchor = currentOrientationFabAnchor()
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
-        applyFabAnchor(params, anchor, displayWidth(), displayHeight())
+        val screenWidth = displayWidth()
+        val screenHeight = displayHeight()
+        val minY = fabMinY()
+        val maxY = fabMaxY(screenHeight)
         fabIdleDocked = false
         updateFabDockLayout(anchor.edge)
+        params.x = expandedFabXForEdge(anchor.edge, screenWidth)
+        params.y =
+            if (maxY <= minY) {
+                minY
+            } else {
+                (minY + (maxY - minY) * anchor.verticalRatio.coerceIn(0f, 1f)).roundToInt()
+            }
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
+        if (animateRestore) animateFabRestoreFromDockEdge(anchor.edge)
+    }
+
+    private fun prepareFabForDockedDrag(edge: String, params: WindowManager.LayoutParams) {
+        val root = fabRoot ?: return
+        fabIdleDockJob?.cancel()
+        fabIdleDockJob = null
+        cancelFabSnapAnimation()
+        resetFabRestoreAnimation()
+
+        val currentWindowWidth =
+            params.width.takeIf { it > 0 }
+                ?: fabRoot?.width?.takeIf { it > 0 }
+                ?: fabWindowWidthPx()
+        val dragStartX = expandedFabDragStartX(edge, params.x, currentWindowWidth)
+        fabIdleDocked = false
+        updateFabDockLayout(edge)
+        params.x = dragStartX
+        downWinX = dragStartX
+        root.alpha = 1f
+        runCatching { windowManager.updateViewLayout(root, params) }
+    }
+
+    private fun resetFabRestoreAnimation() {
+        fabButton?.animate()?.cancel()
+        fabButton?.translationX = 0f
+    }
+
+    private fun animateFabRestoreFromDockEdge(edge: String, endAction: (() -> Unit)? = null) {
+        val button = fabButton ?: run {
+            endAction?.invoke()
+            return
+        }
+        val buttonWidth =
+            button.measuredWidth.takeIf { it > 0 }
+                ?: button.width.takeIf { it > 0 }
+                ?: dp(FAB_SIZE_DP)
+        val startTranslation =
+            if (edge == FAB_EDGE_LEFT) {
+                -(buttonWidth - fabDockExposedWidthPx()).toFloat()
+            } else {
+                fabDockShadowPaddingPx().toFloat()
+            }
+        if (abs(startTranslation) < 0.5f) {
+            endAction?.invoke()
+            return
+        }
+        button.animate().cancel()
+        button.translationX = startTranslation
+        button.animate()
+            .translationX(0f)
+            .setDuration(160L)
+            .setInterpolator(DecelerateInterpolator())
+            .withEndAction { endAction?.invoke() }
+            .start()
     }
 
     private fun applyFabIdleDockVisualState() {
@@ -756,10 +894,15 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun cancelFabIdleDock(restoreFab: Boolean) {
+    private fun cancelFabIdleDock(restoreFab: Boolean, animateRestore: Boolean = false) {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
-        if (restoreFab) restoreFabFromIdleDock()
+        if (restoreFab) restoreFabFromIdleDock(animateRestore)
+    }
+
+    private fun resolveCurrentFabDockEdge(params: WindowManager.LayoutParams): String {
+        return currentOrientationFabAnchor()?.edge
+            ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
     }
 
     private fun dockFabIdleNow() {
@@ -783,19 +926,26 @@ class FloatingOverlayService : Service() {
                 button.measuredWidth.takeIf { it > 0 }
                     ?: button.width.takeIf { it > 0 }
                     ?: dp(FAB_SIZE_DP)
+            val outerPadding = fabDockOuterPaddingPx()
             val startPaddingLeft = liveRoot.paddingLeft
             val startPaddingTop = liveRoot.paddingTop
             val startPaddingRight = liveRoot.paddingRight
             val startPaddingBottom = liveRoot.paddingBottom
             val startHostWidth = hostLayoutParams.width.takeIf { it > 0 } ?: dp(FAB_SIZE_DP)
+            val startWindowWidth =
+                liveParams.width.takeIf { it > 0 }
+                    ?: liveRoot.width.takeIf { it > 0 }
+                    ?: (dp(FAB_SIZE_DP) + outerPadding * 2)
             val startSpacerHeight =
                 spacerLayoutParams?.height?.takeIf { it >= 0 }
                     ?: if (spacer?.visibility == View.VISIBLE) dp(12) else 0
             val startButtonTranslation = button.translationX
             val targetVisibleWidth = fabDockVisibleWidthPx()
+            val targetWindowWidth = fabDockWindowWidthPx()
             val targetExposedWidth = fabDockExposedWidthPx()
             val targetShadowPadding = fabDockShadowPaddingPx()
-            val targetPaddingHorizontal = 0
+            val targetPaddingLeft = if (anchor.edge == FAB_EDGE_LEFT) 0 else outerPadding
+            val targetPaddingRight = if (anchor.edge == FAB_EDGE_LEFT) outerPadding else 0
             val targetPaddingVertical = dp(14)
             val targetSpacerHeight = startSpacerHeight.takeIf { it > 0 } ?: dp(12)
             val targetButtonTranslation =
@@ -809,8 +959,14 @@ class FloatingOverlayService : Service() {
             val targetY = liveParams.y
             val startX = liveParams.x
             val startY = liveParams.y
-            fabSnapAnimator?.cancel()
-            if (startX == targetX && startY == targetY) {
+            val needsLayoutTransition =
+                startHostWidth != targetVisibleWidth ||
+                    startWindowWidth != targetWindowWidth ||
+                    startPaddingLeft != targetPaddingLeft ||
+                    startPaddingRight != targetPaddingRight ||
+                    abs(startButtonTranslation - targetButtonTranslation) > 0.5f
+            cancelFabSnapAnimation()
+            if (startX == targetX && startY == targetY && !needsLayoutTransition) {
                 updateFabDockLayout(anchor.edge)
                 liveParams.x = targetX
                 liveParams.y = targetY
@@ -818,18 +974,19 @@ class FloatingOverlayService : Service() {
                 runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
                 return@post
             }
+            var wasCancelled = false
             fabSnapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 220L
                 interpolator = DecelerateInterpolator()
                 addUpdateListener { animator ->
                     val fraction = animator.animatedFraction
-                    liveRoot.gravity = if (anchor.edge == FAB_EDGE_LEFT) Gravity.START else Gravity.END
+                    liveRoot.gravity = Gravity.END
                     liveRoot.clipChildren = false
                     liveRoot.clipToPadding = false
                     liveRoot.setPadding(
-                        lerpInt(startPaddingLeft, targetPaddingHorizontal, fraction),
+                        lerpInt(startPaddingLeft, targetPaddingLeft, fraction),
                         lerpInt(startPaddingTop, targetPaddingVertical, fraction),
-                        lerpInt(startPaddingRight, targetPaddingHorizontal, fraction),
+                        lerpInt(startPaddingRight, targetPaddingRight, fraction),
                         lerpInt(startPaddingBottom, targetPaddingVertical, fraction)
                     )
                     spacer?.visibility = View.VISIBLE
@@ -842,11 +999,13 @@ class FloatingOverlayService : Service() {
                     host.clipToPadding = fraction > 0f
                     hostLayoutParams.width = lerpInt(startHostWidth, targetVisibleWidth, fraction)
                     hostLayoutParams.height = dp(FAB_SIZE_DP)
+                    hostLayoutParams.gravity = Gravity.START
                     host.layoutParams = hostLayoutParams
                     buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
                     button.layoutParams = buttonLayoutParams
                     button.translationX =
                         startButtonTranslation + (targetButtonTranslation - startButtonTranslation) * fraction
+                    liveParams.width = lerpInt(startWindowWidth, targetWindowWidth, fraction)
                     liveParams.x = (startX + (targetX - startX) * fraction).roundToInt()
                     liveParams.y = (startY + (targetY - startY) * fraction).roundToInt()
                     liveRoot.alpha = 1f + (fabIdleDockAlpha - 1f) * fraction
@@ -856,7 +1015,15 @@ class FloatingOverlayService : Service() {
                 }
                 addListener(
                     object : android.animation.AnimatorListenerAdapter() {
+                        override fun onAnimationCancel(animation: android.animation.Animator) {
+                            wasCancelled = true
+                        }
+
                         override fun onAnimationEnd(animation: android.animation.Animator) {
+                            if (fabSnapAnimator === animation) {
+                                fabSnapAnimator = null
+                            }
+                            if (wasCancelled) return
                             spacer?.alpha = 1f
                             updateFabDockLayout(anchor.edge)
                             liveParams.x = targetX
@@ -920,7 +1087,10 @@ class FloatingOverlayService : Service() {
         }
 
         override fun onBindViewHolder(holder: PageViewHolder, position: Int) {
-            android.transition.TransitionManager.beginDelayedTransition(holder.container)
+            holder.container.layoutTransition = if (panelEditMode) overlayLayoutTransition() else null
+            if (panelEditMode) {
+                android.transition.TransitionManager.beginDelayedTransition(holder.container)
+            }
             holder.container.removeAllViews()
             holder.container.addView(
                 buildPanelPageView(position, pages.getOrElse(position) { emptyList() }),
@@ -1026,8 +1196,13 @@ class FloatingOverlayService : Service() {
             rebuildWindowsPreservingState()
             return
         }
-        fabSnapAnimator?.cancel()
+        cancelFabSnapAnimation()
         restoreFabPositionForCurrentOrientation(allowOppositeConversion = true)
+        applyPanelExpandedLayout()
+        applyMiniExpandedLayout()
+        refreshPanelUi()
+        refreshQuickSubtitleUi()
+        refreshQuickCardUi()
         updatePanelPosition()
         updateMiniPanelPosition()
         updatePickerLayout()
@@ -1154,7 +1329,9 @@ class FloatingOverlayService : Service() {
             addView(fabSpacerView)
             addView(
                 fabButtonHost,
-                LinearLayout.LayoutParams(dp(FAB_SIZE_DP), dp(FAB_SIZE_DP))
+                LinearLayout.LayoutParams(dp(FAB_SIZE_DP), dp(FAB_SIZE_DP)).apply {
+                    gravity = Gravity.START
+                }
             )
         }
 
@@ -1415,6 +1592,16 @@ class FloatingOverlayService : Service() {
                 FrameLayout.LayoutParams(dp(74), dp(74), Gravity.CENTER)
             )
         }
+        panelBottomBarView = panelBottomBar
+        panelLandscapeRailView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            elevation = dp(8).toFloat()
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(10), dp(18), dp(10), dp(18))
+        }
 
         val panelCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1461,15 +1648,14 @@ class FloatingOverlayService : Service() {
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
-            addView(spaceView(1, dp(10)))
-            addView(
-                panelBottomBar,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                )
-            )
         }
+        panelCardView = panelCard
+        panelBodyContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        val panelBodyHost = panelBodyContainer!!
 
         panelContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1487,13 +1673,14 @@ class FloatingOverlayService : Service() {
             )
             addView(spaceView(1, dp(12)))
             addView(
-                panelCard,
+                panelBodyHost,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
         }
+        applyPanelExpandedLayout()
 
         panelRoot = FrameLayout(this).apply {
             visibility = View.GONE
@@ -1756,7 +1943,7 @@ class FloatingOverlayService : Service() {
                         TypedValue.COMPLEX_UNIT_SP,
                         quickSubtitleFontSizeSp
                     )
-                    saveQuickSubtitleConfig()
+                    saveFloatingOverlayQuickSubtitleFontSize()
                 }
 
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -1814,10 +2001,14 @@ class FloatingOverlayService : Service() {
                 true
             }
         }
+        miniSubtitleCardView = subtitleCard
 
         miniQuickItemsAdapter = MiniQuickTextAdapter()
+        val quickItemsLayoutManager =
+            LinearLayoutManager(this@FloatingOverlayService, RecyclerView.HORIZONTAL, false)
+        miniQuickItemsLayoutManager = quickItemsLayoutManager
         miniQuickItemsRecyclerView = RecyclerView(this).apply {
-            layoutManager = LinearLayoutManager(this@FloatingOverlayService, RecyclerView.HORIZONTAL, false)
+            layoutManager = quickItemsLayoutManager
             adapter = miniQuickItemsAdapter
             overScrollMode = View.OVER_SCROLL_NEVER
             clipChildren = true
@@ -1845,11 +2036,20 @@ class FloatingOverlayService : Service() {
                         parent: RecyclerView,
                         state: RecyclerView.State
                     ) {
+                        val vertical =
+                            (parent.layoutManager as? LinearLayoutManager)?.orientation == RecyclerView.VERTICAL
                         val position = parent.getChildAdapterPosition(view)
-                        outRect.top = 0
-                        outRect.bottom = 0
-                        outRect.left = if (position <= 0) 0 else dividerWidth
-                        outRect.right = 0
+                        if (vertical) {
+                            outRect.top = if (position <= 0) 0 else dividerWidth
+                            outRect.bottom = 0
+                            outRect.left = 0
+                            outRect.right = 0
+                        } else {
+                            outRect.top = 0
+                            outRect.bottom = 0
+                            outRect.left = if (position <= 0) 0 else dividerWidth
+                            outRect.right = 0
+                        }
                     }
 
                     override fun onDrawOver(
@@ -1857,15 +2057,25 @@ class FloatingOverlayService : Service() {
                         parent: RecyclerView,
                         state: RecyclerView.State
                     ) {
-                        val lineTop = parent.paddingTop + dividerInset
-                        val lineBottom = parent.height - parent.paddingBottom - dividerInset
-                        if (lineBottom <= lineTop) return
+                        val vertical =
+                            (parent.layoutManager as? LinearLayoutManager)?.orientation == RecyclerView.VERTICAL
                         for (index in 0 until parent.childCount) {
                             val child = parent.getChildAt(index)
                             val position = parent.getChildAdapterPosition(child)
                             if (position <= 0) continue
-                            val lineX = child.left - (dividerWidth / 2f)
-                            c.drawLine(lineX, lineTop.toFloat(), lineX, lineBottom.toFloat(), dividerPaint)
+                            if (vertical) {
+                                val lineLeft = parent.paddingLeft + dividerInset
+                                val lineRight = parent.width - parent.paddingRight - dividerInset
+                                if (lineRight <= lineLeft) continue
+                                val lineY = child.top - (dividerWidth / 2f)
+                                c.drawLine(lineLeft.toFloat(), lineY, lineRight.toFloat(), lineY, dividerPaint)
+                            } else {
+                                val lineTop = parent.paddingTop + dividerInset
+                                val lineBottom = parent.height - parent.paddingBottom - dividerInset
+                                if (lineBottom <= lineTop) continue
+                                val lineX = child.left - (dividerWidth / 2f)
+                                c.drawLine(lineX, lineTop.toFloat(), lineX, lineBottom.toFloat(), dividerPaint)
+                            }
                         }
                     }
                 }
@@ -1928,24 +2138,35 @@ class FloatingOverlayService : Service() {
                 )
             )
         }
+        miniQuickItemsScrollerView = quickItemsScroller
 
         miniGroupIconView = symbolTextView("sentiment_satisfied", 22f, overlayOnSurfaceColor()).apply {
             gravity = Gravity.CENTER
             minWidth = dp(36)
             isClickable = true
             isFocusable = true
-            setOnTouchListener(createMiniGroupSwipeTouchListener())
         }
+        miniGroupPrevButtonView = symbolTextView("keyboard_arrow_up", 20f, overlayOnSurfaceColor()).apply {
+            gravity = Gravity.CENTER
+            setOnClickListener { shiftQuickSubtitleGroup(-1) }
+        }
+        miniGroupNextButtonView = symbolTextView("keyboard_arrow_down", 20f, overlayOnSurfaceColor()).apply {
+            gravity = Gravity.CENTER
+            setOnClickListener { shiftQuickSubtitleGroup(1) }
+        }
+        val groupSwipeTouchListener = createMiniGroupSwipeTouchListener()
+        miniGroupIconView?.setOnTouchListener(groupSwipeTouchListener)
+        miniGroupPrevButtonView?.setOnTouchListener(groupSwipeTouchListener)
+        miniGroupNextButtonView?.setOnTouchListener(groupSwipeTouchListener)
         val quickSwitcher = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
+            isClickable = true
+            isFocusable = true
             setPadding(dp(2), dp(4), dp(2), dp(4))
             minimumWidth = dp(44)
             addView(
-                symbolTextView("keyboard_arrow_up", 20f, overlayOnSurfaceColor()).apply {
-                    gravity = Gravity.CENTER
-                    setOnClickListener { shiftQuickSubtitleGroup(-1) }
-                },
+                miniGroupPrevButtonView,
                 LinearLayout.LayoutParams(dp(36), 0, 1f)
             )
             addView(
@@ -1955,13 +2176,11 @@ class FloatingOverlayService : Service() {
                 }
             )
             addView(
-                symbolTextView("keyboard_arrow_down", 20f, overlayOnSurfaceColor()).apply {
-                    gravity = Gravity.CENTER
-                    setOnClickListener { shiftQuickSubtitleGroup(1) }
-                },
+                miniGroupNextButtonView,
                 LinearLayout.LayoutParams(dp(36), 0, 1f)
             )
         }
+        quickSwitcher.setOnTouchListener(groupSwipeTouchListener)
 
         val quickRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1978,6 +2197,7 @@ class FloatingOverlayService : Service() {
             addView(
                 View(this@FloatingOverlayService).apply {
                     setBackgroundColor(ColorUtils.setAlphaComponent(overlayOutlineColor(), if (overlayDarkTheme) 112 else 92))
+                    miniQuickRowDividerView = this
                 },
                 LinearLayout.LayoutParams(
                     dp(1),
@@ -1995,6 +2215,8 @@ class FloatingOverlayService : Service() {
                 )
             )
         }
+        miniQuickRowCardView = quickRow
+        miniQuickSwitcherView = quickSwitcher
         miniQuickRow = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -2050,24 +2272,28 @@ class FloatingOverlayService : Service() {
                     val currentCard =
                         if (quickCards.isEmpty()) null else quickCards.getOrNull(pager?.currentItem ?: 0)
                     val cachedHeight = miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)]
-                    val targetHeight = when {
-                        cachedHeight != null -> cachedHeight + paddingTop + paddingBottom
-                        currentChild != null -> {
-                            val childWidthSpec = MeasureSpec.makeMeasureSpec(
-                                contentWidth,
-                                MeasureSpec.EXACTLY
-                            )
-                            val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
-                            currentChild.measure(childWidthSpec, childHeightSpec)
-                            currentChild.measuredHeight.also {
-                                miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
-                            } + paddingTop + paddingBottom
-                        }
-                        else -> {
-                            measureMiniQuickCardPageHeight(contentWidth, currentCard).also {
-                                miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
-                            } + paddingTop + paddingBottom
-                        }
+                    val targetHeight = if (isPhoneLandscapeUi()) {
+                        landscapeOverlayContentHeight()
+                    } else {
+                        when {
+                            cachedHeight != null -> cachedHeight + paddingTop + paddingBottom
+                            currentChild != null -> {
+                                val childWidthSpec = MeasureSpec.makeMeasureSpec(
+                                    contentWidth,
+                                    MeasureSpec.EXACTLY
+                                )
+                                val childHeightSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+                                currentChild.measure(childWidthSpec, childHeightSpec)
+                                currentChild.measuredHeight.also {
+                                    miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
+                                } + paddingTop + paddingBottom
+                            }
+                            else -> {
+                                measureMiniQuickCardPageHeight(contentWidth, currentCard).also {
+                                    miniQuickCardPageHeights[miniQuickCardHeightKey(currentCard)] = it
+                                } + paddingTop + paddingBottom
+                            }
+                        }.coerceAtLeast(miniQuickCardPortraitPreviewMinHeight())
                     }
                     val exactHeight = MeasureSpec.makeMeasureSpec(targetHeight, MeasureSpec.EXACTLY)
                     super.onMeasure(widthMeasureSpec, exactHeight)
@@ -2155,6 +2381,7 @@ class FloatingOverlayService : Service() {
                 )
             )
         }
+        miniBodyHostView = miniBodyHost
 
         miniActionFabIconView = symbolTextView("play_arrow", 30f, Color.WHITE)
         miniActionFab = FrameLayout(this).apply {
@@ -2211,6 +2438,22 @@ class FloatingOverlayService : Service() {
                 FrameLayout.LayoutParams(dp(74), dp(74), Gravity.CENTER)
             )
         }
+        miniBottomBarView = bottomBar
+        miniLandscapeRailView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            elevation = dp(6).toFloat()
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(10), dp(18), dp(10), dp(18))
+        }
+        miniBodyContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        val miniBodyHostContainer = miniBodyContainer!!
 
         miniContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2228,22 +2471,14 @@ class FloatingOverlayService : Service() {
             )
             addView(spaceView(1, dp(12)))
             addView(
-                miniBodyHost,
+                miniBodyHostContainer,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
-            addView(
-                bottomBar,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    topMargin = dp(12)
-                }
-            )
         }
+        applyMiniExpandedLayout()
 
         miniRoot = FrameLayout(this).apply {
             visibility = View.GONE
@@ -2328,8 +2563,17 @@ class FloatingOverlayService : Service() {
             text = "正在识别…"
         }
 
-        leftActionButton = circleActionButton(symbolTextView("open_in_new", 26f, Color.WHITE), 64)
-        rightActionButton = circleActionButton(symbolTextView("close", 26f, Color.WHITE), 64)
+        val solidConfirmActionColor = ColorUtils.setAlphaComponent(overlayNeutralCircleColor(), 255)
+        leftActionButton = circleActionButton(
+            symbolTextView("open_in_new", 26f, Color.WHITE),
+            64,
+            solidConfirmActionColor
+        ).apply { alpha = 0.58f }
+        rightActionButton = circleActionButton(
+            symbolTextView("close", 26f, Color.WHITE),
+            64,
+            solidConfirmActionColor
+        ).apply { alpha = 0.58f }
         confirmTextCardView = FrameLayout(this).apply {
             background = roundedRectDrawable(overlayRadiusDp, ColorUtils.setAlphaComponent(overlayCardColor(), 255))
             elevation = dp(6).toFloat()
@@ -2349,6 +2593,8 @@ class FloatingOverlayService : Service() {
             clipToPadding = true
             setBackgroundColor(Color.TRANSPARENT)
             setPadding(dp(8), dp(8), dp(8), dp(8))
+            alpha = 1f
+            translationY = 0f
             addView(
                 confirmTextCardView,
                 FrameLayout.LayoutParams(
@@ -2375,7 +2621,7 @@ class FloatingOverlayService : Service() {
                 confirmClipContainer,
                 FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
+                FrameLayout.LayoutParams.MATCH_PARENT
                 )
             )
             alpha = 0f
@@ -2397,8 +2643,7 @@ class FloatingOverlayService : Service() {
     }
 
     private fun removeWindows() {
-        fabSnapAnimator?.cancel()
-        fabSnapAnimator = null
+        cancelFabSnapAnimation()
         confirmOverlay?.let { runCatching { windowManager.removeView(it) } }
         confirmOverlay = null
         confirmTextCardView = null
@@ -2423,6 +2668,10 @@ class FloatingOverlayService : Service() {
         panelStatusEqProgressView = null
         panelStatusTriggerContainer = null
         panelStatusDetailRefs = null
+        panelBodyContainer = null
+        panelCardView = null
+        panelBottomBarView = null
+        panelLandscapeRailView = null
         panelIndicatorContainer = null
         panelActionFab = null
         panelActionFabIconView = null
@@ -2445,13 +2694,25 @@ class FloatingOverlayService : Service() {
         miniStatusEqProgressView = null
         miniStatusTriggerContainer = null
         miniStatusDetailRefs = null
+        miniBodyContainer = null
+        miniBodyHostView = null
+        miniBottomBarView = null
+        miniLandscapeRailView = null
+        miniSubtitleCardView = null
         miniSubtitleTextView = null
         miniSubtitleSeekBar = null
         miniQuickItemsContainer = null
         miniQuickItemsLeftFadeView = null
         miniQuickItemsRightFadeView = null
+        miniQuickItemsLayoutManager = null
         miniQuickRow = null
+        miniQuickRowCardView = null
+        miniQuickRowDividerView = null
+        miniQuickItemsScrollerView = null
+        miniQuickSwitcherView = null
         miniGroupIconView = null
+        miniGroupPrevButtonView = null
+        miniGroupNextButtonView = null
         miniQuickCollapseButton = null
         miniQuickCardBody = null
         miniQuickCardPreviewContainer = null
@@ -2515,19 +2776,18 @@ class FloatingOverlayService : Service() {
         bubbleTextView?.text = latestText
         bubbleRow?.visibility = View.GONE
         val hasLatestResult = latestText.isNotBlank()
-        val topMicIcon = if (settings.pushToTalkMode && pttPressedState) "settings_voice" else "mic"
-        panelStatusTextView?.text = latestText
-        panelStatusTextView?.visibility = if (hasLatestResult) View.VISIBLE else View.INVISIBLE
-        panelStatusLogoView?.visibility = if (hasLatestResult) View.GONE else View.VISIBLE
+        val topMicIcon = when {
+            settings.ttsDisabled -> "mic_off"
+            settings.pushToTalkMode && pttPressedState -> "settings_voice"
+            else -> "mic"
+        }
+        syncTopStatusContent(latestText)
         panelStatusMicIconView?.text = topMicIcon
         panelStatusEqIconView?.text = "graphic_eq"
         panelStatusMicProgressView?.progress = (inputLevel * 1000f).roundToInt().coerceIn(0, 1000)
         panelStatusEqProgressView?.progress = (playbackProgress * 1000f).roundToInt().coerceIn(0, 1000)
         panelStatusMicContainer?.alpha = if (settings.pushToTalkMode || pttPressedState) 1f else 0.68f
         panelStatusEqContainer?.alpha = if (runningState || hasLatestResult) 1f else 0.68f
-        miniStatusTextView?.text = latestText
-        miniStatusTextView?.visibility = if (hasLatestResult) View.VISIBLE else View.INVISIBLE
-        miniStatusLogoView?.visibility = if (hasLatestResult) View.GONE else View.VISIBLE
         miniStatusMicIconView?.text = topMicIcon
         miniStatusEqIconView?.text = "graphic_eq"
         miniStatusMicProgressView?.progress = (inputLevel * 1000f).roundToInt().coerceIn(0, 1000)
@@ -2586,6 +2846,63 @@ class FloatingOverlayService : Service() {
         updateConfirmHostChrome(false)
     }
 
+    private fun showTopStatusLogo() {
+        panelStatusTextView?.visibility = View.INVISIBLE
+        panelStatusLogoView?.visibility = View.VISIBLE
+        miniStatusTextView?.visibility = View.INVISIBLE
+        miniStatusLogoView?.visibility = View.VISIBLE
+        topStatusShowingText = false
+    }
+
+    private fun showTopStatusText(text: String) {
+        panelStatusTextView?.text = text
+        panelStatusTextView?.visibility = View.VISIBLE
+        panelStatusLogoView?.visibility = View.GONE
+        miniStatusTextView?.text = text
+        miniStatusTextView?.visibility = View.VISIBLE
+        miniStatusLogoView?.visibility = View.GONE
+        topStatusShowingText = true
+    }
+
+    private fun syncTopStatusContent(text: String) {
+        val normalized = text.trim()
+        if (normalized.isBlank()) {
+            topStatusLastContent = ""
+            topStatusResetJob?.cancel()
+            topStatusResetJob = null
+            showTopStatusLogo()
+            return
+        }
+        if (normalized != topStatusLastContent) {
+            topStatusLastContent = normalized
+            showTopStatusText(normalized)
+            topStatusResetJob?.cancel()
+            topStatusResetJob = scope.launch {
+                delay(3000L)
+                if (topStatusLastContent == normalized) {
+                    showTopStatusLogo()
+                }
+            }
+            return
+        }
+        if (topStatusShowingText) {
+            showTopStatusText(normalized)
+        }
+    }
+
+    private fun animateConfirmActionAlpha(view: View?, target: Float) {
+        val targetView = view ?: return
+        if (abs(targetView.alpha - target) < 0.02f) {
+            targetView.alpha = target
+            return
+        }
+        targetView.animate().cancel()
+        targetView.animate()
+            .alpha(target)
+            .setDuration(140L)
+            .start()
+    }
+
     private fun updateConfirmHostChrome(visible: Boolean) {
         val sideVisibility = if (visible) View.INVISIBLE else View.VISIBLE
         panelEditButtonView?.visibility = sideVisibility
@@ -2601,9 +2918,16 @@ class FloatingOverlayService : Service() {
             OverlayReleaseAction.Cancel -> "松手取消发送"
         }
         confirmTextView?.text = effectivePttStreamingText().ifBlank { prompt }
-        leftActionButton?.alpha = if (action == OverlayReleaseAction.SendToInput) 1f else 0.58f
-        rightActionButton?.alpha = if (action == OverlayReleaseAction.Cancel) 1f else 0.58f
-        activeConfirmFab()?.alpha = if (action == OverlayReleaseAction.SendToSubtitle) 1f else 0.84f
+        val inactiveAlpha = 0.58f
+        animateConfirmActionAlpha(
+            leftActionButton,
+            if (action == OverlayReleaseAction.SendToInput) 1f else inactiveAlpha
+        )
+        animateConfirmActionAlpha(
+            rightActionButton,
+            if (action == OverlayReleaseAction.Cancel) 1f else inactiveAlpha
+        )
+        activeConfirmFab()?.alpha = 1f
     }
 
     private fun mapCommitAction(action: OverlayReleaseAction): RealtimeRuntimeBridge.PttCommitAction =
@@ -2713,6 +3037,11 @@ class FloatingOverlayService : Service() {
             if (effectiveRunningState()) {
                 stopListeningInternal()
             } else {
+                if (settings.ttsDisabled) {
+                    overlayHintText = "TTS已禁用，如需打开，请打开顶部音频状态菜单将“禁用TTS”选项关闭"
+                    Toast.makeText(this@FloatingOverlayService, overlayHintText, Toast.LENGTH_SHORT).show()
+                    updateFabUi()
+                }
                 startListeningInternal(true)
             }
         }
@@ -2741,8 +3070,12 @@ class FloatingOverlayService : Service() {
         val params = fabParams ?: return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                cancelFabIdleDock(restoreFab = true)
-                fabSnapAnimator?.cancel()
+                fabTouchDockEdge = if (fabIdleDocked) resolveCurrentFabDockEdge(params) else null
+                cancelFabIdleDock(restoreFab = false, animateRestore = false)
+                cancelFabSnapAnimation()
+                if (fabTouchDockEdge == null) {
+                    resetFabRestoreAnimation()
+                }
                 downRawX = event.rawX
                 downRawY = event.rawY
                 downWinX = params.x
@@ -2755,6 +3088,13 @@ class FloatingOverlayService : Service() {
                 val dy = (event.rawY - downRawY).roundToInt()
                 if (!draggingFab && (abs(dx) > dp(6) || abs(dy) > dp(6))) draggingFab = true
                 if (draggingFab) {
+                    val dockEdge = fabTouchDockEdge ?: if (fabIdleDocked) resolveCurrentFabDockEdge(params) else null
+                    fabTouchDockEdge = null
+                    resetFabRestoreAnimation()
+                    cancelFabSnapAnimation()
+                    if (dockEdge != null) {
+                        prepareFabForDockedDrag(dockEdge, params)
+                    }
                     params.x = downWinX + dx
                     params.y = downWinY + dy
                     clampFabToScreen()
@@ -2765,11 +3105,25 @@ class FloatingOverlayService : Service() {
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                if (!draggingFab) togglePanel() else snapFabToEdge()
+                val tapRestoreEdge = fabTouchDockEdge
+                fabTouchDockEdge = null
+                if (!draggingFab) {
+                    if (tapRestoreEdge != null) {
+                        cancelFabIdleDock(restoreFab = true, animateRestore = false)
+                        animateFabRestoreFromDockEdge(tapRestoreEdge) { togglePanel() }
+                    } else {
+                        togglePanel()
+                    }
+                } else {
+                    resetFabRestoreAnimation()
+                    snapFabToEdge()
+                }
                 draggingFab = false
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                fabTouchDockEdge = null
+                resetFabRestoreAnimation()
                 if (draggingFab) snapFabToEdge()
                 draggingFab = false
                 refreshFabIdleDockState()
@@ -2844,6 +3198,7 @@ class FloatingOverlayService : Service() {
             loadOverlayShortcuts()
             loadOverlayLauncherLayout()
             refreshPanelUi()
+            applyPanelExpandedLayout()
             updatePanelPosition()
             panelRoot?.visibility = View.VISIBLE
             if (switchingFromMini) {
@@ -2895,6 +3250,7 @@ class FloatingOverlayService : Service() {
                 }
             }
             refreshMiniModeUi()
+            applyMiniExpandedLayout()
             updateMiniPanelPosition()
             refreshMiniPreviewUi()
             miniRoot?.visibility = View.VISIBLE
@@ -3141,7 +3497,526 @@ class FloatingOverlayService : Service() {
 
     private fun isLandscapeUi(): Boolean = displayOrientation() == Configuration.ORIENTATION_LANDSCAPE
 
+    private fun isPhoneLandscapeUi(): Boolean = !isTabletUi() && isLandscapeUi()
+
     private fun isTabletLandscapeUi(): Boolean = isTabletUi() && isLandscapeUi()
+
+    private fun landscapeOverlayContentHeight(): Int = dp(208)
+
+    private fun reparentView(
+        view: View?,
+        parent: ViewGroup,
+        params: ViewGroup.LayoutParams
+    ) {
+        val child = view ?: return
+        (child.parent as? ViewGroup)?.removeView(child)
+        parent.addView(child, params)
+    }
+
+    private fun weightedSpacer(): View = View(this)
+
+    private fun applyPanelExpandedLayout() {
+        val body = panelBodyContainer ?: return
+        val card = panelCardView ?: return
+        val bottomBar = panelBottomBarView ?: return
+        val rail = panelLandscapeRailView ?: return
+        val editButton = panelEditButtonView ?: return
+        val openButton = panelOpenButtonView ?: return
+        val actionFab = panelActionFab ?: return
+
+        (bottomBar.parent as? ViewGroup)?.removeView(bottomBar)
+        (rail.parent as? ViewGroup)?.removeView(rail)
+        body.removeAllViews()
+        bottomBar.removeAllViews()
+        rail.removeAllViews()
+
+        if (isPhoneLandscapeUi()) {
+            val railWidth = dp(92)
+            val railGap = dp(12)
+            val cardWidth = (
+                overlayContentWidthPx(phoneMaxDp = 360, tabletMaxDp = 400) -
+                    ((panelContent?.paddingLeft ?: 0) + (panelContent?.paddingRight ?: 0)) -
+                    railWidth -
+                    railGap
+                ).coerceAtLeast(dp(280))
+            rail.minimumHeight = dp(248)
+            reparentView(
+                openButton,
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { gravity = Gravity.CENTER_HORIZONTAL }
+            )
+            reparentView(
+                weightedSpacer(),
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            )
+            reparentView(
+                actionFab,
+                rail,
+                LinearLayout.LayoutParams(dp(74), dp(74)).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                }
+            )
+            reparentView(
+                weightedSpacer(),
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            )
+            reparentView(
+                editButton,
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { gravity = Gravity.CENTER_HORIZONTAL }
+            )
+
+            body.orientation = LinearLayout.HORIZONTAL
+            body.gravity = Gravity.TOP
+            reparentView(
+                card,
+                body,
+                LinearLayout.LayoutParams(
+                    cardWidth,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+            )
+            reparentView(
+                rail,
+                body,
+                LinearLayout.LayoutParams(
+                    railWidth,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                ).apply {
+                    leftMargin = railGap
+                }
+            )
+        } else {
+            reparentView(
+                editButton,
+                bottomBar,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_VERTICAL or Gravity.START
+                ).apply {
+                    leftMargin = dp(28)
+                }
+            )
+            reparentView(
+                openButton,
+                bottomBar,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_VERTICAL or Gravity.END
+                ).apply {
+                    rightMargin = dp(28)
+                }
+            )
+            reparentView(
+                actionFab,
+                bottomBar,
+                FrameLayout.LayoutParams(dp(74), dp(74), Gravity.CENTER)
+            )
+
+            reparentView(
+                bottomBar,
+                card,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(10)
+                }
+            )
+            body.orientation = LinearLayout.VERTICAL
+            body.gravity = Gravity.NO_GRAVITY
+            reparentView(
+                card,
+                body,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+    }
+
+    private fun applyMiniExpandedLayout() {
+        val bodyContainer = miniBodyContainer ?: return
+        val bodyHost = miniBodyHostView ?: return
+        val bottomBar = miniBottomBarView ?: return
+        val rail = miniLandscapeRailView ?: return
+        val backButton = miniBackButtonView ?: return
+        val openButton = miniOpenButtonView ?: return
+        val actionFab = miniActionFab ?: return
+
+        (bottomBar.parent as? ViewGroup)?.removeView(bottomBar)
+        (rail.parent as? ViewGroup)?.removeView(rail)
+        bodyContainer.removeAllViews()
+        bottomBar.removeAllViews()
+        rail.removeAllViews()
+
+        if (isPhoneLandscapeUi()) {
+            rail.minimumHeight = dp(248)
+            reparentView(
+                openButton,
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { gravity = Gravity.CENTER_HORIZONTAL }
+            )
+            reparentView(
+                weightedSpacer(),
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            )
+            reparentView(
+                actionFab,
+                rail,
+                LinearLayout.LayoutParams(dp(74), dp(74)).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                }
+            )
+            reparentView(
+                weightedSpacer(),
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+            )
+            reparentView(
+                backButton,
+                rail,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { gravity = Gravity.CENTER_HORIZONTAL }
+            )
+
+            bodyContainer.orientation = LinearLayout.HORIZONTAL
+            bodyContainer.gravity = Gravity.TOP
+            reparentView(
+                bodyHost,
+                bodyContainer,
+                LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+            )
+            reparentView(
+                rail,
+                bodyContainer,
+                LinearLayout.LayoutParams(
+                    dp(92),
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                ).apply {
+                    leftMargin = dp(12)
+                }
+            )
+        } else {
+            reparentView(
+                backButton,
+                bottomBar,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_VERTICAL or Gravity.START
+                ).apply {
+                    leftMargin = dp(28)
+                }
+            )
+            reparentView(
+                openButton,
+                bottomBar,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER_VERTICAL or Gravity.END
+                ).apply {
+                    rightMargin = dp(28)
+                }
+            )
+            reparentView(
+                actionFab,
+                bottomBar,
+                FrameLayout.LayoutParams(dp(74), dp(74), Gravity.CENTER)
+            )
+
+            bodyContainer.orientation = LinearLayout.VERTICAL
+            bodyContainer.gravity = Gravity.NO_GRAVITY
+            reparentView(
+                bodyHost,
+                bodyContainer,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            reparentView(
+                bottomBar,
+                bodyContainer,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(12)
+                }
+            )
+        }
+        refreshMiniSubtitleLayoutMetrics()
+        refreshMiniQuickCardLayoutMetrics()
+    }
+
+    private fun refreshMiniSubtitleLayoutMetrics() {
+        val subtitleText = miniSubtitleTextView ?: return
+        val landscapePhone = isPhoneLandscapeUi()
+        val subtitleBody = miniSubtitleBody
+        val subtitleCard = miniSubtitleCardView
+        val quickRow = miniQuickRow
+        val quickRowCard = miniQuickRowCardView
+        val quickSwitcher = miniQuickSwitcherView
+        val quickDivider = miniQuickRowDividerView
+        val quickItemsFrame = miniQuickItemsContainer
+        val quickItemsContainer = miniQuickItemsContainer
+        val quickItemsLayoutManager = miniQuickItemsLayoutManager
+        val quickItemsRecycler = miniQuickItemsRecyclerView
+        val quickFadeStart = miniQuickItemsLeftFadeView
+        val quickFadeEnd = miniQuickItemsRightFadeView
+        val prevButton = miniGroupPrevButtonView
+        val nextButton = miniGroupNextButtonView
+        val groupIcon = miniGroupIconView
+        val subtitleHeight = when {
+            landscapePhone -> landscapeOverlayContentHeight()
+            miniQuickItemsCollapsed -> dp(296)
+            else -> dp(180)
+        }
+        val landscapeQuickColumnHeight = subtitleHeight + dp(72)
+        (subtitleText.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (lp.height != subtitleHeight) {
+                lp.height = subtitleHeight
+                subtitleText.layoutParams = lp
+            }
+        }
+        subtitleBody?.orientation = if (landscapePhone) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        (subtitleCard?.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (landscapePhone) {
+                lp.width = 0
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.weight = 1f
+                lp.topMargin = 0
+                lp.leftMargin = 0
+            } else {
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.weight = 0f
+                lp.topMargin = 0
+                lp.leftMargin = 0
+            }
+            subtitleCard.layoutParams = lp
+        }
+        (quickRow?.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (landscapePhone) {
+                lp.width = dp(152)
+                lp.height = landscapeQuickColumnHeight
+                lp.weight = 0f
+                lp.leftMargin = dp(12)
+                lp.topMargin = 0
+            } else {
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.weight = 0f
+                lp.leftMargin = 0
+                lp.topMargin = dp(12)
+            }
+            quickRow.layoutParams = lp
+        }
+        quickRowCard?.minimumHeight = if (landscapePhone) landscapeQuickColumnHeight else 0
+        quickRowCard?.orientation = if (landscapePhone) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        quickRowCard?.gravity = if (landscapePhone) Gravity.NO_GRAVITY else Gravity.CENTER_VERTICAL
+        quickRowCard?.setPadding(
+            if (landscapePhone) dp(4) else dp(8),
+            if (landscapePhone) dp(8) else dp(8),
+            if (landscapePhone) dp(4) else dp(8),
+            if (landscapePhone) dp(8) else dp(8)
+        )
+        quickItemsRecycler?.setPadding(
+            if (landscapePhone) dp(4) else dp(10),
+            dp(8),
+            if (landscapePhone) dp(4) else dp(10),
+            dp(8)
+        )
+        (miniQuickItemsScrollerView?.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (landscapePhone) {
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                lp.height = 0
+                lp.weight = 1f
+            } else {
+                lp.width = 0
+                lp.height = dp(104)
+                lp.weight = 1f
+            }
+            miniQuickItemsScrollerView?.layoutParams = lp
+        }
+        (quickItemsFrame?.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+            lp.height = if (landscapePhone) ViewGroup.LayoutParams.MATCH_PARENT else dp(104)
+            quickItemsFrame.layoutParams = lp
+        }
+        (miniQuickSwitcherView?.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (landscapePhone) {
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                lp.height = dp(42)
+                lp.weight = 0f
+            } else {
+                lp.width = dp(44)
+                lp.height = dp(104)
+                lp.weight = 0f
+            }
+            miniQuickSwitcherView?.layoutParams = lp
+        }
+        (quickDivider?.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (landscapePhone) {
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                lp.height = dp(1)
+                lp.leftMargin = 0
+                lp.rightMargin = 0
+                lp.topMargin = dp(8)
+                lp.bottomMargin = dp(8)
+            } else {
+                lp.width = dp(1)
+                lp.height = dp(84)
+                lp.leftMargin = dp(8)
+                lp.rightMargin = dp(8)
+                lp.topMargin = 0
+                lp.bottomMargin = 0
+            }
+            quickDivider.layoutParams = lp
+        }
+        if (quickSwitcher != null && prevButton != null && nextButton != null && groupIcon != null) {
+            quickSwitcher.removeAllViews()
+            quickSwitcher.orientation = if (landscapePhone) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+            quickSwitcher.gravity = Gravity.CENTER
+            quickSwitcher.setPadding(if (landscapePhone) dp(2) else dp(2), dp(4), if (landscapePhone) dp(2) else dp(2), dp(4))
+            quickSwitcher.minimumWidth = if (landscapePhone) 0 else dp(44)
+            prevButton.text = if (landscapePhone) "chevron_left" else "keyboard_arrow_up"
+            nextButton.text = if (landscapePhone) "chevron_right" else "keyboard_arrow_down"
+            if (landscapePhone) {
+                reparentView(
+                    prevButton,
+                    quickSwitcher,
+                    LinearLayout.LayoutParams(dp(28), dp(28))
+                )
+                reparentView(
+                    groupIcon,
+                    quickSwitcher,
+                    LinearLayout.LayoutParams(0, dp(28), 1f).apply { gravity = Gravity.CENTER_VERTICAL }
+                )
+                reparentView(
+                    nextButton,
+                    quickSwitcher,
+                    LinearLayout.LayoutParams(dp(28), dp(28))
+                )
+            } else {
+                reparentView(
+                    prevButton,
+                    quickSwitcher,
+                    LinearLayout.LayoutParams(dp(36), 0, 1f)
+                )
+                reparentView(
+                    groupIcon,
+                    quickSwitcher,
+                    LinearLayout.LayoutParams(dp(36), dp(28)).apply { gravity = Gravity.CENTER_HORIZONTAL }
+                )
+                reparentView(
+                    nextButton,
+                    quickSwitcher,
+                    LinearLayout.LayoutParams(dp(36), 0, 1f)
+                )
+            }
+        }
+        quickItemsLayoutManager?.let { layoutManager ->
+            val targetOrientation = if (landscapePhone) RecyclerView.VERTICAL else RecyclerView.HORIZONTAL
+            if (layoutManager.orientation != targetOrientation) {
+                layoutManager.orientation = targetOrientation
+                miniQuickItemsAdapter?.notifyDataSetChanged()
+            }
+        }
+        quickItemsRecycler?.setPadding(
+            if (landscapePhone) dp(8) else dp(10),
+            if (landscapePhone) dp(8) else dp(8),
+            if (landscapePhone) dp(8) else dp(10),
+            if (landscapePhone) dp(8) else dp(8)
+        )
+        if (quickItemsContainer != null && quickFadeStart != null && quickFadeEnd != null) {
+            if (landscapePhone) {
+                quickFadeStart.background = GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    intArrayOf(overlayCardColor(), Color.TRANSPARENT)
+                )
+                quickFadeEnd.background = GradientDrawable(
+                    GradientDrawable.Orientation.BOTTOM_TOP,
+                    intArrayOf(overlayCardColor(), Color.TRANSPARENT)
+                )
+                quickFadeStart.layoutParams =
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        dp(20),
+                        Gravity.TOP
+                    )
+                quickFadeEnd.layoutParams =
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        dp(20),
+                        Gravity.BOTTOM
+                    )
+            } else {
+                quickFadeStart.background = GradientDrawable(
+                    GradientDrawable.Orientation.LEFT_RIGHT,
+                    intArrayOf(overlayCardColor(), Color.TRANSPARENT)
+                )
+                quickFadeEnd.background = GradientDrawable(
+                    GradientDrawable.Orientation.RIGHT_LEFT,
+                    intArrayOf(overlayCardColor(), Color.TRANSPARENT)
+                )
+                quickFadeStart.layoutParams =
+                    FrameLayout.LayoutParams(
+                        dp(24),
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        Gravity.START
+                    )
+                quickFadeEnd.layoutParams =
+                    FrameLayout.LayoutParams(
+                        dp(24),
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        Gravity.END
+                    )
+            }
+        }
+        miniQuickRow?.requestLayout()
+        miniSubtitleCardView?.requestLayout()
+        miniSubtitleBody?.requestLayout()
+    }
 
     private fun isFabAnchoredRight(): Boolean {
         val params = fabParams
@@ -3153,17 +4028,20 @@ class FloatingOverlayService : Service() {
         val sideMargin = dp(16)
         val phoneMax = dp(phoneMaxDp)
         val tabletMax = dp(tabletMaxDp)
-        return if (isTabletLandscapeUi()) {
-            min(displayWidth() / 2 - sideMargin * 2, tabletMax)
-        } else {
-            min(displayWidth() - sideMargin * 2, phoneMax)
+        val phoneLandscapeMax = dp(max(phoneMaxDp + 180, 520))
+        return when {
+            isTabletLandscapeUi() -> min(displayWidth() / 2 - sideMargin * 2, tabletMax)
+            isPhoneLandscapeUi() -> min(displayWidth() - sideMargin * 2, phoneLandscapeMax)
+            else -> min(displayWidth() - sideMargin * 2, phoneMax)
         }.coerceAtLeast(dp(280))
     }
 
     private fun overlayContentLeftPx(contentWidth: Int): Int {
         val sideMargin = dp(16)
         if (!isTabletLandscapeUi()) {
-            return ((displayWidth() - contentWidth) / 2).coerceAtLeast(sideMargin)
+            val landscapePhoneBias = if (isPhoneLandscapeUi()) dp(16) else 0
+            return (((displayWidth() - contentWidth) / 2) - landscapePhoneBias)
+                .coerceIn(sideMargin, max(sideMargin, displayWidth() - contentWidth - sideMargin))
         }
         val regionCenter = if (isFabAnchoredRight()) {
             displayWidth() * 3 / 4
@@ -3176,18 +4054,26 @@ class FloatingOverlayService : Service() {
 
     private fun overlayContentTopPx(contentHeight: Int): Int {
         val topBottomMargin = dp(20)
-        return ((displayHeight() - contentHeight) / 2)
+        val portraitBias = if (!isLandscapeUi()) dp(16) else 0
+        return (((displayHeight() - contentHeight) / 2) - portraitBias)
             .coerceIn(topBottomMargin, max(topBottomMargin, displayHeight() - contentHeight - topBottomMargin))
     }
 
     private suspend fun loadQuickSubtitleConfig() {
         val raw = UserPrefs.getQuickSubtitleConfig(this)
+        val overlayFontSize = UserPrefs.getFloatingOverlayQuickSubtitleFontSize(this)
+            ?.coerceIn(28f, 96f)
+        val sharedFontFallback = raw?.takeIf { it.isNotBlank() }?.let { json ->
+            runCatching {
+                JSONObject(json).optDouble("fontSizeSp", 56.0).toFloat().coerceIn(28f, 96f)
+            }.getOrDefault(56f)
+        } ?: 56f
         if (raw.isNullOrBlank()) {
             quickSubtitleGroups = defaultQuickSubtitleGroups()
             quickSubtitleSelectedGroupId = quickSubtitleGroups.first().id
             quickSubtitleCurrentText = defaultQuickSubtitleText
             quickSubtitleInputText = ""
-            quickSubtitleFontSizeSp = 56f
+            quickSubtitleFontSizeSp = overlayFontSize ?: 56f
             quickSubtitlePlayOnSend = true
             quickSubtitleBold = true
             quickSubtitleCentered = false
@@ -3196,6 +4082,7 @@ class FloatingOverlayService : Service() {
         }
         runCatching { parseQuickSubtitleConfig(raw) }
             .onFailure { AppLogger.e("FloatingOverlayService.parseQuickSubtitleConfig failed", it) }
+        quickSubtitleFontSizeSp = overlayFontSize ?: sharedFontFallback
     }
 
     private fun parseQuickSubtitleConfig(raw: String) {
@@ -3228,7 +4115,6 @@ class FloatingOverlayService : Service() {
         quickSubtitleSelectedGroupId =
             finalGroups.firstOrNull { it.id == root.optLong("selectedGroupId", finalGroups.first().id) }?.id
                 ?: finalGroups.first().id
-        quickSubtitleFontSizeSp = root.optDouble("fontSizeSp", 56.0).toFloat().coerceIn(28f, 96f)
         quickSubtitleCurrentText =
             root.optString("currentText", defaultQuickSubtitleText).ifBlank { defaultQuickSubtitleText }
         quickSubtitleInputText = root.optString("inputText", "")
@@ -3241,35 +4127,49 @@ class FloatingOverlayService : Service() {
     private fun saveQuickSubtitleConfig() {
         if (quickSubtitleSaving) return
         quickSubtitleSaving = true
-        val payload = JSONObject().apply {
-            put("selectedGroupId", quickSubtitleSelectedGroupId)
-            put("fontSizeSp", quickSubtitleFontSizeSp.toDouble())
-            put("currentText", quickSubtitleCurrentText)
-            put("inputText", quickSubtitleInputText)
-            put("playOnSend", quickSubtitlePlayOnSend)
-            put("fontBold", quickSubtitleBold)
-            put("textCentered", quickSubtitleCentered)
-            val groupsArray = JSONArray()
-            quickSubtitleGroups.forEach { group ->
-                val itemsArray = JSONArray()
-                group.items.forEach { item -> itemsArray.put(item) }
-                groupsArray.put(
-                    JSONObject().apply {
-                        put("id", group.id)
-                        put("title", group.title)
-                        put("icon", group.icon)
-                        put("items", itemsArray)
-                    }
-                )
-            }
-            put("groups", groupsArray)
-        }.toString()
         scope.launch(Dispatchers.IO) {
             try {
+                val preservedSharedFontSize = UserPrefs.getQuickSubtitleConfig(this@FloatingOverlayService)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { json ->
+                        runCatching {
+                            JSONObject(json).optDouble("fontSizeSp", 56.0).toFloat().coerceIn(28f, 96f)
+                        }.getOrDefault(56f)
+                    } ?: 56f
+                val payload = JSONObject().apply {
+                    put("selectedGroupId", quickSubtitleSelectedGroupId)
+                    put("fontSizeSp", preservedSharedFontSize.toDouble())
+                    put("currentText", quickSubtitleCurrentText)
+                    put("inputText", quickSubtitleInputText)
+                    put("playOnSend", quickSubtitlePlayOnSend)
+                    put("fontBold", quickSubtitleBold)
+                    put("textCentered", quickSubtitleCentered)
+                    val groupsArray = JSONArray()
+                    quickSubtitleGroups.forEach { group ->
+                        val itemsArray = JSONArray()
+                        group.items.forEach { item -> itemsArray.put(item) }
+                        groupsArray.put(
+                            JSONObject().apply {
+                                put("id", group.id)
+                                put("title", group.title)
+                                put("icon", group.icon)
+                                put("items", itemsArray)
+                            }
+                        )
+                    }
+                    put("groups", groupsArray)
+                }.toString()
                 UserPrefs.setQuickSubtitleConfig(this@FloatingOverlayService, payload)
             } finally {
                 quickSubtitleSaving = false
             }
+        }
+    }
+
+    private fun saveFloatingOverlayQuickSubtitleFontSize() {
+        val sizeSp = quickSubtitleFontSizeSp.coerceIn(28f, 96f)
+        scope.launch(Dispatchers.IO) {
+            UserPrefs.setFloatingOverlayQuickSubtitleFontSize(this@FloatingOverlayService, sizeSp)
         }
     }
 
@@ -3291,6 +4191,7 @@ class FloatingOverlayService : Service() {
 
     private fun refreshQuickSubtitleUi() {
         val group = selectedQuickSubtitleGroup()
+        val landscapePhone = isPhoneLandscapeUi()
         miniSubtitleTextView?.apply {
             text = quickSubtitleCurrentText.ifBlank { defaultQuickSubtitleText }
             setTextSize(TypedValue.COMPLEX_UNIT_SP, quickSubtitleFontSizeSp)
@@ -3301,30 +4202,103 @@ class FloatingOverlayService : Service() {
             }
             typeface = if (quickSubtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
             layoutParams = (layoutParams as? LinearLayout.LayoutParams)?.apply {
-                height = if (miniQuickItemsCollapsed) dp(296) else dp(180)
+                height = when {
+                    landscapePhone -> landscapeOverlayContentHeight()
+                    miniQuickItemsCollapsed -> dp(296)
+                    else -> dp(180)
+                }
             }
             requestLayout()
         }
         miniSubtitleSeekBar?.progress =
             (quickSubtitleFontSizeSp - 28f).roundToInt().coerceIn(0, 68)
         miniGroupIconView?.text = group.icon
-        miniQuickCollapseButton?.text =
-            if (miniQuickItemsCollapsed) "expand_less" else "expand_more"
+        miniQuickCollapseButton?.text = when {
+            landscapePhone && miniQuickItemsCollapsed -> "chevron_left"
+            landscapePhone -> "chevron_right"
+            miniQuickItemsCollapsed -> "expand_less"
+            else -> "expand_more"
+        }
         miniQuickRow?.visibility = if (miniQuickItemsCollapsed) View.GONE else View.VISIBLE
         miniQuickRow?.requestLayout()
         miniQuickItemsAdapter?.submitItems(group.items)
         miniQuickItemsRecyclerView?.scrollToPosition(0)
         miniQuickItemsRecyclerView?.post { updateMiniQuickItemsEdgeFade(false) }
+        refreshMiniSubtitleLayoutMetrics()
         refreshMiniPreviewUi()
+    }
+
+    private fun refreshMiniQuickCardLayoutMetrics() {
+        val body = miniQuickCardBody ?: return
+        val previewContainer = miniQuickCardPreviewContainer ?: return
+        val indicatorContainer = miniQuickCardIndicatorContainer ?: return
+        val landscapePhone = isPhoneLandscapeUi()
+
+        body.orientation = if (landscapePhone) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        body.gravity = if (landscapePhone) Gravity.CENTER_VERTICAL else Gravity.NO_GRAVITY
+
+        (previewContainer.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (landscapePhone) {
+                lp.width = 0
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.weight = 1f
+                lp.topMargin = 0
+                lp.leftMargin = 0
+            } else {
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.weight = 0f
+                lp.topMargin = 0
+                lp.leftMargin = 0
+            }
+            previewContainer.layoutParams = lp
+        }
+        (indicatorContainer.layoutParams as? LinearLayout.LayoutParams)?.let { lp ->
+            if (landscapePhone) {
+                lp.width = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.weight = 0f
+                lp.topMargin = 0
+                lp.leftMargin = dp(10)
+                lp.gravity = Gravity.CENTER_VERTICAL
+            } else {
+                lp.width = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                lp.weight = 0f
+                lp.topMargin = dp(10)
+                lp.leftMargin = 0
+                lp.gravity = Gravity.CENTER_HORIZONTAL
+            }
+            indicatorContainer.layoutParams = lp
+        }
+        indicatorContainer.orientation =
+            if (landscapePhone) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        indicatorContainer.gravity = Gravity.CENTER
+        indicatorContainer.background = roundedRectDrawable(dp(999).toFloat(), overlayCardColor())
+        indicatorContainer.elevation = dp(4).toFloat()
+        indicatorContainer.setPadding(
+            if (landscapePhone) dp(6) else dp(8),
+            if (landscapePhone) dp(10) else dp(5),
+            if (landscapePhone) dp(6) else dp(8),
+            if (landscapePhone) dp(10) else dp(5)
+        )
+        refreshMiniQuickCardIndicators()
+        body.requestLayout()
     }
 
     private fun updateMiniQuickItemsEdgeFade(animate: Boolean) {
         val recycler = miniQuickItemsRecyclerView ?: return
         val leftFade = miniQuickItemsLeftFadeView ?: return
         val rightFade = miniQuickItemsRightFadeView ?: return
+        val vertical =
+            (recycler.layoutManager as? LinearLayoutManager)?.orientation == RecyclerView.VERTICAL
         val hasScrollableContent =
             (miniQuickItemsAdapter?.itemCount ?: 0) > 0 &&
-                recycler.computeHorizontalScrollRange() > recycler.width
+                if (vertical) {
+                    recycler.computeVerticalScrollRange() > recycler.height
+                } else {
+                    recycler.computeHorizontalScrollRange() > recycler.width
+                }
         if (!hasScrollableContent) {
             applyMiniQuickFadeAlpha(leftFade, 0f, animate)
             applyMiniQuickFadeAlpha(rightFade, 0f, animate)
@@ -3332,12 +4306,20 @@ class FloatingOverlayService : Service() {
         }
         applyMiniQuickFadeAlpha(
             leftFade,
-            if (recycler.canScrollHorizontally(-1)) 1f else 0f,
+            if (vertical) {
+                if (recycler.canScrollVertically(-1)) 1f else 0f
+            } else {
+                if (recycler.canScrollHorizontally(-1)) 1f else 0f
+            },
             animate
         )
         applyMiniQuickFadeAlpha(
             rightFade,
-            if (recycler.canScrollHorizontally(1)) 1f else 0f,
+            if (vertical) {
+                if (recycler.canScrollVertically(1)) 1f else 0f
+            } else {
+                if (recycler.canScrollHorizontally(1)) 1f else 0f
+            },
             animate
         )
     }
@@ -3362,6 +4344,7 @@ class FloatingOverlayService : Service() {
 
     private fun refreshMiniQuickCardIndicators() {
         val container = miniQuickCardIndicatorContainer ?: return
+        val vertical = isPhoneLandscapeUi()
         container.removeAllViews()
         val count = max(1, quickCards.size)
         repeat(count) { index ->
@@ -3381,7 +4364,11 @@ class FloatingOverlayService : Service() {
                     }
                 },
                 LinearLayout.LayoutParams(dp(8), dp(8)).apply {
-                    if (index > 0) leftMargin = dp(8)
+                    if (vertical) {
+                        if (index > 0) topMargin = dp(8)
+                    } else if (index > 0) {
+                        leftMargin = dp(8)
+                    }
                 }
             )
         }
@@ -3393,28 +4380,45 @@ class FloatingOverlayService : Service() {
             dp(18).toFloat()
         )
         return object : View.OnTouchListener {
-            var lastY = 0f
+            var lastPrimary = 0f
+            var dragged = false
+
+            private fun requestDisallowIntercept(view: View, disallow: Boolean) {
+                var parent = view.parent
+                while (parent != null) {
+                    parent.requestDisallowInterceptTouchEvent(disallow)
+                    parent = parent.parent
+                }
+            }
+
             override fun onTouch(v: View, event: MotionEvent): Boolean {
+                val horizontalDrag = isPhoneLandscapeUi()
                 when (event.actionMasked) {
                     MotionEvent.ACTION_DOWN -> {
-                        lastY = event.rawY
-                        v.parent?.requestDisallowInterceptTouchEvent(true)
+                        lastPrimary = if (horizontalDrag) event.rawX else event.rawY
+                        dragged = false
+                        requestDisallowIntercept(v, true)
                         return true
                     }
 
                     MotionEvent.ACTION_MOVE -> {
-                        val deltaY = event.rawY - lastY
-                        if (abs(deltaY) >= threshold) {
-                            shiftQuickSubtitleGroup(if (deltaY > 0f) 1 else -1)
-                            lastY = event.rawY
+                        requestDisallowIntercept(v, true)
+                        val currentPrimary = if (horizontalDrag) event.rawX else event.rawY
+                        val delta = currentPrimary - lastPrimary
+                        if (abs(delta) >= threshold) {
+                            shiftQuickSubtitleGroup(if (delta > 0f) 1 else -1)
+                            lastPrimary = currentPrimary
+                            dragged = true
                         }
                         return true
                     }
 
                     MotionEvent.ACTION_UP,
                     MotionEvent.ACTION_CANCEL -> {
-                        v.parent?.requestDisallowInterceptTouchEvent(false)
-                        v.performClick()
+                        requestDisallowIntercept(v, false)
+                        if (event.actionMasked == MotionEvent.ACTION_UP && !dragged) {
+                            v.performClick()
+                        }
                         return true
                     }
                 }
@@ -3445,8 +4449,8 @@ class FloatingOverlayService : Service() {
             val id = obj.optLong("id", i.toLong() + 1L).coerceAtLeast(1L)
             parsedCards += QuickCard(
                 id = id,
-                type = QuickCardType.fromWire(obj.optString("type", QuickCardType.Text.wireValue)),
-                title = obj.optString("title", "名片名字"),
+                type = QuickCardType.Text,
+                title = obj.optString("title", ""),
                 note = obj.optString("note", ""),
                 themeColor = normalizeQuickCardColor(obj.optString("themeColor", "#038387")),
                 link = obj.optString("link", "").trim(),
@@ -3474,7 +4478,7 @@ class FloatingOverlayService : Service() {
                         put(
                             JSONObject().apply {
                                 put("id", card.id)
-                                put("type", card.type.wireValue)
+                                put("type", QuickCardType.Text.wireValue)
                                 put("title", card.title)
                                 put("note", card.note)
                                 put("themeColor", card.themeColor)
@@ -3533,34 +4537,54 @@ class FloatingOverlayService : Service() {
         if (pager.currentItem != safeIndex) {
             pager.setCurrentItem(safeIndex, false)
         }
-        refreshMiniQuickCardIndicators()
+        refreshMiniQuickCardLayoutMetrics()
         refreshMiniPreviewUi()
     }
 
     private fun miniQuickCardHeightKey(card: QuickCard?): Long = card?.id ?: Long.MIN_VALUE
 
+    private fun miniQuickCardPageContentWidth(landscapePhone: Boolean): Int =
+        min(
+            if (landscapePhone) dp(440) else dp(244),
+            max(
+                if (landscapePhone) dp(260) else dp(196),
+                overlayContentWidthPx(phoneMaxDp = 360, tabletMaxDp = 400) - if (landscapePhone) dp(120) else dp(76)
+            )
+        )
+
+    private fun miniQuickCardPortraitPreviewMinHeight(): Int {
+        val cardWidth = miniQuickCardPageContentWidth(landscapePhone = false).coerceAtLeast(dp(220))
+        val cardHeight = (cardWidth / (9f / 16f)).roundToInt().coerceAtLeast(dp(124))
+        return cardHeight + dp(20)
+    }
+
     private fun measureMiniQuickCardPageHeight(contentWidth: Int, card: QuickCard?): Int {
-        val previewContainer = miniQuickCardPreviewContainer ?: return dp(320)
+        val previewContainer = miniQuickCardPreviewContainer ?: return miniQuickCardPortraitPreviewMinHeight()
+        if (isPhoneLandscapeUi()) {
+            return landscapeOverlayContentHeight() - previewContainer.paddingTop - previewContainer.paddingBottom
+        }
         val probe = createMiniQuickCardPage(card)
         val childWidthSpec = View.MeasureSpec.makeMeasureSpec(contentWidth.coerceAtLeast(0), View.MeasureSpec.EXACTLY)
         val childHeightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         probe.measure(childWidthSpec, childHeightSpec)
-        return probe.measuredHeight.coerceAtLeast(dp(320) - previewContainer.paddingTop - previewContainer.paddingBottom)
+        return probe.measuredHeight.coerceAtLeast(
+            miniQuickCardPortraitPreviewMinHeight() - previewContainer.paddingTop - previewContainer.paddingBottom
+        )
     }
 
     private fun createMiniQuickCardPage(card: QuickCard?): View {
-        val contentWidth = min(
-            dp(244),
-            max(dp(196), overlayContentWidthPx(phoneMaxDp = 360, tabletMaxDp = 400) - dp(76))
-        )
+        val landscapePhone = isPhoneLandscapeUi()
+        val contentWidth = miniQuickCardPageContentWidth(landscapePhone)
+        val verticalPadding = if (landscapePhone) 0 else dp(10)
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
-            setPadding(0, dp(10), 0, dp(10))
+            setPadding(0, verticalPadding, 0, verticalPadding)
             addView(
                 buildOverlayQuickCardCard(
                     card = card,
-                    landscape = false,
+                    landscape = landscapePhone,
+                    renderStyle = OverlayQuickCardRenderStyle.Panel,
                     contentWidthPx = contentWidth,
                     interactive = card != null,
                     onCardClick = { card?.let { openMiniQuickCardPreview(it.id) } },
@@ -3640,15 +4664,21 @@ class FloatingOverlayService : Service() {
                         miniPreviewQuickCardId = null
                         null
                     } else {
-                        val width =
-                            if (isLandscapeUi()) {
-                                min(dp(420), overlayContentWidthPx(phoneMaxDp = 520, tabletMaxDp = 560) - dp(24))
-                            } else {
-                                min(dp(300), overlayContentWidthPx(phoneMaxDp = 380, tabletMaxDp = 420) - dp(20))
-                            }
+                        val width = when {
+                            isPhoneLandscapeUi() ->
+                                min(displayWidth() - dp(40), dp(560)).coerceAtLeast(dp(320))
+                            isTabletLandscapeUi() ->
+                                min(displayWidth() - dp(72), dp(640)).coerceAtLeast(dp(360))
+                            else ->
+                                min(
+                                    dp(300),
+                                    overlayContentWidthPx(phoneMaxDp = 380, tabletMaxDp = 420) - dp(20)
+                                ).coerceAtLeast(dp(240))
+                        }
                         buildOverlayQuickCardCard(
                             card = card,
                             landscape = isLandscapeUi(),
+                            renderStyle = OverlayQuickCardRenderStyle.Preview,
                             contentWidthPx = width,
                             interactive = true,
                             onCardClick = { closeMiniPreview() },
@@ -3800,9 +4830,9 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun createOverlayQuickCardLogoView(): ImageView =
+    private fun createOverlayQuickCardLogoView(light: Boolean = overlayDarkTheme): ImageView =
         ImageView(this).apply {
-            setImageResource(if (overlayDarkTheme) R.drawable.logo_white else R.drawable.logo_black)
+            setImageResource(if (light) R.drawable.logo_white else R.drawable.logo_black)
             adjustViewBounds = true
             minimumWidth = dp(72)
             maxWidth = dp(84)
@@ -3876,19 +4906,32 @@ class FloatingOverlayService : Service() {
     private fun buildOverlayQuickCardCard(
         card: QuickCard?,
         landscape: Boolean,
+        renderStyle: OverlayQuickCardRenderStyle,
         contentWidthPx: Int,
         interactive: Boolean,
         onCardClick: (() -> Unit)?,
         onCardLongClick: (() -> Unit)?
     ): View {
-        val outerPadding = dp(10)
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        val cardAspect = if (landscape) 16f / 9f else 9f / 16f
+        val maxHeight =
+            if (renderStyle == OverlayQuickCardRenderStyle.Panel && isPhoneLandscapeUi()) {
+                landscapeOverlayContentHeight()
+            } else {
+                Int.MAX_VALUE
+            }
+        val cardWidth =
+            if (maxHeight == Int.MAX_VALUE) {
+                contentWidthPx
+            } else {
+                min(contentWidthPx, (maxHeight * cardAspect).roundToInt())
+            }.coerceAtLeast(dp(220))
+        val cardHeight = (cardWidth / cardAspect).roundToInt().coerceAtLeast(dp(124))
+
+        return FrameLayout(this).apply {
             background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
             elevation = dp(8).toFloat()
             clipChildren = false
             clipToPadding = false
-            setPadding(outerPadding, outerPadding, outerPadding, outerPadding)
             if (interactive && (onCardClick != null || onCardLongClick != null)) {
                 isClickable = true
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -3902,156 +4945,515 @@ class FloatingOverlayService : Service() {
                     }
                 }
             }
-            if (card == null) {
-                addView(
-                    FrameLayout(this@FloatingOverlayService).apply {
-                        minimumHeight = dp(260)
-                        addView(
-                            TextView(this@FloatingOverlayService).apply {
-                                setTextColor(overlayOnSurfaceVariantColor())
-                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-                                typeface = Typeface.DEFAULT_BOLD
-                                gravity = Gravity.CENTER
-                                text = "暂无快捷名片"
-                            },
-                            FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                        )
-                    },
-                    LinearLayout.LayoutParams(
-                        contentWidthPx,
-                        ViewGroup.LayoutParams.WRAP_CONTENT
-                    )
-                )
-            } else if (landscape) {
-                val heroWidth = min(dp(250), max(dp(176), (contentWidthPx * 0.62f).roundToInt()))
-                val heroHeight = (heroWidth / 1.67f).roundToInt()
-                addView(
-                    LinearLayout(this@FloatingOverlayService).apply {
-                        orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.TOP
-                        val hero = FrameLayout(this@FloatingOverlayService).apply {
-                            background = roundedRectDrawable(overlayRadiusDp, parseQuickCardThemeColor(card.themeColor))
-                            clipChildren = true
-                            clipToPadding = true
+            addView(
+                if (card == null) {
+                    buildOverlayQuickCardPlaceholder()
+                } else {
+                    buildUnifiedOverlayQuickCardContent(
+                        card = card,
+                        landscape = landscape,
+                        cardWidthPx = cardWidth,
+                        cardHeightPx = cardHeight,
+                        onOpenPageClick = {
+                            val targetIndex = quickCards.indexOfFirst { it.id == card.id }
+                            if (targetIndex >= 0) {
+                                quickCardSelectedIndex = targetIndex
+                                saveQuickCardSelectedIndex()
+                            }
+                            launchQuickCardPage()
                         }
-                        populateOverlayQuickCardHero(
-                            container = hero,
-                            card = card,
-                            themeColor = parseQuickCardThemeColor(card.themeColor),
-                            onThemeColor = quickCardOnColor(parseQuickCardThemeColor(card.themeColor)),
-                            landscape = true
-                        )
-                        addView(hero, LinearLayout.LayoutParams(heroWidth, heroHeight))
-                        addView(spaceView(dp(10), 1))
-                        addView(
-                            LinearLayout(this@FloatingOverlayService).apply {
-                                orientation = LinearLayout.VERTICAL
-                                addView(
-                                    LinearLayout(this@FloatingOverlayService).apply {
-                                        orientation = LinearLayout.HORIZONTAL
-                                        gravity = Gravity.TOP
-                                        addView(
-                                            LinearLayout(this@FloatingOverlayService).apply {
-                                                orientation = LinearLayout.VERTICAL
-                                                addView(
-                                                    TextView(this@FloatingOverlayService).apply {
-                                                        setTextColor(overlayOnSurfaceColor())
-                                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-                                                        typeface = Typeface.DEFAULT_BOLD
-                                                        maxLines = 1
-                                                        ellipsize = TextUtils.TruncateAt.END
-                                                        text = card.title.ifBlank { "名片名字" }
-                                                    }
-                                                )
-                                                addView(
-                                                    TextView(this@FloatingOverlayService).apply {
-                                                        setTextColor(overlayOnSurfaceVariantColor())
-                                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                                                        maxLines = 3
-                                                        ellipsize = TextUtils.TruncateAt.END
-                                                        text = card.note.ifBlank { "愿你的生活充满诗与远方" }
-                                                    }
-                                                )
-                                            },
-                                            LinearLayout.LayoutParams(
-                                                0,
-                                                ViewGroup.LayoutParams.WRAP_CONTENT,
-                                                1f
-                                            )
-                                        )
-                                        addView(spaceView(dp(8), 1))
-                                        addView(createOverlayQuickCardLogoView())
-                                    }
-                                )
-                            },
-                            LinearLayout.LayoutParams(
-                                0,
-                                ViewGroup.LayoutParams.WRAP_CONTENT,
-                                1f
-                            )
-                        )
-                    },
-                    LinearLayout.LayoutParams(contentWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    )
+                },
+                FrameLayout.LayoutParams(cardWidth, cardHeight, Gravity.CENTER)
+            )
+        }
+    }
+
+    private fun buildOverlayQuickCardPlaceholder(): View =
+        FrameLayout(this).apply {
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            addView(
+                TextView(this@FloatingOverlayService).apply {
+                    setTextColor(overlayOnSurfaceVariantColor())
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    text = "暂无快捷名片"
+                },
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
                 )
-            } else {
-                val themeColor = parseQuickCardThemeColor(card.themeColor)
-                val onThemeColor = quickCardOnColor(themeColor)
-                val hero = FrameLayout(this@FloatingOverlayService).apply {
-                    background = roundedRectDrawable(overlayRadiusDp, themeColor)
-                    clipChildren = true
-                    clipToPadding = true
+            )
+        }
+
+    private fun buildUnifiedOverlayQuickCardContent(
+        card: QuickCard,
+        landscape: Boolean,
+        cardWidthPx: Int,
+        cardHeightPx: Int,
+        onOpenPageClick: () -> Unit
+    ): View {
+        val themeColor = parseQuickCardThemeColor(card.themeColor)
+        val onThemeColor = quickCardOnColor(themeColor)
+        val linkText = card.link.trim()
+        val imagePath = card.overlayHeroImagePath(landscape)
+        return FrameLayout(this).apply {
+            background = roundedRectDrawable(overlayRadiusDp, themeColor)
+            clipToRoundedOutline(overlayRadiusDp)
+            clipChildren = true
+            clipToPadding = true
+            if (imagePath.isNotBlank()) {
+                val imageView = ImageView(this@FloatingOverlayService).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    tag = imagePath
                 }
-                populateOverlayQuickCardHero(hero, card, themeColor, onThemeColor, false)
                 addView(
-                    hero,
-                    LinearLayout.LayoutParams(
-                        contentWidthPx,
-                        (contentWidthPx * 1.67f).roundToInt()
+                    imageView,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
                     )
                 )
                 addView(
+                    View(this@FloatingOverlayService).apply {
+                        background = GradientDrawable(
+                            GradientDrawable.Orientation.TOP_BOTTOM,
+                            intArrayOf(ColorUtils.setAlphaComponent(Color.BLACK, 112), Color.TRANSPARENT)
+                        )
+                    },
+                    FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(92), Gravity.TOP)
+                )
+                addView(
+                    View(this@FloatingOverlayService).apply {
+                        background = GradientDrawable(
+                            GradientDrawable.Orientation.TOP_BOTTOM,
+                            intArrayOf(Color.TRANSPARENT, ColorUtils.setAlphaComponent(Color.BLACK, 124))
+                        )
+                    },
+                    FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(86), Gravity.BOTTOM)
+                )
+                scope.launch {
+                    val bitmap = withContext(Dispatchers.IO) { decodeBitmapFromPath(imagePath) }
+                    if (imageView.tag == imagePath && bitmap != null) {
+                        imageView.setImageBitmap(bitmap)
+                    }
+                }
+            } else {
+                addOverlayQuickCardDecorText(this, card, onThemeColor, landscape)
+            }
+
+            val foreground = if (imagePath.isNotBlank()) Color.WHITE else onThemeColor
+            addOverlayQuickCardHeader(this, card, foreground, onOpenPageClick)
+            if (linkText.isNotBlank()) {
+                addOverlayQuickCardQr(this, linkText, min(cardWidthPx, cardHeightPx))
+            }
+            addOverlayQuickCardFooter(this, card, foreground, linkText)
+        }
+    }
+
+    private fun addOverlayQuickCardDecorText(
+        container: FrameLayout,
+        card: QuickCard,
+        onThemeColor: Int,
+        landscape: Boolean
+    ) {
+        val watermarkText = card.title.trim()
+        if (watermarkText.isEmpty()) return
+        if (landscape) {
+            container.addView(
+                TextView(this).apply {
+                    setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 62f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    maxLines = 1
+                    ellipsize = null
+                    isSingleLine = true
+                    setHorizontallyScrolling(true)
+                    includeFontPadding = false
+                    text = watermarkText
+                    gravity = Gravity.START or Gravity.BOTTOM
+                },
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.BOTTOM or Gravity.START
+                ).apply {
+                    leftMargin = dp(10)
+                    rightMargin = dp(16)
+                    bottomMargin = dp(4)
+                }
+            )
+        } else {
+            val watermark = TextView(this).apply {
+                setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 88f)
+                typeface = Typeface.DEFAULT_BOLD
+                maxLines = 1
+                ellipsize = null
+                isSingleLine = true
+                setHorizontallyScrolling(true)
+                includeFontPadding = false
+                text = watermarkText
+            }
+            container.addView(
+                watermark,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.END
+                ).apply {
+                    rightMargin = dp(10)
+                }
+            )
+            watermark.post {
+                watermark.pivotX = watermark.measuredWidth.toFloat()
+                watermark.pivotY = 0f
+                watermark.rotation = 90f
+                watermark.translationY = watermark.measuredWidth.toFloat() + dp(10).toFloat()
+            }
+        }
+    }
+
+    private fun addOverlayQuickCardHeader(
+        container: FrameLayout,
+        card: QuickCard,
+        foreground: Int,
+        onOpenPageClick: () -> Unit
+    ) {
+        container.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.TOP
+                setPadding(dp(14), dp(10), dp(8), 0)
+                addView(
+                    LinearLayout(this@FloatingOverlayService).apply {
+                        orientation = LinearLayout.VERTICAL
+                        val titleText = card.title.trim()
+                        val noteText = card.note.trim()
+                        if (titleText.isNotEmpty()) {
+                            addView(
+                                TextView(this@FloatingOverlayService).apply {
+                                    setTextColor(foreground)
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                                    typeface = Typeface.DEFAULT_BOLD
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                    text = titleText
+                                }
+                            )
+                        }
+                        if (noteText.isNotEmpty()) {
+                            addView(
+                                TextView(this@FloatingOverlayService).apply {
+                                    setTextColor(ColorUtils.setAlphaComponent(foreground, 230))
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                    text = noteText
+                                }
+                            )
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                )
+                addView(
+                    createOverlayQuickCardActionSymbol("open_in_new", foreground, onOpenPageClick).apply {
+                        contentDescription = "打开主软件名片页"
+                    },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                )
+            },
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP)
+        )
+    }
+
+    private fun addOverlayQuickCardQr(
+        container: FrameLayout,
+        linkText: String,
+        baseSizePx: Int
+    ) {
+        val qrSize = (baseSizePx * 0.44f).roundToInt().coerceIn(dp(72), dp(150))
+        val qrFrame = FrameLayout(this).apply {
+            background = roundedRectDrawable(overlayRadiusDp, Color.WHITE)
+            elevation = dp(4).toFloat()
+            clipToRoundedOutline(overlayRadiusDp)
+            clipChildren = true
+            clipToPadding = true
+        }
+        val qrImage = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            tag = linkText
+        }
+        val qrPlaceholder = TextView(this).apply {
+            setTextColor(ColorUtils.setAlphaComponent(Color.BLACK, 184))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            gravity = Gravity.CENTER
+            text = if (linkText.isBlank()) "未设置链接" else "生成二维码中..."
+        }
+        qrFrame.addView(
+            qrImage,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                leftMargin = dp(8)
+                topMargin = dp(8)
+                rightMargin = dp(8)
+                bottomMargin = dp(8)
+            }
+        )
+        qrFrame.addView(
+            qrPlaceholder,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        container.addView(qrFrame, FrameLayout.LayoutParams(qrSize, qrSize, Gravity.CENTER))
+        if (linkText.isNotBlank()) {
+            scope.launch {
+                val qrBitmap = withContext(Dispatchers.Default) { QuickCardRenderCache.loadQr(linkText, dp(360)) }
+                if (qrImage.tag == linkText) {
+                    if (qrBitmap != null) {
+                        qrImage.setImageBitmap(qrBitmap)
+                        qrPlaceholder.visibility = View.GONE
+                    } else {
+                        qrPlaceholder.text = "未设置链接"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun addOverlayQuickCardFooter(
+        container: FrameLayout,
+        card: QuickCard,
+        foreground: Int,
+        linkText: String
+    ) {
+        if (linkText.isBlank()) {
+            container.addView(
+                createOverlayQuickCardLogoView(light = foreground == Color.WHITE),
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.END
+                ).apply {
+                    rightMargin = dp(14)
+                    bottomMargin = dp(12)
+                }
+            )
+            return
+        }
+        container.addView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.START
+                setPadding(dp(12), 0, dp(10), dp(8))
+                addView(
                     LinearLayout(this@FloatingOverlayService).apply {
                         orientation = LinearLayout.HORIZONTAL
-                        gravity = Gravity.TOP
-                        setPadding(0, dp(8), 0, 0)
-                        addView(
-                            LinearLayout(this@FloatingOverlayService).apply {
-                                orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        addView(createOverlayQuickCardActionSymbol("open_in_new", foreground) {
+                            openOverlayQuickCardLink(linkText)
+                        })
+                        addView(spaceView(dp(2), 1))
+                        addView(createOverlayQuickCardActionSymbol("share", foreground) {
+                            shareOverlayPlainText(
+                                buildString {
+                                    append(card.title.ifBlank { "名片" })
+                                    if (card.note.isNotBlank()) append("\n${card.note}")
+                                    append("\n$linkText")
+                                },
+                                "分享名片"
+                            )
+                        })
+                    },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                )
+                addView(
+                    TextView(this@FloatingOverlayService).apply {
+                        setTextColor(foreground)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        text = linkText
+                    },
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                )
+            },
+            FrameLayout.LayoutParams(
+                (container.width.takeIf { it > 0 } ?: dp(360)) * 3 / 5,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.START
+            )
+        )
+        container.addView(
+            createOverlayQuickCardLogoView(light = foreground == Color.WHITE),
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END
+            ).apply {
+                rightMargin = dp(14)
+                bottomMargin = dp(12)
+            }
+        )
+    }
+
+    private fun buildLandscapePanelQuickCardContent(card: QuickCard, contentWidthPx: Int): View {
+        val themeColor = parseQuickCardThemeColor(card.themeColor)
+        val onThemeColor = quickCardOnColor(themeColor)
+        val innerHeight = landscapeOverlayContentHeight() - dp(20)
+        val footerHeight = dp(58)
+        val gap = dp(8)
+        val heroHeight = max(dp(104), innerHeight - footerHeight - gap)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            minimumHeight = innerHeight
+            val hero = FrameLayout(this@FloatingOverlayService).apply {
+                background = roundedRectDrawable(overlayRadiusDp, themeColor)
+                clipToRoundedOutline(overlayRadiusDp)
+                clipChildren = true
+                clipToPadding = true
+            }
+            populateOverlayQuickCardHero(
+                container = hero,
+                card = card,
+                themeColor = themeColor,
+                onThemeColor = onThemeColor,
+                landscape = true
+            )
+            addView(hero, LinearLayout.LayoutParams(contentWidthPx, heroHeight))
+            addView(
+                LinearLayout(this@FloatingOverlayService).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(
+                        LinearLayout(this@FloatingOverlayService).apply {
+                            orientation = LinearLayout.VERTICAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            if (card.title.isNotBlank()) {
                                 addView(
                                     TextView(this@FloatingOverlayService).apply {
                                         setTextColor(overlayOnSurfaceColor())
-                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
                                         typeface = Typeface.DEFAULT_BOLD
                                         maxLines = 1
                                         ellipsize = TextUtils.TruncateAt.END
-                                        text = card.title.ifBlank { "名片名字" }
+                                        text = card.title.trim()
                                     }
                                 )
+                            }
+                            if (card.note.isNotBlank()) {
                                 addView(
                                     TextView(this@FloatingOverlayService).apply {
                                         setTextColor(overlayOnSurfaceVariantColor())
                                         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                                         maxLines = 2
                                         ellipsize = TextUtils.TruncateAt.END
-                                        text = card.note.ifBlank { "愿你的生活充满诗与远方" }
+                                        text = card.note.trim()
                                     }
                                 )
-                            },
-                            LinearLayout.LayoutParams(
-                                0,
-                                ViewGroup.LayoutParams.WRAP_CONTENT,
-                                1f
-                            )
+                            }
+                        },
+                        LinearLayout.LayoutParams(
+                            0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            1f
                         )
-                        addView(spaceView(dp(8), 1))
-                        addView(createOverlayQuickCardLogoView())
-                    },
-                    LinearLayout.LayoutParams(contentWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT)
-                )
+                    )
+                    addView(spaceView(dp(8), 1))
+                    addView(
+                        createOverlayQuickCardLogoView(),
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            gravity = Gravity.BOTTOM
+                        }
+                    )
+                },
+                LinearLayout.LayoutParams(contentWidthPx, footerHeight).apply {
+                    topMargin = gap
+                }
+            )
+        }
+    }
+
+    private fun buildLandscapePreviewQuickCardContent(card: QuickCard, contentWidthPx: Int): View {
+        val themeColor = parseQuickCardThemeColor(card.themeColor)
+        val onThemeColor = quickCardOnColor(themeColor)
+        val heroWidth = min(
+            if (contentWidthPx >= dp(500)) dp(320) else dp(250),
+            max(dp(176), (contentWidthPx * 0.58f).roundToInt())
+        )
+        val heroHeight = (heroWidth / 1.67f).roundToInt()
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP
+            val hero = FrameLayout(this@FloatingOverlayService).apply {
+                background = roundedRectDrawable(overlayRadiusDp, themeColor)
+                clipToRoundedOutline(overlayRadiusDp)
+                clipChildren = true
+                clipToPadding = true
             }
+            populateOverlayQuickCardHero(
+                container = hero,
+                card = card,
+                themeColor = themeColor,
+                onThemeColor = onThemeColor,
+                landscape = true
+            )
+            addView(hero, LinearLayout.LayoutParams(heroWidth, heroHeight))
+            addView(spaceView(dp(10), 1))
+            addView(
+                LinearLayout(this@FloatingOverlayService).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(0, dp(2), 0, dp(2))
+                    if (card.title.isNotBlank()) {
+                        addView(
+                            TextView(this@FloatingOverlayService).apply {
+                                setTextColor(overlayOnSurfaceColor())
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+                                typeface = Typeface.DEFAULT_BOLD
+                                maxLines = 1
+                                ellipsize = TextUtils.TruncateAt.END
+                                text = card.title.trim()
+                            }
+                        )
+                    }
+                    if (card.note.isNotBlank()) {
+                        addView(
+                            TextView(this@FloatingOverlayService).apply {
+                                setTextColor(overlayOnSurfaceVariantColor())
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                                maxLines = 3
+                                ellipsize = TextUtils.TruncateAt.END
+                                text = card.note.trim()
+                            }
+                        )
+                    }
+                    addView(
+                        weightedSpacer(),
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            0,
+                            1f
+                        )
+                    )
+                    addView(
+                        LinearLayout(this@FloatingOverlayService).apply {
+                            gravity = Gravity.END or Gravity.BOTTOM
+                            addView(createOverlayQuickCardLogoView())
+                        },
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        )
+                    )
+                },
+                LinearLayout.LayoutParams(
+                    0,
+                    heroHeight,
+                    1f
+                )
+            )
         }
     }
 
@@ -4253,12 +5655,46 @@ class FloatingOverlayService : Service() {
             }
 
             QuickCardType.Text -> {
-                val watermarkText = card.title.ifBlank { "名片名字" }
-                if (landscape) {
-                    container.addView(
-                        TextView(this).apply {
+                val watermarkText = card.title.trim()
+                val noteText = card.note.trim()
+                if (watermarkText.isNotEmpty()) {
+                    if (landscape) {
+                        container.addView(
+                            TextView(this).apply {
+                                setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 62f)
+                                typeface = Typeface.DEFAULT_BOLD
+                                maxLines = 1
+                                ellipsize = null
+                                isSingleLine = true
+                                setHorizontallyScrolling(true)
+                                includeFontPadding = false
+                                text = watermarkText
+                                gravity = Gravity.START or Gravity.BOTTOM
+                            },
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                Gravity.BOTTOM or Gravity.START
+                            ).apply {
+                                leftMargin = dp(8)
+                                bottomMargin = dp(4)
+                                rightMargin = dp(48)
+                            }
+                        )
+                        container.addView(
+                            View(this).apply {
+                                background = GradientDrawable(
+                                    GradientDrawable.Orientation.LEFT_RIGHT,
+                                    intArrayOf(Color.TRANSPARENT, themeColor)
+                                )
+                            },
+                            FrameLayout.LayoutParams(dp(68), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END)
+                        )
+                    } else {
+                        val watermark = TextView(this).apply {
                             setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
-                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 62f)
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 96f)
                             typeface = Typeface.DEFAULT_BOLD
                             maxLines = 1
                             ellipsize = null
@@ -4266,99 +5702,72 @@ class FloatingOverlayService : Service() {
                             setHorizontallyScrolling(true)
                             includeFontPadding = false
                             text = watermarkText
-                            gravity = Gravity.START or Gravity.BOTTOM
-                        },
-                        FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            Gravity.BOTTOM or Gravity.START
-                        ).apply {
-                            leftMargin = dp(8)
-                            bottomMargin = dp(4)
-                            rightMargin = dp(48)
                         }
-                    )
-                    container.addView(
-                        View(this).apply {
-                            background = GradientDrawable(
-                                GradientDrawable.Orientation.LEFT_RIGHT,
-                                intArrayOf(Color.TRANSPARENT, themeColor)
+                        container.addView(
+                            watermark,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT,
+                                Gravity.TOP or Gravity.END
                             )
-                        },
-                        FrameLayout.LayoutParams(dp(68), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END)
-                    )
-                } else {
-                    val watermark = TextView(this).apply {
-                        setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 96f)
-                        typeface = Typeface.DEFAULT_BOLD
-                        maxLines = 1
-                        ellipsize = null
-                        isSingleLine = true
-                        setHorizontallyScrolling(true)
-                        includeFontPadding = false
-                        text = watermarkText
-                    }
-                    container.addView(
-                        watermark,
-                        FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            Gravity.TOP or Gravity.END
                         )
-                    )
-                    watermark.post {
-                        watermark.pivotX = watermark.measuredWidth.toFloat()
-                        watermark.pivotY = 0f
-                        watermark.rotation = 90f
-                        watermark.translationY = watermark.measuredWidth.toFloat() + dp(10).toFloat()
-                    }
-                    container.addView(
-                        View(this).apply {
-                            background = GradientDrawable(
-                                GradientDrawable.Orientation.TOP_BOTTOM,
-                                intArrayOf(Color.TRANSPARENT, themeColor)
+                        watermark.post {
+                            watermark.pivotX = watermark.measuredWidth.toFloat()
+                            watermark.pivotY = 0f
+                            watermark.rotation = 90f
+                            watermark.translationY = watermark.measuredWidth.toFloat() + dp(10).toFloat()
+                        }
+                        container.addView(
+                            View(this).apply {
+                                background = GradientDrawable(
+                                    GradientDrawable.Orientation.TOP_BOTTOM,
+                                    intArrayOf(Color.TRANSPARENT, themeColor)
+                                )
+                            },
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                dp(72),
+                                Gravity.BOTTOM
                             )
+                        )
+                    }
+                }
+                if (watermarkText.isNotEmpty() || noteText.isNotEmpty()) {
+                    container.addView(
+                        LinearLayout(this).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(12), dp(16), dp(12), dp(12))
+                            if (watermarkText.isNotEmpty()) {
+                                addView(
+                                    TextView(this@FloatingOverlayService).apply {
+                                        setTextColor(onThemeColor)
+                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
+                                        typeface = Typeface.DEFAULT_BOLD
+                                        maxLines = 1
+                                        ellipsize = TextUtils.TruncateAt.END
+                                        text = watermarkText
+                                    }
+                                )
+                            }
+                            if (noteText.isNotEmpty()) {
+                                addView(
+                                    TextView(this@FloatingOverlayService).apply {
+                                        setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 230))
+                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                                        maxLines = 2
+                                        ellipsize = TextUtils.TruncateAt.END
+                                        text = noteText
+                                    }
+                                )
+                            }
                         },
                         FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
-                            dp(72),
-                            Gravity.BOTTOM
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.TOP or Gravity.START
                         )
                     )
                 }
-                container.addView(
-                    LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(dp(12), dp(16), dp(12), dp(12))
-                        addView(
-                            TextView(this@FloatingOverlayService).apply {
-                                setTextColor(onThemeColor)
-                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 28f)
-                                typeface = Typeface.DEFAULT_BOLD
-                                maxLines = 1
-                                ellipsize = TextUtils.TruncateAt.END
-                                text = watermarkText
-                            }
-                        )
-                        if (card.note.isNotBlank()) {
-                            addView(
-                                TextView(this@FloatingOverlayService).apply {
-                                    setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 230))
-                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                                    maxLines = 2
-                                    ellipsize = TextUtils.TruncateAt.END
-                                    text = card.note
-                                }
-                            )
-                        }
-                    },
-                    FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.TOP or Gravity.START
-                    )
-                )
                 if (linkText.isNotBlank()) {
                     container.addView(
                         LinearLayout(this).apply {
@@ -4401,7 +5810,6 @@ class FloatingOverlayService : Service() {
     private fun populateMiniQuickCardHero(
         container: FrameLayout,
         card: QuickCard,
-        themeColor: Int,
         onThemeColor: Int
     ) {
         when (card.type) {
@@ -4436,7 +5844,7 @@ class FloatingOverlayService : Service() {
                         val bitmap = withContext(Dispatchers.IO) {
                             QuickCardRenderCache.loadImage(imagePath)
                         }
-                        if (imageView.tag == imagePath && imageView.isAttachedToWindow) {
+                        if (imageView.tag == imagePath) {
                             if (bitmap != null) {
                                 imageView.setImageBitmap(bitmap)
                                 placeholder.visibility = View.GONE
@@ -4499,7 +5907,7 @@ class FloatingOverlayService : Service() {
                                         val qrBitmap = withContext(Dispatchers.Default) {
                                             QuickCardRenderCache.loadQr(card.link)
                                         }
-                                        if (qrImageView.tag == card.link && qrImageView.isAttachedToWindow) {
+                                        if (qrImageView.tag == card.link) {
                                             if (qrBitmap != null) {
                                                 qrImageView.setImageBitmap(qrBitmap)
                                                 qrPlaceholder.visibility = View.GONE
@@ -4532,56 +5940,64 @@ class FloatingOverlayService : Service() {
                 )
             }
             QuickCardType.Text -> {
-                container.addView(
-                    TextView(this).apply {
-                        setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 54f)
-                        typeface = Typeface.DEFAULT_BOLD
-                        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                        text = card.title.ifBlank { "名片名字" }
-                    },
-                    FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    ).apply {
-                        marginStart = dp(8)
-                        topMargin = dp(8)
-                        marginEnd = dp(8)
-                        bottomMargin = dp(8)
-                    }
-                )
-                container.addView(
-                    LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(dp(14), dp(14), dp(14), dp(14))
-                        addView(
-                            TextView(this@FloatingOverlayService).apply {
-                                setTextColor(onThemeColor)
-                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
-                                typeface = Typeface.DEFAULT_BOLD
-                                maxLines = 1
-                                ellipsize = TextUtils.TruncateAt.END
-                                text = card.title.ifBlank { "名片名字" }
-                            }
-                        )
-                        if (card.note.isNotBlank()) {
-                            addView(
-                                TextView(this@FloatingOverlayService).apply {
-                                    setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 230))
-                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                                    maxLines = 2
-                                    ellipsize = TextUtils.TruncateAt.END
-                                    text = card.note
-                                }
-                            )
+                val titleText = card.title.trim()
+                val noteText = card.note.trim()
+                if (titleText.isNotEmpty()) {
+                    container.addView(
+                        TextView(this).apply {
+                            setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 54f)
+                            typeface = Typeface.DEFAULT_BOLD
+                            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                            text = titleText
+                        },
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        ).apply {
+                            marginStart = dp(8)
+                            topMargin = dp(8)
+                            marginEnd = dp(8)
+                            bottomMargin = dp(8)
                         }
-                    },
-                    FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.TOP or Gravity.START
                     )
-                )
+                }
+                if (titleText.isNotEmpty() || noteText.isNotEmpty()) {
+                    container.addView(
+                        LinearLayout(this).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(dp(14), dp(14), dp(14), dp(14))
+                            if (titleText.isNotEmpty()) {
+                                addView(
+                                    TextView(this@FloatingOverlayService).apply {
+                                        setTextColor(onThemeColor)
+                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                                        typeface = Typeface.DEFAULT_BOLD
+                                        maxLines = 1
+                                        ellipsize = TextUtils.TruncateAt.END
+                                        text = titleText
+                                    }
+                                )
+                            }
+                            if (noteText.isNotEmpty()) {
+                                addView(
+                                    TextView(this@FloatingOverlayService).apply {
+                                        setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 230))
+                                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                                        maxLines = 2
+                                        ellipsize = TextUtils.TruncateAt.END
+                                        text = noteText
+                                    }
+                                )
+                            }
+                        },
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.TOP or Gravity.START
+                        )
+                    )
+                }
             }
         }
     }
@@ -4685,6 +6101,7 @@ class FloatingOverlayService : Service() {
         scope.launch(Dispatchers.IO) {
             try {
                 UserPrefs.setFloatingOverlayShortcuts(this@FloatingOverlayService, payload)
+                LauncherMenuShortcuts.syncFromOverlayShortcuts(this@FloatingOverlayService)
             } finally {
                 overlayShortcutSaving = false
             }
@@ -4710,6 +6127,7 @@ class FloatingOverlayService : Service() {
         }.toString()
         scope.launch(Dispatchers.IO) {
             UserPrefs.setFloatingOverlayLayout(this@FloatingOverlayService, payload)
+            LauncherMenuShortcuts.syncFromOverlayShortcuts(this@FloatingOverlayService)
         }
     }
 
@@ -4796,6 +6214,7 @@ class FloatingOverlayService : Service() {
         OverlayLauncherTile("builtin_subtitles", "快捷字幕", "subtitles"),
         OverlayLauncherTile("builtin_quick_card", "快捷名片", "id_card"),
         OverlayLauncherTile("builtin_drawing", "画板", "draw"),
+        OverlayLauncherTile("builtin_soundboard", "音效板", "library_music"),
         OverlayLauncherTile("builtin_scanner", "二维码扫描", "qr_code_2"),
         OverlayLauncherTile("builtin_settings", "设置", "tune")
     )
@@ -4924,7 +6343,7 @@ class FloatingOverlayService : Service() {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
             clipToPadding = false
-            layoutTransition = overlayLayoutTransition()
+            layoutTransition = if (panelEditMode) overlayLayoutTransition() else null
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -4966,7 +6385,7 @@ class FloatingOverlayService : Service() {
                         gravity = Gravity.CENTER
                         clipChildren = false
                         clipToPadding = false
-                        layoutTransition = overlayLayoutTransition()
+                        layoutTransition = if (panelEditMode) overlayLayoutTransition() else null
                         rowTiles.forEachIndexed { tileIndex, tile ->
                             val globalIndex = pageIndex * pageSize + tileIndex + rowIndex * 3
                             addView(
@@ -5427,6 +6846,10 @@ class FloatingOverlayService : Service() {
                 hidePanel()
                 launchAppPage(OverlayBridge.TARGET_OPEN_DRAWING)
             }
+            tile.key == "builtin_soundboard" -> {
+                hidePanel()
+                launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
+            }
             tile.key == "builtin_scanner" -> {
                 hidePanel()
                 launchAppPage(OverlayBridge.TARGET_OPEN_QR_SCANNER)
@@ -5455,6 +6878,11 @@ class FloatingOverlayService : Service() {
                 launchQuickCardPage()
                 true
             }
+            "builtin_soundboard" -> {
+                hidePanel()
+                launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
+                true
+            }
             else -> {
                 when (tile.label) {
                     "快捷字幕" -> {
@@ -5465,6 +6893,11 @@ class FloatingOverlayService : Service() {
                     "快捷名片" -> {
                         hidePanel()
                         launchQuickCardPage()
+                        true
+                    }
+                    "音效板" -> {
+                        hidePanel()
+                        launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
                         true
                     }
                     else -> false
@@ -5993,6 +7426,8 @@ class FloatingOverlayService : Service() {
             refs.outputLabel.text = outputLabel
             refs.pttIcon.text = if (settings.pushToTalkMode) "toggle_on" else "toggle_off"
             refs.pttIcon.setTextColor(if (settings.pushToTalkMode) overlayPrimaryColor() else overlayOnSurfaceVariantColor())
+            refs.ttsIcon.text = if (settings.ttsDisabled) "toggle_on" else "toggle_off"
+            refs.ttsIcon.setTextColor(if (settings.ttsDisabled) overlayPrimaryColor() else overlayOnSurfaceVariantColor())
             refs.volumeLabel.text = "音量倍率：${settings.playbackGainPercent}%"
             refs.volumeSeekBar.progress = settings.playbackGainPercent.coerceIn(0, 1000)
         }
@@ -6108,6 +7543,31 @@ class FloatingOverlayService : Service() {
                 }
             }
         }
+        val ttsIcon = symbolTextView("toggle_off", 28f, overlayOnSurfaceVariantColor())
+        val ttsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                foreground = selectableDrawable()
+            }
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+            addView(symbolTextView("mic_off", 18f, overlayOnSurfaceColor()))
+            addView(spaceView(dp(8), 1))
+            addView(
+                TextView(this@FloatingOverlayService).apply {
+                    setTextColor(overlayOnSurfaceColor())
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    text = "禁用TTS"
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            addView(ttsIcon)
+            setOnClickListener {
+                scope.launch(Dispatchers.IO) {
+                    UserPrefs.setTtsDisabled(this@FloatingOverlayService, !settings.ttsDisabled)
+                }
+            }
+        }
         val volumeLabel = TextView(this).apply {
             setTextColor(overlayOnSurfaceVariantColor())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -6151,6 +7611,8 @@ class FloatingOverlayService : Service() {
             addView(spaceView(1, dp(8)))
             addView(pttRow)
             addView(spaceView(1, dp(8)))
+            addView(ttsRow)
+            addView(spaceView(1, dp(8)))
             addView(volumeLabel)
             addView(
                 volumeSeekBar,
@@ -6167,6 +7629,7 @@ class FloatingOverlayService : Service() {
             inputLabel = inputDeviceLabel,
             outputLabel = outputDeviceLabel,
             pttIcon = pttIcon,
+            ttsIcon = ttsIcon,
             volumeLabel = volumeLabel,
             volumeSeekBar = volumeSeekBar
         )
@@ -6331,7 +7794,7 @@ class FloatingOverlayService : Service() {
     private fun scrollPanelToPage(index: Int, animate: Boolean) {
         val pager = panelPager ?: return
         val targetIndex = index.coerceIn(0, max(0, panelPageCount - 1))
-        if (pager.currentItem != targetIndex || !animate) {
+        if (pager.currentItem != targetIndex) {
             pager.setCurrentItem(targetIndex, animate)
         }
     }
@@ -6396,6 +7859,23 @@ class FloatingOverlayService : Service() {
         val overlayTop = params.y.toFloat()
         val overlayRight = overlayLeft + overlayWidth
         val overlayBottom = overlayTop + overlayHeight
+        if (isPhoneLandscapeUi()) {
+            val topBoundary = leftActionButton?.let { actionView ->
+                val location = IntArray(2)
+                actionView.getLocationOnScreen(location)
+                location[1] + (actionView.height / 2f)
+            } ?: (overlayTop + overlayHeight * 0.3f)
+            val bottomBoundary = rightActionButton?.let { actionView ->
+                val location = IntArray(2)
+                actionView.getLocationOnScreen(location)
+                location[1] + (actionView.height / 2f)
+            } ?: (overlayBottom - overlayHeight * 0.25f)
+
+            if (rawY <= topBoundary || rawY <= overlayTop) return OverlayReleaseAction.SendToInput
+            if (rawY >= bottomBoundary || rawY >= overlayBottom) return OverlayReleaseAction.Cancel
+            return OverlayReleaseAction.SendToSubtitle
+        }
+
         val leftBoundary = leftActionButton?.let { actionView ->
             val location = IntArray(2)
             actionView.getLocationOnScreen(location)
@@ -6439,8 +7919,10 @@ class FloatingOverlayService : Service() {
         val targetWidth = contentWidth
         val targetHeight = content.height.takeIf { it > 0 } ?: content.measuredHeight.takeIf { it > 0 } ?: return
         val layoutParams = content.layoutParams as? FrameLayout.LayoutParams ?: return
-        params.width = targetWidth
-        params.height = targetHeight
+        val extraWidth = if (isPhoneLandscapeUi()) dp(40) else 0
+        val extraHeight = if (isPhoneLandscapeUi()) 0 else dp(40)
+        params.width = targetWidth + extraWidth
+        params.height = targetHeight + extraHeight
         params.x = layoutParams.leftMargin
         params.y = layoutParams.topMargin
         runCatching { windowManager.updateViewLayout(overlay, params) }
@@ -6449,30 +7931,44 @@ class FloatingOverlayService : Service() {
 
     private fun layoutConfirmOverlayContents() {
         val overlay = confirmOverlay ?: return
-        val params = confirmParams ?: return
+        confirmParams ?: return
         val clip = confirmClipContainer ?: return
         val card = confirmTextCardView ?: return
         val left = leftActionButton ?: return
         val right = rightActionButton ?: return
         val fab = activeConfirmFab() ?: return
+        val content = activeOverlayContent() as? ViewGroup ?: return
         if (overlay.width <= 0 || overlay.height <= 0) return
-
-        val overlayLoc = IntArray(2)
-        val fabLoc = IntArray(2)
-        overlay.getLocationOnScreen(overlayLoc)
-        fab.getLocationOnScreen(fabLoc)
 
         val fabWidth = fab.width.takeIf { it > 0 } ?: dp(74)
         val fabHeight = fab.height.takeIf { it > 0 } ?: dp(74)
-        val fabCenterX = fabLoc[0] - overlayLoc[0] + fabWidth / 2f
-        val fabCenterY = fabLoc[1] - overlayLoc[1] + fabHeight / 2f
+        val fabBounds = Rect(0, 0, fabWidth, fabHeight)
+        content.offsetDescendantRectToMyCoords(fab, fabBounds)
+        val fabCenterX = fabBounds.exactCenterX()
+        val fabCenterY = fabBounds.exactCenterY()
+        val landscapePhone = isPhoneLandscapeUi()
+        val contentWidth = content.width.takeIf { it > 0 }
+            ?: (content.layoutParams?.width ?: overlay.width)
+        val landscapeHorizontalBias = if (landscapePhone) fabWidth / 2f else 0f
+        val portraitVerticalBias = if (landscapePhone) 0f else fabHeight / 2f
+        val landscapeCardHorizontalNudge = if (landscapePhone) dp(11).toFloat() else 0f
+        val landscapeActionHorizontalNudge = if (landscapePhone) dp(10).toFloat() else 0f
+        val portraitActionVerticalNudge = if (landscapePhone) 0f else dp(10).toFloat()
         val actionSize = dp(64)
         val contentPadding = dp(12)
         val sideGap = dp(16)
         val sideCenterOffset = (fabWidth / 2f) + (actionSize / 2f) + sideGap
-        val actionCenterY =
-            fabCenterY.coerceIn((contentPadding + actionSize / 2).toFloat(), (overlay.height - contentPadding - actionSize / 2).toFloat())
-        val actionTop = (actionCenterY - actionSize / 2f).roundToInt()
+        val verticalCenterOffset = (fabHeight / 2f) + (actionSize / 2f) + sideGap
+        val minActionLeft = contentPadding.toFloat()
+        val maxActionLeft = max(
+            minActionLeft,
+            (overlay.width - actionSize - contentPadding).toFloat()
+        )
+        val minActionTop = contentPadding.toFloat()
+        val maxActionTop = max(
+            minActionTop,
+            (overlay.height - actionSize - contentPadding).toFloat()
+        )
 
         left.measure(
             View.MeasureSpec.makeMeasureSpec(actionSize, View.MeasureSpec.EXACTLY),
@@ -6483,22 +7979,62 @@ class FloatingOverlayService : Service() {
             View.MeasureSpec.makeMeasureSpec(actionSize, View.MeasureSpec.EXACTLY)
         )
 
-        left.x = (fabCenterX - sideCenterOffset - actionSize / 2f)
-            .coerceAtLeast(contentPadding.toFloat())
-        left.y = actionTop.toFloat()
-        right.x = (fabCenterX + sideCenterOffset - actionSize / 2f)
-            .coerceAtMost((overlay.width - actionSize - contentPadding).toFloat())
-        right.y = actionTop.toFloat()
+        if (landscapePhone) {
+            val actionLeft = (fabCenterX - actionSize / 2f + landscapeHorizontalBias + landscapeActionHorizontalNudge)
+                .coerceIn(minActionLeft, maxActionLeft)
+            left.x = actionLeft
+            right.x = actionLeft
+            left.y = (fabCenterY - verticalCenterOffset - actionSize / 2f)
+                .coerceIn(minActionTop, maxActionTop)
+            right.y = (fabCenterY + verticalCenterOffset - actionSize / 2f)
+                .coerceIn(minActionTop, maxActionTop)
+        } else {
+            val actionCenterY = fabCenterY.coerceIn(
+                (contentPadding + actionSize / 2).toFloat(),
+                max((contentPadding + actionSize / 2).toFloat(), (overlay.height - contentPadding - actionSize / 2).toFloat())
+            )
+            val actionTop = (actionCenterY - actionSize / 2f + portraitVerticalBias + portraitActionVerticalNudge)
+                .coerceIn(minActionTop, maxActionTop)
+            left.x = (fabCenterX - sideCenterOffset - actionSize / 2f)
+                .coerceIn(minActionLeft, maxActionLeft)
+            left.y = actionTop
+            right.x = (fabCenterX + sideCenterOffset - actionSize / 2f)
+                .coerceIn(minActionLeft, maxActionLeft)
+            right.y = actionTop
+        }
 
-        val cardWidth = (overlay.width - dp(24)).coerceAtLeast(dp(168))
+        val railReserve = if (landscapePhone) dp(92) + dp(12) else 0
+        val cardWidth = (contentWidth - contentPadding * 2 - railReserve).coerceAtLeast(1)
+        (card.layoutParams as? FrameLayout.LayoutParams)?.let { lp ->
+            if (lp.width != cardWidth || lp.height != ViewGroup.LayoutParams.WRAP_CONTENT) {
+                lp.width = cardWidth
+                lp.height = ViewGroup.LayoutParams.WRAP_CONTENT
+                card.layoutParams = lp
+            }
+        }
         card.measure(
             View.MeasureSpec.makeMeasureSpec(cardWidth, View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
         )
         val cardHeight = card.measuredHeight
-        val cardLeft = (fabCenterX - cardWidth / 2f)
-            .coerceIn(contentPadding.toFloat(), (overlay.width - cardWidth - contentPadding).toFloat())
-        val cardTop = (actionTop - cardHeight - dp(14)).coerceAtLeast(contentPadding).toFloat()
+        val minCardTop = contentPadding.toFloat()
+        val maxCardTop = max(
+            minCardTop,
+            (overlay.height - cardHeight - contentPadding).toFloat()
+        )
+        val cardLeft = if (landscapePhone) {
+            (contentPadding + landscapeHorizontalBias + landscapeCardHorizontalNudge).coerceAtMost(
+                max(contentPadding.toFloat(), (overlay.width - cardWidth - contentPadding).toFloat())
+            )
+        } else {
+            ((overlay.width - cardWidth) / 2f).coerceAtLeast(contentPadding.toFloat())
+        }
+        val cardTop = if (landscapePhone) {
+            (fabCenterY - cardHeight / 2f).coerceIn(minCardTop, maxCardTop)
+        } else {
+            val actionTop = left.y
+            (actionTop - cardHeight - dp(14)).coerceIn(minCardTop, maxCardTop)
+        }
         card.x = cardLeft
         card.y = cardTop
 
@@ -6525,7 +8061,7 @@ class FloatingOverlayService : Service() {
         saveOverlayLauncherLayout()
         val startX = params.x
         val startY = params.y
-        fabSnapAnimator?.cancel()
+        cancelFabSnapAnimation()
         if (startX == targetX && startY == targetY) {
             params.x = targetX
             params.y = targetY
@@ -6533,6 +8069,7 @@ class FloatingOverlayService : Service() {
             refreshFabIdleDockState()
             return
         }
+        var wasCancelled = false
         fabSnapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 220L
             interpolator = DecelerateInterpolator()
@@ -6544,7 +8081,15 @@ class FloatingOverlayService : Service() {
             }
             addListener(
                 object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        wasCancelled = true
+                    }
+
                     override fun onAnimationEnd(animation: android.animation.Animator) {
+                        if (fabSnapAnimator === animation) {
+                            fabSnapAnimator = null
+                        }
+                        if (wasCancelled) return
                         refreshFabIdleDockState()
                     }
                 }
@@ -6553,9 +8098,9 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun clampFabToScreen() {
+    private fun clampFabToScreen(maxXOverride: Int? = null) {
         val params = fabParams ?: return
-        val maxX = fabMaxX(displayWidth())
+        val maxX = maxXOverride ?: fabMaxX(displayWidth())
         val maxY = fabMaxY(displayHeight())
         params.x = params.x.coerceIn(0, maxX)
         params.y = params.y.coerceIn(fabMinY(), maxY)
@@ -6570,9 +8115,13 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun circleActionButton(iconView: TextView, sizeDp: Int = 72): FrameLayout {
+    private fun circleActionButton(
+        iconView: TextView,
+        sizeDp: Int = 72,
+        backgroundColor: Int = overlayNeutralCircleColor()
+    ): FrameLayout {
         return FrameLayout(this).apply {
-            background = circleDrawable(overlayNeutralCircleColor())
+            background = circleDrawable(backgroundColor)
             elevation = dp(6).toFloat()
             addView(
                 iconView,
@@ -6636,6 +8185,18 @@ class FloatingOverlayService : Service() {
             cornerRadius = dp(radiusDp).toFloat()
             setColor(color)
         }
+
+    private fun View.clipToRoundedOutline(radiusDp: Float) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return
+        val radiusPx = dp(radiusDp).toFloat()
+        outlineProvider =
+            object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, radiusPx)
+                }
+            }
+        clipToOutline = true
+    }
 
     private fun selectableDrawable(): Drawable =
         RippleDrawable(

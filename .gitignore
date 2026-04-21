@@ -122,3 +122,6 @@ flutter_app/android/app/src/main/assets/firefly.zip
 *.ckpt
 *.whl
 *.onnx
+!android-app/app/src/main/assets/speech_enhancement/gtcrn_simple.onnx
+!android-app/app/src/main/assets/speech_enhancement/dpdfnet2.onnx
+!android-app/app/src/main/assets/speech_enhancement/dpdfnet4.onnx
