@@ -46,6 +46,13 @@
             android:theme="@style/Theme.KGTTS.Cropper"
             tools:replace="android:theme" />
         <activity
+            android:name=".ui.LauncherShortcutProxyActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+        <activity
             android:name=".ui.MainActivity"
             android:exported="true">
             <intent-filter>

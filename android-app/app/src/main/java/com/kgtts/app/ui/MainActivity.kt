@@ -201,6 +201,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewModelScope
 import com.lhtstudio.kigtts.app.R
 import com.canhub.cropper.CropImageContract
@@ -238,6 +239,7 @@ import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
 import com.lhtstudio.kigtts.app.service.KeepAliveService
 import com.lhtstudio.kigtts.app.service.RealtimeHostService
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.LauncherMenuShortcuts
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.barcode.BarcodeScanner
@@ -7159,6 +7161,9 @@ class MainActivity : ComponentActivity() {
             Context.BIND_AUTO_CREATE
         )
         viewModel.loadSettings()
+        lifecycleScope.launch(Dispatchers.Default) {
+            LauncherMenuShortcuts.syncFromOverlayShortcuts(applicationContext)
+        }
         setContent {
             val dark = isSystemInDarkTheme()
             val colors = if (dark) KgtDarkColors else KgtLightColors

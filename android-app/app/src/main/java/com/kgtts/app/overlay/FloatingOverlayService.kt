@@ -76,6 +76,7 @@ import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
 import com.lhtstudio.kigtts.app.ui.QuickCard
 import com.lhtstudio.kigtts.app.ui.QuickCardType
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.LauncherMenuShortcuts
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -6100,6 +6101,7 @@ class FloatingOverlayService : Service() {
         scope.launch(Dispatchers.IO) {
             try {
                 UserPrefs.setFloatingOverlayShortcuts(this@FloatingOverlayService, payload)
+                LauncherMenuShortcuts.syncFromOverlayShortcuts(this@FloatingOverlayService)
             } finally {
                 overlayShortcutSaving = false
             }
@@ -6125,6 +6127,7 @@ class FloatingOverlayService : Service() {
         }.toString()
         scope.launch(Dispatchers.IO) {
             UserPrefs.setFloatingOverlayLayout(this@FloatingOverlayService, payload)
+            LauncherMenuShortcuts.syncFromOverlayShortcuts(this@FloatingOverlayService)
         }
     }
 
