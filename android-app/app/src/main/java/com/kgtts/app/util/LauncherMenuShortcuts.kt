@@ -13,7 +13,8 @@ object LauncherMenuShortcuts {
         val id: String,
         val shortLabel: String,
         val longLabel: String,
-        val target: String
+        val target: String,
+        val iconRes: Int
     )
 
     private val appShortcuts =
@@ -22,25 +23,29 @@ object LauncherMenuShortcuts {
                 id = "app_quick_subtitle",
                 shortLabel = "便捷字幕",
                 longLabel = "打开便捷字幕",
-                target = OverlayBridge.TARGET_OPEN
+                target = OverlayBridge.TARGET_OPEN,
+                iconRes = R.drawable.ic_shortcut_quick_subtitle
             ),
             AppShortcutSpec(
                 id = "app_quick_card",
                 shortLabel = "快捷名片",
                 longLabel = "打开快捷名片",
-                target = OverlayBridge.TARGET_OPEN_QUICK_CARD
+                target = OverlayBridge.TARGET_OPEN_QUICK_CARD,
+                iconRes = R.drawable.ic_shortcut_quick_card
             ),
             AppShortcutSpec(
                 id = "app_drawing",
                 shortLabel = "画板",
                 longLabel = "打开画板",
-                target = OverlayBridge.TARGET_OPEN_DRAWING
+                target = OverlayBridge.TARGET_OPEN_DRAWING,
+                iconRes = R.drawable.ic_shortcut_drawing
             ),
             AppShortcutSpec(
                 id = "app_soundboard",
                 shortLabel = "音效板",
                 longLabel = "打开音效板",
-                target = OverlayBridge.TARGET_OPEN_SOUNDBOARD
+                target = OverlayBridge.TARGET_OPEN_SOUNDBOARD,
+                iconRes = R.drawable.ic_shortcut_soundboard
             )
         )
 
@@ -57,7 +62,7 @@ object LauncherMenuShortcuts {
                         ShortcutInfo.Builder(context, spec.id)
                             .setShortLabel(spec.shortLabel)
                             .setLongLabel(spec.longLabel)
-                            .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher_round))
+                            .setIcon(Icon.createWithResource(context, spec.iconRes))
                             .setIntent(OverlayBridge.buildOpenPageIntent(context, spec.target))
                             .build()
                     }

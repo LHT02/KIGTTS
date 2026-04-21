@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">KIGTTS</string>
+    <string name="accessibility_volume_hotkey_service_label">KIGTTS 音量热键辅助</string>
+    <string name="accessibility_volume_hotkey_service_description">用于更稳定地监听音量键序列快捷键，并在需要时辅助打开 QQ 扫一扫。</string>
 </resources>

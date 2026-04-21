@@ -25,6 +25,8 @@ data class ExternalShortcutChoice(
 )
 
 object ExternalShortcutCatalog {
+    const val APP_LAUNCH_SHORTCUT_ID = "__app_launch__"
+
     private data class ConfiguredAppShortcut(
         val packageName: String,
         val className: String,
@@ -38,7 +40,11 @@ object ExternalShortcutCatalog {
 
     private data class HardcodedShortcutSpec(
         val id: String,
-        val title: String
+        val title: String,
+        val dataUri: String? = null,
+        val targetClass: String? = null,
+        val booleanExtras: Map<String, Boolean> = emptyMap(),
+        val stringExtras: Map<String, String> = emptyMap()
     )
 
     private val blockedShortcutKeywords =
@@ -80,12 +86,21 @@ object ExternalShortcutCatalog {
                 HardcodedShortcutSpec("qq_pay", "收付款")
             ),
             "com.tencent.mm" to listOf(
-                HardcodedShortcutSpec("launch_type_scan_qrcode", "扫一扫"),
+                HardcodedShortcutSpec(
+                    id = "launch_type_scan_qrcode",
+                    title = "扫一扫",
+                    targetClass = "com.tencent.mm.ui.LauncherUI",
+                    booleanExtras = mapOf("LauncherUI.From.Scaner.Shortcut" to true)
+                ),
                 HardcodedShortcutSpec("launch_type_offline_wallet", "收付款"),
                 HardcodedShortcutSpec("launch_type_my_qrcode", "我的二维码")
             ),
             "com.eg.android.AlipayGphone" to listOf(
-                HardcodedShortcutSpec("1001", "扫一扫"),
+                HardcodedShortcutSpec(
+                    id = "1001",
+                    title = "扫一扫",
+                    dataUri = AlipayScannerSupport.ALIPAY_SCANNER_URI
+                ),
                 HardcodedShortcutSpec("1002", "收付款"),
                 HardcodedShortcutSpec("1005", "乘车码"),
                 HardcodedShortcutSpec("1003", "收钱")
@@ -135,10 +150,12 @@ object ExternalShortcutCatalog {
     suspend fun loadAllShortcutChoices(context: Context): List<ExternalShortcutChoice> =
         withContext(Dispatchers.IO) {
             val apps = loadConfiguredApps(context)
+            val allowHardcodedSupplement =
+                UserPrefs.getSettings(context).floatingOverlayHardcodedShortcutSupplement
             val result = mutableListOf<ExternalShortcutChoice>()
             val seen = linkedSetOf<String>()
             apps.forEach { app ->
-                queryShortcutChoices(context, app).forEach { choice ->
+                queryShortcutChoices(context, app, allowHardcodedSupplement).forEach { choice ->
                     val key = shortcutKey(choice.packageName, choice.shortcutId)
                     if (seen.add(key)) {
                         result += choice
@@ -151,6 +168,10 @@ object ExternalShortcutCatalog {
         }
 
     fun launchChoice(context: Context, choice: ExternalShortcutChoice) {
+        if (choice.shortcutId == APP_LAUNCH_SHORTCUT_ID) {
+            launchApp(context, choice.packageName, choice.className)
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
             val launcherApps = context.getSystemService(LauncherApps::class.java)
             if (launcherApps != null) {
@@ -167,6 +188,11 @@ object ExternalShortcutCatalog {
                 }.onFailure {
                     AppLogger.e("ExternalShortcutCatalog.launchChoice failed", it)
                 }
+            }
+        }
+        findHardcodedShortcutSpec(choice.packageName, choice.shortcutId)?.let { spec ->
+            if (launchHardcodedShortcut(context, choice.packageName, spec)) {
+                return
             }
         }
         launchApp(context, choice.packageName, choice.className)
@@ -198,10 +224,20 @@ object ExternalShortcutCatalog {
 
     private fun queryShortcutChoices(
         context: Context,
-        app: ConfiguredAppShortcut
+        app: ConfiguredAppShortcut,
+        allowHardcodedSupplement: Boolean
     ): List<ExternalShortcutChoice> {
         val result = mutableListOf<ExternalShortcutChoice>()
         val seen = linkedSetOf<String>()
+        if (seen.add(shortcutKey(app.packageName, APP_LAUNCH_SHORTCUT_ID))) {
+            result += ExternalShortcutChoice(
+                packageName = app.packageName,
+                className = app.className,
+                appLabel = app.label,
+                shortcutId = APP_LAUNCH_SHORTCUT_ID,
+                shortcutTitle = "打开应用"
+            )
+        }
         queryLauncherShortcuts(context, app).forEach { info ->
             val title = shortcutTitle(info.shortLabel?.toString(), info.longLabel?.toString(), info.id)
             if (
@@ -235,22 +271,37 @@ object ExternalShortcutCatalog {
                 }
             }
         }
-        hardcodedLauncherShortcuts[app.packageName].orEmpty().forEach { spec ->
-            if (
-                spec.title.isNotBlank() &&
-                shouldIncludeShortcut(app.packageName, spec.title, spec.id) &&
-                seen.add(shortcutKey(app.packageName, spec.id))
-            ) {
-                result += ExternalShortcutChoice(
-                    packageName = app.packageName,
-                    className = app.className,
-                    appLabel = app.label,
-                    shortcutId = spec.id,
-                    shortcutTitle = spec.title
-                )
+        hardcodedLauncherShortcuts[app.packageName].orEmpty()
+            .filter { spec -> shouldUseHardcodedShortcutSupplement(app.packageName, spec.id, allowHardcodedSupplement) }
+            .forEach { spec ->
+                if (
+                    spec.title.isNotBlank() &&
+                    shouldIncludeShortcut(app.packageName, spec.title, spec.id) &&
+                    seen.add(shortcutKey(app.packageName, spec.id))
+                ) {
+                    result += ExternalShortcutChoice(
+                        packageName = app.packageName,
+                        className = app.className,
+                        appLabel = app.label,
+                        shortcutId = spec.id,
+                        shortcutTitle = spec.title
+                    )
+                }
             }
-        }
         return result
+    }
+
+    private fun shouldUseHardcodedShortcutSupplement(
+        packageName: String,
+        shortcutId: String,
+        allowHardcodedSupplement: Boolean
+    ): Boolean {
+        return allowHardcodedSupplement || isAlwaysRetainedHardcodedShortcut(packageName, shortcutId)
+    }
+
+    private fun isAlwaysRetainedHardcodedShortcut(packageName: String, shortcutId: String): Boolean {
+        return (packageName == "com.tencent.mm" && shortcutId == "launch_type_scan_qrcode") ||
+            (packageName == AlipayScannerSupport.ALIPAY_PACKAGE_NAME && shortcutId == "1001")
     }
 
     private fun queryLauncherShortcuts(
@@ -355,6 +406,72 @@ object ExternalShortcutCatalog {
     }
 
     private fun shortcutKey(packageName: String, shortcutId: String): String = "$packageName:$shortcutId"
+
+    private fun findHardcodedShortcutSpec(packageName: String, shortcutId: String): HardcodedShortcutSpec? {
+        return hardcodedLauncherShortcuts[packageName].orEmpty().firstOrNull { it.id == shortcutId }
+    }
+
+    private fun launchHardcodedShortcut(
+        context: Context,
+        packageName: String,
+        spec: HardcodedShortcutSpec
+    ): Boolean {
+        if (
+            spec.dataUri == null &&
+            spec.targetClass == null &&
+            spec.booleanExtras.isEmpty() &&
+            spec.stringExtras.isEmpty()
+        ) {
+            return false
+        }
+        val explicitIntent = buildHardcodedIntent(context, packageName, spec, useLaunchIntent = false)
+        if (explicitIntent != null) {
+            val launched =
+                runCatching {
+                    context.startActivity(explicitIntent)
+                    true
+                }.onFailure {
+                    AppLogger.e("ExternalShortcutCatalog.launchHardcodedShortcut explicit failed", it)
+                }.getOrDefault(false)
+            if (launched) return true
+        }
+        val launchIntent = buildHardcodedIntent(context, packageName, spec, useLaunchIntent = true)
+        return runCatching {
+            if (launchIntent != null) {
+                context.startActivity(launchIntent)
+                true
+            } else {
+                false
+            }
+        }.onFailure {
+            AppLogger.e("ExternalShortcutCatalog.launchHardcodedShortcut launchIntent failed", it)
+        }.getOrDefault(false)
+    }
+
+    private fun buildHardcodedIntent(
+        context: Context,
+        packageName: String,
+        spec: HardcodedShortcutSpec,
+        useLaunchIntent: Boolean
+    ): Intent? {
+        val rawIntent: Intent? =
+            if (useLaunchIntent) {
+                context.packageManager.getLaunchIntentForPackage(packageName)
+            } else if (spec.dataUri != null) {
+                Intent(Intent.ACTION_VIEW, Uri.parse(spec.dataUri)).apply {
+                    setPackage(packageName)
+                }
+            } else {
+                spec.targetClass?.let { targetClass ->
+                    Intent().apply { setClassName(packageName, targetClass) }
+                }
+            }
+        val intent = rawIntent ?: return null
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        spec.booleanExtras.forEach { (key, value) -> intent.putExtra(key, value) }
+        spec.stringExtras.forEach { (key, value) -> intent.putExtra(key, value) }
+        return intent
+    }
 
     private fun launchApp(context: Context, packageName: String, className: String) {
         runCatching {

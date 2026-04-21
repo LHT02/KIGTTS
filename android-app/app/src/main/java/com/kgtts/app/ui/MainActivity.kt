@@ -238,11 +238,15 @@ import com.lhtstudio.kigtts.app.overlay.RealtimeOwnerGate
 import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
 import com.lhtstudio.kigtts.app.service.KeepAliveService
 import com.lhtstudio.kigtts.app.service.RealtimeHostService
+import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityGuideService
+import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityService
 import com.lhtstudio.kigtts.app.service.VolumeHotkeyService
+import com.lhtstudio.kigtts.app.util.AlipayScannerSupport
 import com.lhtstudio.kigtts.app.util.AppLogger
 import com.lhtstudio.kigtts.app.util.ExternalShortcutCatalog
 import com.lhtstudio.kigtts.app.util.ExternalShortcutChoice
 import com.lhtstudio.kigtts.app.util.LauncherMenuShortcuts
+import com.lhtstudio.kigtts.app.util.QqScannerSupport
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import com.lhtstudio.kigtts.app.util.VolumeHotkeyActionSpec
 import com.lhtstudio.kigtts.app.util.VolumeHotkeyActions
@@ -569,8 +573,11 @@ data class UiState(
     val pushToTalkConfirmInputMode: Boolean = false,
     val floatingOverlayEnabled: Boolean = false,
     val floatingOverlayAutoDock: Boolean = true,
+    val floatingOverlayHardcodedShortcutSupplement: Boolean = false,
     val volumeHotkeyUpDownEnabled: Boolean = false,
     val volumeHotkeyDownUpEnabled: Boolean = false,
+    val volumeHotkeyWindowMs: Int = UserPrefs.VOLUME_HOTKEY_DEFAULT_WINDOW_MS,
+    val volumeHotkeyAccessibilityEnabled: Boolean = false,
     val volumeHotkeyUpDownAction: VolumeHotkeyActionSpec =
         VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown),
     val volumeHotkeyDownUpAction: VolumeHotkeyActionSpec =
@@ -1156,8 +1163,12 @@ class MainViewModel(
             pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
             floatingOverlayEnabled = settings.floatingOverlayEnabled,
             floatingOverlayAutoDock = settings.floatingOverlayAutoDock,
+            floatingOverlayHardcodedShortcutSupplement =
+                settings.floatingOverlayHardcodedShortcutSupplement,
             volumeHotkeyUpDownEnabled = settings.volumeHotkeyUpDownEnabled,
             volumeHotkeyDownUpEnabled = settings.volumeHotkeyDownUpEnabled,
+            volumeHotkeyWindowMs = settings.volumeHotkeyWindowMs,
+            volumeHotkeyAccessibilityEnabled = settings.volumeHotkeyAccessibilityEnabled,
             volumeHotkeyUpDownAction = settings.volumeHotkeyUpDownAction,
             volumeHotkeyDownUpAction = settings.volumeHotkeyDownUpAction,
             ttsDisabled = settings.ttsDisabled,
@@ -2991,6 +3002,13 @@ class MainViewModel(
         }
     }
 
+    fun setFloatingOverlayHardcodedShortcutSupplement(enabled: Boolean) {
+        uiState = uiState.copy(floatingOverlayHardcodedShortcutSupplement = enabled)
+        viewModelScope.launch {
+            UserPrefs.setFloatingOverlayHardcodedShortcutSupplement(appContext, enabled)
+        }
+    }
+
     fun setVolumeHotkeyEnabled(sequence: VolumeHotkeySequence, enabled: Boolean) {
         uiState = when (sequence) {
             VolumeHotkeySequence.UpDown -> uiState.copy(volumeHotkeyUpDownEnabled = enabled)
@@ -3008,6 +3026,25 @@ class MainViewModel(
         }
         viewModelScope.launch {
             UserPrefs.setVolumeHotkeyAction(appContext, sequence, action)
+        }
+    }
+
+    fun setVolumeHotkeyWindowMs(windowMs: Int) {
+        val normalized = (windowMs / 100) * 100
+        val clamped = normalized.coerceIn(
+            UserPrefs.VOLUME_HOTKEY_MIN_WINDOW_MS,
+            UserPrefs.VOLUME_HOTKEY_MAX_WINDOW_MS
+        )
+        uiState = uiState.copy(volumeHotkeyWindowMs = clamped)
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyWindowMs(appContext, clamped)
+        }
+    }
+
+    fun setVolumeHotkeyAccessibilityEnabled(enabled: Boolean) {
+        uiState = uiState.copy(volumeHotkeyAccessibilityEnabled = enabled)
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyAccessibilityEnabled(appContext, enabled)
         }
     }
 
@@ -4055,6 +4092,48 @@ private fun QuickCardNavHost(
             } else {
                 toast(context, "该二维码为微信二维码，需要安装微信")
                 val browserTarget = normalizeQrTextToWebUrl(decoded) ?: WECHAT_BROWSER_FALLBACK_URL
+                if (!openExternalBrowser(context, browserTarget)) {
+                    toast(context, "无法打开系统浏览器")
+                }
+            }
+            navController.popBackStack(popRoute, inclusive = true)
+        } else if (QqScannerSupport.isQqQrContent(decoded)) {
+            if (isPackageInstalled(context, QqScannerSupport.QQ_PACKAGE_NAME)) {
+                val qqAccessibilityEnabled = VolumeHotkeyAccessibilityService.isEnabled(context)
+                if (qqAccessibilityEnabled) {
+                    if (
+                        VolumeHotkeyAccessibilityService.requestOpenQqScanner(context) ||
+                        QqScannerSupport.launchQq(context)
+                    ) {
+                        toast(context, "该二维码为QQ二维码，请使用QQ进行扫描")
+                    } else {
+                        toast(context, "打开QQ失败，请手动打开QQ扫一扫")
+                    }
+                } else {
+                    if (QqScannerSupport.launchQq(context)) {
+                        toast(context, "该二维码为QQ二维码，已跳转至QQ。直达QQ扫一扫需要开启无障碍权限")
+                    } else {
+                        toast(context, "打开QQ失败，请手动打开QQ扫一扫")
+                    }
+                }
+            } else {
+                toast(context, "该二维码为QQ二维码，需要安装QQ")
+                val browserTarget = normalizeQrTextToWebUrl(decoded) ?: QqScannerSupport.QQ_BROWSER_FALLBACK_URL
+                if (!openExternalBrowser(context, browserTarget)) {
+                    toast(context, "无法打开系统浏览器")
+                }
+            }
+            navController.popBackStack(popRoute, inclusive = true)
+        } else if (AlipayScannerSupport.isAlipayQrContent(decoded)) {
+            if (isPackageInstalled(context, AlipayScannerSupport.ALIPAY_PACKAGE_NAME)) {
+                toast(context, "该二维码为支付宝二维码，需要使用支付宝进行扫描")
+                if (!AlipayScannerSupport.launchScanner(context)) {
+                    toast(context, "打开支付宝失败，请手动打开支付宝扫一扫")
+                }
+            } else {
+                toast(context, "该二维码为支付宝二维码，需要安装支付宝")
+                val browserTarget = normalizeQrTextToWebUrl(decoded)
+                    ?: AlipayScannerSupport.ALIPAY_BROWSER_FALLBACK_URL
                 if (!openExternalBrowser(context, browserTarget)) {
                     toast(context, "无法打开系统浏览器")
                 }
@@ -14905,14 +14984,19 @@ fun FloatingOverlayScreen(
     onOpenMainSettings: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val overlayPermissionGranted = remember { mutableStateOf(FloatingOverlayService.canDrawOverlays(context)) }
+    val accessibilityPermissionGranted =
+        remember { mutableStateOf(VolumeHotkeyAccessibilityService.isEnabled(context)) }
     var pendingOverlayPermissionEnable by remember { mutableStateOf(false) }
     var hotkeyActionPickerSequence by remember { mutableStateOf<VolumeHotkeySequence?>(null) }
     var externalShortcutPickerSequence by remember { mutableStateOf<VolumeHotkeySequence?>(null) }
     var externalShortcutSearchQuery by remember { mutableStateOf("") }
     var externalShortcutChoices by remember { mutableStateOf<List<ExternalShortcutChoice>>(emptyList()) }
     var externalShortcutLoading by remember { mutableStateOf(false) }
+    var accessibilityExplainDialogOpen by remember { mutableStateOf(false) }
     val overlayPermissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             val granted = FloatingOverlayService.canDrawOverlays(context)
@@ -14927,9 +15011,37 @@ fun FloatingOverlayScreen(
             }
             pendingOverlayPermissionEnable = false
         }
+    val accessibilitySettingsLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            val enabled = VolumeHotkeyAccessibilityService.isEnabled(context)
+            accessibilityPermissionGranted.value = enabled
+            if (enabled) {
+                VolumeHotkeyAccessibilityGuideService.stop(context)
+            }
+            scope.launch {
+                VolumeHotkeyService.syncWithSettings(context)
+            }
+        }
 
     LaunchedEffect(Unit) {
         overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
+        accessibilityPermissionGranted.value = VolumeHotkeyAccessibilityService.isEnabled(context)
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_RESUME) {
+                overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
+                accessibilityPermissionGranted.value = VolumeHotkeyAccessibilityService.isEnabled(context)
+                if (accessibilityPermissionGranted.value) {
+                    VolumeHotkeyAccessibilityGuideService.stop(context)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     LaunchedEffect(externalShortcutPickerSequence) {
@@ -14954,6 +15066,28 @@ fun FloatingOverlayScreen(
                 }
             }
         }
+
+    val hotkeyMonitorModeLabel =
+        when {
+            state.volumeHotkeyAccessibilityEnabled && accessibilityPermissionGranted.value ->
+                "无障碍按键监听"
+
+            state.volumeHotkeyAccessibilityEnabled ->
+                "等待无障碍授权，当前暂用音量变化监听"
+
+            else -> "系统音量变化监听"
+        }
+    fun openAccessibilitySettingsWithGuide() {
+        viewModel.setVolumeHotkeyAccessibilityEnabled(true)
+        if (overlayPermissionGranted.value) {
+            VolumeHotkeyAccessibilityGuideService.start(context)
+        } else {
+            toast(context, "未授予悬浮窗权限，引导悬浮窗不会显示")
+        }
+        accessibilitySettingsLauncher.launch(
+            VolumeHotkeyAccessibilityService.buildSettingsIntent()
+        )
+    }
 
     CenteredPageColumn(
         maxWidth = UiTokens.WideContentMaxWidth,
@@ -15049,17 +15183,118 @@ fun FloatingOverlayScreen(
         }
 
         Md2StaggeredFloatIn(index = 1) {
+            Md2SettingsCard(title = "启动器快捷方式补全") {
+                Md2SettingSwitchRow(
+                    title = "使用内嵌列表补全第三方快捷方式",
+                    checked = state.floatingOverlayHardcodedShortcutSupplement,
+                    onCheckedChange = { viewModel.setFloatingOverlayHardcodedShortcutSupplement(it) },
+                    supportingText = "默认关闭。开启后，悬浮窗启动器里第三方应用的长按菜单会用内置国内常用应用列表补齐缺失项；微信“扫一扫”始终保留。"
+                )
+                Text(
+                    "运行时能正常查询到的系统快捷方式不受影响；该开关只控制写死列表的额外增补。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        Md2StaggeredFloatIn(index = 2) {
             Md2SettingsCard(title = "音量热键") {
                 Text(
-                    "序列监听由独立前台服务处理，不挂在现有悬浮窗服务上。两组序列都要求在 1.5 秒内完成。",
+                    "序列监听由独立服务处理，不挂在现有悬浮窗服务上。开启无障碍稳定监听后，会优先直接读取音量键事件；未授权时会自动回退到系统音量变化判定。",
                     style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.volumeHotkeyAccessibilityEnabled,
+                        onCheckedChange = { enabled ->
+                            if (!enabled) {
+                                viewModel.setVolumeHotkeyAccessibilityEnabled(false)
+                                VolumeHotkeyAccessibilityGuideService.stop(context)
+                                scope.launch {
+                                    VolumeHotkeyService.syncWithSettings(context)
+                                }
+                            } else if (accessibilityPermissionGranted.value) {
+                                viewModel.setVolumeHotkeyAccessibilityEnabled(true)
+                                scope.launch {
+                                    VolumeHotkeyService.syncWithSettings(context)
+                                }
+                            } else {
+                                accessibilityExplainDialogOpen = true
+                            }
+                        }
+                    )
+                    Text("优先使用无障碍稳定监听")
+                }
+                Text(
+                    "权限状态：${if (accessibilityPermissionGranted.value) "已开启" else "未开启"}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "当前监听方式：$hotkeyMonitorModeLabel",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Md2OutlinedButton(
+                        onClick = {
+                            if (
+                                state.volumeHotkeyAccessibilityEnabled &&
+                                !accessibilityPermissionGranted.value
+                            ) {
+                                accessibilityExplainDialogOpen = true
+                            } else {
+                                accessibilitySettingsLauncher.launch(
+                                    VolumeHotkeyAccessibilityService.buildSettingsIntent()
+                                )
+                            }
+                        }
+                    ) {
+                        Text("打开无障碍设置")
+                    }
+                    if (!accessibilityPermissionGranted.value && overlayPermissionGranted.value) {
+                        Md2TextButton(
+                            onClick = { VolumeHotkeyAccessibilityGuideService.stop(context) }
+                        ) {
+                            Text("关闭引导悬浮窗")
+                        }
+                    }
+                }
+                Divider(
+                    modifier = Modifier.padding(vertical = 10.dp),
+                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.12f)
+                )
+                Text(
+                    "序列判定时间：${"%.1f".format(Locale.US, state.volumeHotkeyWindowMs / 1000f)}s",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Slider(
+                    value = state.volumeHotkeyWindowMs.toFloat(),
+                    onValueChange = { viewModel.setVolumeHotkeyWindowMs(it.roundToInt()) },
+                    valueRange = UserPrefs.VOLUME_HOTKEY_MIN_WINDOW_MS.toFloat()..
+                        UserPrefs.VOLUME_HOTKEY_MAX_WINDOW_MS.toFloat(),
+                    steps = ((UserPrefs.VOLUME_HOTKEY_MAX_WINDOW_MS - UserPrefs.VOLUME_HOTKEY_MIN_WINDOW_MS) / 100) - 1,
+                    colors = SliderDefaults.colors(
+                        activeTickColor = Color.Transparent,
+                        inactiveTickColor = Color.Transparent
+                    )
+                )
+                Text(
+                    "默认 1.5 秒。时间越长越容易触发，但误触概率也会更高。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
                 )
                 Spacer(Modifier.height(8.dp))
                 VolumeHotkeySettingRow(
                     title = "音量加后减",
                     enabled = state.volumeHotkeyUpDownEnabled,
                     actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyUpDownAction),
-                    supportingText = "先按音量加，再在 1.5 秒内按音量减。",
+                    supportingText = "先按音量加，再在设定时间内按音量减。",
                     onEnabledChange = {
                         viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.UpDown, it)
                     },
@@ -15073,7 +15308,7 @@ fun FloatingOverlayScreen(
                     title = "音量减后加",
                     enabled = state.volumeHotkeyDownUpEnabled,
                     actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyDownUpAction),
-                    supportingText = "先按音量减，再在 1.5 秒内按音量加。",
+                    supportingText = "先按音量减，再在设定时间内按音量加。",
                     onEnabledChange = {
                         viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.DownUp, it)
                     },
@@ -15155,6 +15390,36 @@ fun FloatingOverlayScreen(
         )
     }
 
+    if (accessibilityExplainDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { accessibilityExplainDialogOpen = false },
+            title = { Text("启用无障碍稳定监听") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("KIGTTS 会通过无障碍服务更稳定地监听音量键上下序列，用来触发你配置的音量热键功能。")
+                    Text("该服务还会在你主动打开 QQ 扫一扫时读取 QQ 界面节点并执行点击手势，用于直达 QQ 扫码页。")
+                    Text("除上述热键和 QQ 扫一扫直达外，不会读取其它应用内容，也不会替你点击其它流程。")
+                    Text("确认后会进入系统无障碍页面，请找到“KIGTTS 音量热键辅助”并开启。若已授予悬浮窗权限，会同时显示一个可拖动的步骤提示窗。")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        accessibilityExplainDialogOpen = false
+                        openAccessibilitySettingsWithGuide()
+                    }
+                ) {
+                    Text("前往无障碍设置")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { accessibilityExplainDialogOpen = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     externalShortcutPickerSequence?.let { sequence ->
         AlertDialog(
             onDismissRequest = {
@@ -15165,7 +15430,7 @@ fun FloatingOverlayScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "这里读取当前已加入悬浮窗启动器的应用快捷方式，并补硬编码兜底项。",
+                        "这里读取当前已加入悬浮窗启动器的应用快捷方式；内嵌列表补全关闭时仅保留运行时可查询项和微信“扫一扫”。",
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
@@ -15214,13 +15479,20 @@ fun FloatingOverlayScreen(
                                             },
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Column(modifier = Modifier.fillMaxWidth()) {
-                                                Text(choice.shortcutTitle)
-                                                Text(
-                                                    choice.appLabel,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
-                                                )
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                ExternalShortcutChoiceIcon(choice)
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(choice.shortcutTitle)
+                                                    Text(
+                                                        choice.appLabel,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -15242,6 +15514,42 @@ fun FloatingOverlayScreen(
             }
         )
     }
+}
+
+@Composable
+private fun ExternalShortcutChoiceIcon(
+    choice: ExternalShortcutChoice,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    AndroidView(
+        modifier = modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colors.onSurface.copy(alpha = 0.08f)),
+        factory = { viewContext ->
+            android.widget.ImageView(viewContext).apply {
+                scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+                setPadding(5, 5, 5, 5)
+            }
+        },
+        update = { imageView ->
+            val icon =
+                runCatching {
+                    val pm = context.packageManager
+                    if (choice.className.isNotBlank()) {
+                        pm.getActivityIcon(ComponentName(choice.packageName, choice.className))
+                    } else {
+                        pm.getApplicationIcon(choice.packageName)
+                    }
+                }.recoverCatching {
+                    context.packageManager.getApplicationIcon(choice.packageName)
+                }.getOrElse {
+                    ContextCompat.getDrawable(context, R.mipmap.ic_launcher_round)
+                }
+            imageView.setImageDrawable(icon)
+        }
+    )
 }
 
 @Composable
@@ -17238,6 +17546,20 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         checked = state.useBuiltinGallery,
                         onCheckedChange = { viewModel.setUseBuiltinGallery(it) },
                         supportingText = "关闭时使用系统图库选择器。"
+                    )
+                }
+            }
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "启动器快捷方式补全") {
+                    Md2SettingSwitchRow(
+                        title = "使用内嵌列表补全第三方快捷方式",
+                        checked = state.floatingOverlayHardcodedShortcutSupplement,
+                        onCheckedChange = { viewModel.setFloatingOverlayHardcodedShortcutSupplement(it) },
+                        supportingText = "默认关闭。开启后，悬浮窗启动器里第三方应用的长按菜单会用内置国内常用应用列表补齐缺失项；微信“扫一扫”始终保留。"
+                    )
+                    Text(
+                        "运行时能正常查询到的系统快捷方式不受影响；该开关只控制写死列表的额外增补。",
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }

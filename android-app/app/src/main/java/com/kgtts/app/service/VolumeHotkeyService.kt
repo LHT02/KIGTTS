@@ -11,35 +11,31 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.lhtstudio.kigtts.app.R
 import com.lhtstudio.kigtts.app.data.UserPrefs
-import com.lhtstudio.kigtts.app.overlay.FloatingOverlayService
-import com.lhtstudio.kigtts.app.overlay.OverlayBridge
 import com.lhtstudio.kigtts.app.util.AppLogger
-import com.lhtstudio.kigtts.app.util.ExternalShortcutCatalog
-import com.lhtstudio.kigtts.app.util.ExternalShortcutChoice
 import com.lhtstudio.kigtts.app.util.VolumeHotkeyActionSpec
+import com.lhtstudio.kigtts.app.util.VolumeHotkeyActionExecutor
 import com.lhtstudio.kigtts.app.util.VolumeHotkeyActions
-import kotlinx.coroutines.CoroutineScope
+import com.lhtstudio.kigtts.app.util.VolumeHotkeySequenceDetector
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 class VolumeHotkeyService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate
+    )
+    private val sequenceDetector = VolumeHotkeySequenceDetector()
     private var settings = UserPrefs.AppSettings()
     private var settingsJob: kotlinx.coroutines.Job? = null
     private var audioManager: AudioManager? = null
     private var volumeObserver: ContentObserver? = null
-    private var lastMusicVolume = Int.MIN_VALUE
-    private var pendingDirection = 0
-    private var pendingDirectionAtMs = 0L
+    private var lastStreamVolumes: Map<Int, Int> = emptyMap()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -47,7 +43,17 @@ class VolumeHotkeyService : Service() {
         super.onCreate()
         AppLogger.i("VolumeHotkeyService.onCreate")
         audioManager = getSystemService(AudioManager::class.java)
-        startForegroundInternal()
+        val foregroundStarted =
+            runCatching {
+                startForegroundInternal()
+                true
+            }.onFailure {
+                AppLogger.e("VolumeHotkeyService.startForeground failed", it)
+            }.getOrDefault(false)
+        if (!foregroundStarted) {
+            stopSelf()
+            return
+        }
         registerVolumeObserver()
         observeSettings()
     }
@@ -70,6 +76,7 @@ class VolumeHotkeyService : Service() {
         volumeObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         volumeObserver = null
         audioManager = null
+        sequenceDetector.reset()
         scope.cancel()
         super.onDestroy()
     }
@@ -134,7 +141,8 @@ class VolumeHotkeyService : Service() {
     }
 
     private fun registerVolumeObserver() {
-        lastMusicVolume = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0
+        val manager = audioManager ?: return
+        lastStreamVolumes = snapshotStreamVolumes(manager)
         volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
                 super.onChange(selfChange)
@@ -146,85 +154,51 @@ class VolumeHotkeyService : Service() {
 
     private fun handleVolumePossiblyChanged() {
         val manager = audioManager ?: return
-        val currentVolume = manager.getStreamVolume(AudioManager.STREAM_MUSIC)
-        val previousVolume = lastMusicVolume
-        lastMusicVolume = currentVolume
-        val direction = when {
-            currentVolume > previousVolume -> 1
-            currentVolume < previousVolume -> -1
-            else -> 0
-        }
+        val previousVolumes = lastStreamVolumes
+        val currentVolumes = snapshotStreamVolumes(manager)
+        lastStreamVolumes = currentVolumes
+        val direction = resolveDirection(previousVolumes, currentVolumes)
         if (direction != 0) {
             handleDirection(direction)
         }
     }
 
-    private fun handleDirection(direction: Int) {
-        val now = SystemClock.uptimeMillis()
-        val previousDirection = pendingDirection
-        if (previousDirection != 0 && previousDirection != direction && now - pendingDirectionAtMs <= SEQUENCE_WINDOW_MS) {
-            when {
-                previousDirection > 0 && direction < 0 && settings.volumeHotkeyUpDownEnabled ->
-                    triggerAction(settings.volumeHotkeyUpDownAction)
-                previousDirection < 0 && direction > 0 && settings.volumeHotkeyDownUpEnabled ->
-                    triggerAction(settings.volumeHotkeyDownUpAction)
-            }
-            pendingDirection = 0
-            pendingDirectionAtMs = 0L
-            return
+    private fun snapshotStreamVolumes(manager: AudioManager): Map<Int, Int> {
+        return VOLUME_STREAM_PRIORITY.associateWith { stream ->
+            runCatching { manager.getStreamVolume(stream) }.getOrDefault(Int.MIN_VALUE)
         }
-        pendingDirection = direction
-        pendingDirectionAtMs = now
+    }
+
+    private fun resolveDirection(
+        previousVolumes: Map<Int, Int>,
+        currentVolumes: Map<Int, Int>
+    ): Int {
+        VOLUME_STREAM_PRIORITY.forEach { stream ->
+            val previous = previousVolumes[stream] ?: Int.MIN_VALUE
+            val current = currentVolumes[stream] ?: Int.MIN_VALUE
+            if (previous == Int.MIN_VALUE || current == Int.MIN_VALUE || previous == current) {
+                return@forEach
+            }
+            return when {
+                current > previous -> 1
+                current < previous -> -1
+                else -> 0
+            }
+        }
+        return 0
+    }
+
+    private fun handleDirection(direction: Int) {
+        sequenceDetector.handleDirection(direction, settings, ::triggerAction)
     }
 
     private fun triggerAction(action: VolumeHotkeyActionSpec) {
         scope.launch(Dispatchers.IO) {
             runCatching {
-                when (action.kind) {
-                    VolumeHotkeyActions.KIND_INTERNAL -> executeInternalAction(action.target)
-                    VolumeHotkeyActions.KIND_OVERLAY -> executeOverlayAction(action.target)
-                    VolumeHotkeyActions.KIND_EXTERNAL -> {
-                        if (action.packageName.isNotBlank() && action.shortcutId.isNotBlank()) {
-                            ExternalShortcutCatalog.launchChoice(
-                                this@VolumeHotkeyService,
-                                ExternalShortcutChoice(
-                                    packageName = action.packageName,
-                                    className = action.className,
-                                    appLabel = action.appLabel,
-                                    shortcutId = action.shortcutId,
-                                    shortcutTitle = action.shortcutTitle
-                                )
-                            )
-                        }
-                    }
-                }
+                VolumeHotkeyActionExecutor.execute(this@VolumeHotkeyService, action)
             }.onFailure {
                 AppLogger.e("VolumeHotkeyService.triggerAction failed", it)
             }
-        }
-    }
-
-    private fun executeInternalAction(target: String) {
-        val appTarget = when (target) {
-            VolumeHotkeyActions.TARGET_QUICK_CARD -> OverlayBridge.TARGET_OPEN_QUICK_CARD
-            VolumeHotkeyActions.TARGET_DRAWING -> OverlayBridge.TARGET_OPEN_DRAWING
-            VolumeHotkeyActions.TARGET_SOUNDBOARD -> OverlayBridge.TARGET_OPEN_SOUNDBOARD
-            VolumeHotkeyActions.TARGET_VOICE_PACK -> OverlayBridge.TARGET_OPEN_VOICE_PACK
-            VolumeHotkeyActions.TARGET_QR_SCANNER -> OverlayBridge.TARGET_OPEN_QR_SCANNER
-            else -> OverlayBridge.TARGET_OPEN
-        }
-        startActivity(OverlayBridge.buildOpenPageIntent(this, appTarget))
-    }
-
-    private fun executeOverlayAction(target: String) {
-        if (!FloatingOverlayService.canDrawOverlays(this)) {
-            startActivity(OverlayBridge.buildOpenPageIntent(this, OverlayBridge.TARGET_OPEN_OVERLAY))
-            return
-        }
-        when (target) {
-            VolumeHotkeyActions.TARGET_OPEN_MINI_QUICK_SUBTITLE -> FloatingOverlayService.openMiniQuickSubtitle(this)
-            VolumeHotkeyActions.TARGET_OPEN_MINI_QUICK_CARD -> FloatingOverlayService.openMiniQuickCard(this)
-            else -> FloatingOverlayService.openPanel(this)
         }
     }
 
@@ -233,16 +207,27 @@ class VolumeHotkeyService : Service() {
         private const val NOTIFICATION_ID = 3205
         private const val ACTION_REFRESH = "com.lhtstudio.kigtts.app.action.VOLUME_HOTKEY_REFRESH"
         private const val ACTION_STOP = "com.lhtstudio.kigtts.app.action.VOLUME_HOTKEY_STOP"
-        private const val SEQUENCE_WINDOW_MS = 1500L
+        private val VOLUME_STREAM_PRIORITY =
+            listOf(
+                AudioManager.STREAM_MUSIC,
+                AudioManager.STREAM_RING,
+                AudioManager.STREAM_NOTIFICATION,
+                AudioManager.STREAM_ALARM,
+                AudioManager.STREAM_SYSTEM,
+                AudioManager.STREAM_VOICE_CALL
+            )
 
         private fun hasEnabledHotkeys(settings: UserPrefs.AppSettings): Boolean {
-            return settings.volumeHotkeyUpDownEnabled || settings.volumeHotkeyDownUpEnabled
+            return VolumeHotkeyActionExecutor.hasEnabledHotkeys(settings)
         }
 
         suspend fun syncWithSettings(context: Context) {
             val settings = UserPrefs.getSettings(context)
             val intent = Intent(context, VolumeHotkeyService::class.java)
-            if (hasEnabledHotkeys(settings)) {
+            val useAccessibility =
+                settings.volumeHotkeyAccessibilityEnabled &&
+                    VolumeHotkeyAccessibilityService.isEnabled(context)
+            if (hasEnabledHotkeys(settings) && !useAccessibility) {
                 ContextCompat.startForegroundService(
                     context,
                     intent.apply { action = ACTION_REFRESH }

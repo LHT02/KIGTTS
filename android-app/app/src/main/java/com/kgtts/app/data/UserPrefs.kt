@@ -33,6 +33,9 @@ object UserPrefs {
     const val SILERO_VAD_MIN_PRE_ROLL_MS = 0
     const val SILERO_VAD_MAX_PRE_ROLL_MS = 800
     const val SILERO_VAD_DEFAULT_PRE_ROLL_MS = 300
+    const val VOLUME_HOTKEY_MIN_WINDOW_MS = 500
+    const val VOLUME_HOTKEY_MAX_WINDOW_MS = 3000
+    const val VOLUME_HOTKEY_DEFAULT_WINDOW_MS = 1500
 
     private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
@@ -72,10 +75,15 @@ object UserPrefs {
     private val KEY_PUSH_TO_TALK_CONFIRM_INPUT = booleanPreferencesKey("push_to_talk_confirm_input")
     private val KEY_FLOATING_OVERLAY_ENABLED = booleanPreferencesKey("floating_overlay_enabled")
     private val KEY_FLOATING_OVERLAY_AUTO_DOCK = booleanPreferencesKey("floating_overlay_auto_dock")
+    private val KEY_FLOATING_OVERLAY_HARDCODED_SHORTCUT_SUPPLEMENT =
+        booleanPreferencesKey("floating_overlay_hardcoded_shortcut_supplement")
     private val KEY_VOLUME_HOTKEY_UP_DOWN_ENABLED = booleanPreferencesKey("volume_hotkey_up_down_enabled")
     private val KEY_VOLUME_HOTKEY_DOWN_UP_ENABLED = booleanPreferencesKey("volume_hotkey_down_up_enabled")
     private val KEY_VOLUME_HOTKEY_UP_DOWN_ACTION = stringPreferencesKey("volume_hotkey_up_down_action")
     private val KEY_VOLUME_HOTKEY_DOWN_UP_ACTION = stringPreferencesKey("volume_hotkey_down_up_action")
+    private val KEY_VOLUME_HOTKEY_WINDOW_MS = intPreferencesKey("volume_hotkey_window_ms")
+    private val KEY_VOLUME_HOTKEY_ACCESSIBILITY_ENABLED =
+        booleanPreferencesKey("volume_hotkey_accessibility_enabled")
     private val KEY_FLOATING_OVERLAY_SHORTCUTS = stringPreferencesKey("floating_overlay_shortcuts")
     private val KEY_FLOATING_OVERLAY_LAYOUT = stringPreferencesKey("floating_overlay_layout")
     private val KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE = floatPreferencesKey("floating_overlay_quick_subtitle_font_size")
@@ -131,8 +139,11 @@ object UserPrefs {
         val pushToTalkConfirmInput: Boolean = false,
         val floatingOverlayEnabled: Boolean = false,
         val floatingOverlayAutoDock: Boolean = true,
+        val floatingOverlayHardcodedShortcutSupplement: Boolean = false,
         val volumeHotkeyUpDownEnabled: Boolean = false,
         val volumeHotkeyDownUpEnabled: Boolean = false,
+        val volumeHotkeyWindowMs: Int = VOLUME_HOTKEY_DEFAULT_WINDOW_MS,
+        val volumeHotkeyAccessibilityEnabled: Boolean = false,
         val volumeHotkeyUpDownAction: VolumeHotkeyActionSpec =
             VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown),
         val volumeHotkeyDownUpAction: VolumeHotkeyActionSpec =
@@ -266,8 +277,14 @@ object UserPrefs {
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
             floatingOverlayEnabled = this[KEY_FLOATING_OVERLAY_ENABLED] ?: false,
             floatingOverlayAutoDock = this[KEY_FLOATING_OVERLAY_AUTO_DOCK] ?: true,
+            floatingOverlayHardcodedShortcutSupplement =
+                this[KEY_FLOATING_OVERLAY_HARDCODED_SHORTCUT_SUPPLEMENT] ?: false,
             volumeHotkeyUpDownEnabled = this[KEY_VOLUME_HOTKEY_UP_DOWN_ENABLED] ?: false,
             volumeHotkeyDownUpEnabled = this[KEY_VOLUME_HOTKEY_DOWN_UP_ENABLED] ?: false,
+            volumeHotkeyWindowMs = (this[KEY_VOLUME_HOTKEY_WINDOW_MS] ?: VOLUME_HOTKEY_DEFAULT_WINDOW_MS)
+                .coerceIn(VOLUME_HOTKEY_MIN_WINDOW_MS, VOLUME_HOTKEY_MAX_WINDOW_MS),
+            volumeHotkeyAccessibilityEnabled =
+                this[KEY_VOLUME_HOTKEY_ACCESSIBILITY_ENABLED] ?: false,
             volumeHotkeyUpDownAction = VolumeHotkeyActions.decode(
                 this[KEY_VOLUME_HOTKEY_UP_DOWN_ACTION],
                 fallback = VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown)
@@ -501,6 +518,12 @@ object UserPrefs {
         }
     }
 
+    suspend fun setFloatingOverlayHardcodedShortcutSupplement(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FLOATING_OVERLAY_HARDCODED_SHORTCUT_SUPPLEMENT] = enabled
+        }
+    }
+
     suspend fun setVolumeHotkeyEnabled(
         context: Context,
         sequence: VolumeHotkeySequence,
@@ -525,6 +548,21 @@ object UserPrefs {
                 VolumeHotkeySequence.UpDown -> prefs[KEY_VOLUME_HOTKEY_UP_DOWN_ACTION] = payload
                 VolumeHotkeySequence.DownUp -> prefs[KEY_VOLUME_HOTKEY_DOWN_UP_ACTION] = payload
             }
+        }
+    }
+
+    suspend fun setVolumeHotkeyWindowMs(context: Context, windowMs: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_VOLUME_HOTKEY_WINDOW_MS] = windowMs.coerceIn(
+                VOLUME_HOTKEY_MIN_WINDOW_MS,
+                VOLUME_HOTKEY_MAX_WINDOW_MS
+            )
+        }
+    }
+
+    suspend fun setVolumeHotkeyAccessibilityEnabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_VOLUME_HOTKEY_ACCESSIBILITY_ENABLED] = enabled
         }
     }
 

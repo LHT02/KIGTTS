@@ -73,9 +73,12 @@ import androidx.viewpager2.widget.ViewPager2
 import com.lhtstudio.kigtts.app.R
 import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
+import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityService
 import com.lhtstudio.kigtts.app.ui.QuickCard
 import com.lhtstudio.kigtts.app.ui.QuickCardType
+import com.lhtstudio.kigtts.app.util.AlipayScannerSupport
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.QqScannerSupport
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -98,6 +101,7 @@ import kotlin.math.roundToInt
 
 class FloatingOverlayService : Service() {
     private val overlayRadiusDp = 4f
+    private val qqAccessibilityScannerShortcutId = "__qq_scanner_accessibility__"
     private val defaultQuickSubtitleText = "快捷字幕\n大字幕"
     private val FAB_EDGE_LEFT = "left"
     private val FAB_EDGE_RIGHT = "right"
@@ -370,14 +374,19 @@ class FloatingOverlayService : Service() {
 
     private data class HardcodedShortcutSpec(
         val id: String,
-        val title: String
+        val title: String,
+        val dataUri: String? = null,
+        val targetClass: String? = null,
+        val booleanExtras: Map<String, Boolean> = emptyMap(),
+        val stringExtras: Map<String, String> = emptyMap()
     )
 
     private data class ExternalShortcutMenuTarget(
         val title: String,
         val launcherShortcut: ShortcutInfo? = null,
         val manifestShortcut: ManifestShortcutSpec? = null,
-        val shortcutId: String = ""
+        val shortcutId: String = "",
+        val hardcodedShortcut: HardcodedShortcutSpec? = null
     )
 
     private val blockedShortcutKeywords =
@@ -419,12 +428,21 @@ class FloatingOverlayService : Service() {
                 HardcodedShortcutSpec("qq_pay", "收付款")
             ),
             "com.tencent.mm" to listOf(
-                HardcodedShortcutSpec("launch_type_scan_qrcode", "扫一扫"),
+                HardcodedShortcutSpec(
+                    id = "launch_type_scan_qrcode",
+                    title = "扫一扫",
+                    targetClass = "com.tencent.mm.ui.LauncherUI",
+                    booleanExtras = mapOf("LauncherUI.From.Scaner.Shortcut" to true)
+                ),
                 HardcodedShortcutSpec("launch_type_offline_wallet", "收付款"),
                 HardcodedShortcutSpec("launch_type_my_qrcode", "我的二维码")
             ),
             "com.eg.android.AlipayGphone" to listOf(
-                HardcodedShortcutSpec("1001", "扫一扫"),
+                HardcodedShortcutSpec(
+                    id = "1001",
+                    title = "扫一扫",
+                    dataUri = AlipayScannerSupport.ALIPAY_SCANNER_URI
+                ),
                 HardcodedShortcutSpec("1002", "收付款"),
                 HardcodedShortcutSpec("1005", "乘车码"),
                 HardcodedShortcutSpec("1003", "收钱")
@@ -7048,7 +7066,7 @@ class FloatingOverlayService : Service() {
                 when {
                     target.launcherShortcut != null -> launchExternalLauncherShortcut(shortcut, target.launcherShortcut)
                     target.manifestShortcut != null -> launchExternalManifestShortcut(shortcut, target.manifestShortcut)
-                    target.shortcutId.isNotBlank() -> launchExternalShortcutById(shortcut, target.shortcutId)
+                    target.shortcutId.isNotBlank() -> launchExternalShortcutById(shortcut, target)
                 }
                 true
             } else {
@@ -7063,6 +7081,16 @@ class FloatingOverlayService : Service() {
     private fun buildExternalShortcutMenuTargets(shortcut: OverlayAppShortcut): List<ExternalShortcutMenuTarget> {
         val targets = mutableListOf<ExternalShortcutMenuTarget>()
         val seen = linkedSetOf<String>()
+        if (
+            shortcut.packageName == QqScannerSupport.QQ_PACKAGE_NAME &&
+            VolumeHotkeyAccessibilityService.isEnabled(this) &&
+            seen.add(externalShortcutDedupKey(shortcut.packageName, qqAccessibilityScannerShortcutId))
+        ) {
+            targets += ExternalShortcutMenuTarget(
+                title = "扫一扫（无障碍）",
+                shortcutId = qqAccessibilityScannerShortcutId
+            )
+        }
         val queriedShortcuts = queryLauncherShortcuts(shortcut)
         queriedShortcuts.forEach { info ->
             val title = resolveShortcutTitle(info.shortLabel?.toString(), info.longLabel?.toString(), info.id)
@@ -7073,7 +7101,8 @@ class FloatingOverlayService : Service() {
             ) {
                 targets += ExternalShortcutMenuTarget(
                     title = title,
-                    launcherShortcut = info
+                    launcherShortcut = info,
+                    hardcodedShortcut = findAllowedHardcodedShortcut(shortcut.packageName, info.id)
                 )
             }
         }
@@ -7086,24 +7115,46 @@ class FloatingOverlayService : Service() {
                 ) {
                     targets += ExternalShortcutMenuTarget(
                         title = spec.title,
-                        manifestShortcut = spec
+                        manifestShortcut = spec,
+                        hardcodedShortcut = findAllowedHardcodedShortcut(shortcut.packageName, spec.id)
                     )
                 }
             }
         }
-        hardcodedLauncherShortcuts[shortcut.packageName].orEmpty().forEach { spec ->
-            if (
-                spec.title.isNotBlank() &&
-                shouldIncludeExternalShortcut(shortcut.packageName, spec.title, spec.id) &&
-                seen.add(externalShortcutDedupKey(shortcut.packageName, spec.id))
-            ) {
-                targets += ExternalShortcutMenuTarget(
-                    title = spec.title,
-                    shortcutId = spec.id
-                )
+        hardcodedLauncherShortcuts[shortcut.packageName].orEmpty()
+            .filter { spec -> shouldUseHardcodedShortcutSupplement(shortcut.packageName, spec.id) }
+            .forEach { spec ->
+                if (
+                    spec.title.isNotBlank() &&
+                    shouldIncludeExternalShortcut(shortcut.packageName, spec.title, spec.id) &&
+                    seen.add(externalShortcutDedupKey(shortcut.packageName, spec.id))
+                ) {
+                    targets += ExternalShortcutMenuTarget(
+                        title = spec.title,
+                        shortcutId = spec.id,
+                        hardcodedShortcut = spec
+                    )
+                }
             }
-        }
         return targets
+    }
+
+    private fun shouldUseHardcodedShortcutSupplement(packageName: String, shortcutId: String): Boolean {
+        return settings.floatingOverlayHardcodedShortcutSupplement ||
+            isAlwaysRetainedHardcodedShortcut(packageName, shortcutId)
+    }
+
+    private fun findAllowedHardcodedShortcut(
+        packageName: String,
+        shortcutId: String
+    ): HardcodedShortcutSpec? {
+        if (!shouldUseHardcodedShortcutSupplement(packageName, shortcutId)) return null
+        return hardcodedLauncherShortcuts[packageName].orEmpty().firstOrNull { it.id == shortcutId }
+    }
+
+    private fun isAlwaysRetainedHardcodedShortcut(packageName: String, shortcutId: String): Boolean {
+        return (packageName == "com.tencent.mm" && shortcutId == "launch_type_scan_qrcode") ||
+            (packageName == AlipayScannerSupport.ALIPAY_PACKAGE_NAME && shortcutId == "1001")
     }
 
     private fun externalShortcutDedupKey(packageName: String, shortcutId: String): String =
@@ -7296,15 +7347,30 @@ class FloatingOverlayService : Service() {
 
     private fun launchExternalShortcutById(
         shortcut: OverlayAppShortcut,
-        shortcutId: String
+        target: ExternalShortcutMenuTarget
     ) {
+        val shortcutId = target.shortcutId
+        if (shortcutId == qqAccessibilityScannerShortcutId) {
+            if (VolumeHotkeyAccessibilityService.requestOpenQqScanner(this)) {
+                Toast.makeText(this, "正在打开QQ扫一扫", Toast.LENGTH_SHORT).show()
+            } else if (QqScannerSupport.launchQq(this)) {
+                Toast.makeText(this, "无障碍服务未连接，已打开QQ", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "打开QQ失败，请手动打开QQ扫一扫", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) {
-            launchExternalShortcut(shortcut)
+            if (!launchExternalShortcutFallback(shortcut, target)) {
+                launchExternalShortcut(shortcut)
+            }
             return
         }
         val launcherApps = getSystemService(LauncherApps::class.java)
         if (launcherApps == null) {
-            launchExternalShortcut(shortcut)
+            if (!launchExternalShortcutFallback(shortcut, target)) {
+                launchExternalShortcut(shortcut)
+            }
             return
         }
         runCatching {
@@ -7317,8 +7383,102 @@ class FloatingOverlayService : Service() {
             )
         }.onFailure {
             AppLogger.e("FloatingOverlayService.launchExternalShortcutById failed", it)
-            launchExternalShortcut(shortcut)
+            if (!launchExternalShortcutFallback(shortcut, target)) {
+                launchExternalShortcut(shortcut)
+            }
         }
+    }
+
+    private fun launchExternalShortcutFallback(
+        shortcut: OverlayAppShortcut,
+        target: ExternalShortcutMenuTarget
+    ): Boolean {
+        target.manifestShortcut?.takeIf { it.intents.isNotEmpty() }?.let { spec ->
+            launchExternalManifestShortcut(shortcut, spec)
+            return true
+        }
+        queryManifestShortcuts(shortcut)
+            .firstOrNull { it.id == target.shortcutId && it.intents.isNotEmpty() }
+            ?.let { spec ->
+                launchExternalManifestShortcut(shortcut, spec)
+                return true
+            }
+        target.hardcodedShortcut?.let { spec ->
+            if (launchHardcodedExternalShortcut(shortcut, spec)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun launchHardcodedExternalShortcut(
+        shortcut: OverlayAppShortcut,
+        spec: HardcodedShortcutSpec
+    ): Boolean {
+        if (
+            spec.dataUri == null &&
+            spec.targetClass == null &&
+            spec.booleanExtras.isEmpty() &&
+            spec.stringExtras.isEmpty()
+        ) {
+            return false
+        }
+        val explicitIntent =
+            buildHardcodedExternalIntent(
+                packageName = shortcut.packageName,
+                spec = spec,
+                useLaunchIntent = false
+            )
+        if (explicitIntent != null) {
+            val launched =
+                runCatching {
+                    startActivity(explicitIntent)
+                    true
+                }.onFailure {
+                    AppLogger.e("FloatingOverlayService.launchHardcodedExternalShortcut explicit failed", it)
+                }.getOrDefault(false)
+            if (launched) return true
+        }
+        val launchIntent =
+            buildHardcodedExternalIntent(
+                packageName = shortcut.packageName,
+                spec = spec,
+                useLaunchIntent = true
+            )
+        return runCatching {
+            if (launchIntent != null) {
+                startActivity(launchIntent)
+                true
+            } else {
+                false
+            }
+        }.onFailure {
+            AppLogger.e("FloatingOverlayService.launchHardcodedExternalShortcut launchIntent failed", it)
+        }.getOrDefault(false)
+    }
+
+    private fun buildHardcodedExternalIntent(
+        packageName: String,
+        spec: HardcodedShortcutSpec,
+        useLaunchIntent: Boolean
+    ): Intent? {
+        val rawIntent: Intent? =
+            if (useLaunchIntent) {
+                packageManager.getLaunchIntentForPackage(packageName)
+            } else if (spec.dataUri != null) {
+                Intent(Intent.ACTION_VIEW, Uri.parse(spec.dataUri)).apply {
+                    setPackage(packageName)
+                }
+            } else {
+                spec.targetClass?.let { targetClass ->
+                    Intent().apply { setClassName(packageName, targetClass) }
+                }
+            }
+        val intent = rawIntent ?: return null
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        spec.booleanExtras.forEach { (key, value) -> intent.putExtra(key, value) }
+        spec.stringExtras.forEach { (key, value) -> intent.putExtra(key, value) }
+        return intent
     }
 
     private fun launchExternalManifestShortcut(
