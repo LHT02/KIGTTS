@@ -9,14 +9,20 @@ enum class SoundboardLayoutMode(
     val label: String
 ) {
     List("list", 1, "列表"),
+    Grid2("grid_2", 2, "两列宫格"),
     Grid3("grid_3", 3, "三列宫格"),
     Grid4("grid_4", 4, "四列宫格"),
     Grid5("grid_5", 5, "五列宫格"),
-    Grid6("grid_6", 6, "六列宫格");
+    Grid6("grid_6", 6, "六列宫格"),
+    Grid7("grid_7", 7, "七列宫格"),
+    Grid8("grid_8", 8, "八列宫格");
 
     companion object {
-        fun fromWire(raw: String?): SoundboardLayoutMode {
-            return entries.firstOrNull { it.wireValue == raw } ?: Grid3
+        fun fromWire(
+            raw: String?,
+            fallback: SoundboardLayoutMode = List
+        ): SoundboardLayoutMode {
+            return entries.firstOrNull { it.wireValue == raw } ?: fallback
         }
     }
 }
@@ -61,7 +67,7 @@ fun defaultSoundboardConfig(): SoundboardConfig {
     return SoundboardConfig(
         groups = groups,
         selectedGroupId = groups.first().id,
-        portraitLayout = SoundboardLayoutMode.Grid3,
+        portraitLayout = SoundboardLayoutMode.List,
         landscapeLayout = SoundboardLayoutMode.Grid5
     )
 }
@@ -102,8 +108,14 @@ fun parseSoundboardConfig(raw: String?): SoundboardConfig {
         SoundboardConfig(
             groups = groups,
             selectedGroupId = groups.firstOrNull { it.id == selectedId }?.id ?: groups.first().id,
-            portraitLayout = SoundboardLayoutMode.fromWire(root.optString("portraitLayout")),
-            landscapeLayout = SoundboardLayoutMode.fromWire(root.optString("landscapeLayout"))
+            portraitLayout = SoundboardLayoutMode.fromWire(
+                root.optString("portraitLayout"),
+                fallback = SoundboardLayoutMode.List
+            ),
+            landscapeLayout = SoundboardLayoutMode.fromWire(
+                root.optString("landscapeLayout"),
+                fallback = SoundboardLayoutMode.Grid5
+            )
         )
     }.getOrElse { defaultSoundboardConfig() }
 }

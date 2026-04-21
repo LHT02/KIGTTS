@@ -997,7 +997,7 @@ class MainViewModel(
         private set
     var soundboardSelectedGroupId by mutableLongStateOf(1L)
         private set
-    var soundboardPortraitLayout by mutableStateOf(SoundboardLayoutMode.Grid3)
+    var soundboardPortraitLayout by mutableStateOf(SoundboardLayoutMode.List)
         private set
     var soundboardLandscapeLayout by mutableStateOf(SoundboardLayoutMode.Grid5)
         private set
@@ -11480,6 +11480,55 @@ private fun SoundboardListItem(
 }
 
 @Composable
+private fun SoundboardLayoutDropdownRow(
+    title: String,
+    selected: SoundboardLayoutMode,
+    options: List<SoundboardLayoutMode>,
+    onSelected: (SoundboardLayoutMode) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(UiTokens.Radius))
+                .clickable { expanded = true }
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(selected.label, modifier = Modifier.weight(1f))
+                MsIcon("keyboard_arrow_down", contentDescription = "切换排列方式")
+            }
+            Md2AnimatedOptionMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                options.forEach { mode ->
+                    M2DropdownMenuItem(
+                        onClick = {
+                            expanded = false
+                            onSelected(mode)
+                        }
+                    ) {
+                        Text(
+                            mode.label,
+                            fontWeight = if (mode == selected) FontWeight.SemiBold else null
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun SoundboardEditorScreen(
     viewModel: MainViewModel,
@@ -11493,9 +11542,14 @@ private fun SoundboardEditorScreen(
         mutableIntStateOf(viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0)))
     }
     val selectedGroup = groups.getOrNull(selectedGroupIndex)
-    val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
-    var layoutExpanded by remember { mutableStateOf(false) }
-    val layoutOptions = remember { SoundboardLayoutMode.entries.toList() }
+    val portraitLayout = viewModel.soundboardPortraitLayout
+    val landscapeLayout = viewModel.soundboardLandscapeLayout
+    val portraitLayoutOptions = remember {
+        SoundboardLayoutMode.entries.filter {
+            it != SoundboardLayoutMode.Grid7 && it != SoundboardLayoutMode.Grid8
+        }
+    }
+    val landscapeLayoutOptions = remember { SoundboardLayoutMode.entries.toList() }
     val iconChoices = remember { SoundboardGroupIconChoices }
 
     CenteredPageBox(
@@ -11542,45 +11596,18 @@ private fun SoundboardEditorScreen(
                                 onCheckedChange = { viewModel.setTtsDisabled(it) }
                             )
                         }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("布局样式：", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(UiTokens.Radius))
-                                    .clickable { layoutExpanded = true }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(layoutMode.label, modifier = Modifier.weight(1f))
-                                    MsIcon("keyboard_arrow_down", contentDescription = "切换排列方式")
-                                }
-                                Md2AnimatedOptionMenu(
-                                    expanded = layoutExpanded,
-                                    onDismissRequest = { layoutExpanded = false }
-                                ) {
-                                    layoutOptions.forEach { mode ->
-                                        M2DropdownMenuItem(
-                                            onClick = {
-                                                layoutExpanded = false
-                                                viewModel.updateSoundboardLayout(isLandscape, mode)
-                                            }
-                                        ) {
-                                            Text(
-                                                mode.label,
-                                                fontWeight = if (mode == layoutMode) FontWeight.SemiBold else null
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        SoundboardLayoutDropdownRow(
+                            title = "竖屏布局样式：",
+                            selected = portraitLayout,
+                            options = portraitLayoutOptions,
+                            onSelected = { viewModel.updateSoundboardLayout(landscape = false, layout = it) }
+                        )
+                        SoundboardLayoutDropdownRow(
+                            title = "横屏布局样式：",
+                            selected = landscapeLayout,
+                            options = landscapeLayoutOptions,
+                            onSelected = { viewModel.updateSoundboardLayout(landscape = true, layout = it) }
+                        )
                     }
                 }
             }
