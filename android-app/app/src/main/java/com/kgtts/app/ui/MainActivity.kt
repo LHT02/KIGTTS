@@ -3830,7 +3830,7 @@ private fun Modifier.mdCenteredShadow(
 private fun MdShadowCardSurface(
     modifier: Modifier = Modifier,
     shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(UiTokens.Radius),
-    backgroundColor: Color = md2CardContainerColor(),
+    backgroundColor: Color = md2ElevatedCardContainerColor(),
     content: @Composable BoxScope.() -> Unit
 ) {
     Box(
@@ -6943,6 +6943,12 @@ private fun HslGradientSlider(
 @Composable
 private fun md2CardContainerColor(): Color {
     return if (isSystemInDarkTheme()) UiTokens.DarkCard else UiTokens.LightCard
+}
+
+@Composable
+private fun md2ElevatedCardContainerColor(elevation: Dp = UiTokens.CardElevation): Color {
+    val base = md2CardContainerColor()
+    return LocalElevationOverlay.current?.apply(base, elevation) ?: base
 }
 
 private val MaterialSymbolsSharp = FontFamily(
@@ -12867,7 +12873,7 @@ fun QuickSubtitleScreen(
                                     shadowStyle = MdCardShadowStyle
                                 ),
                             shape = RoundedCornerShape(UiTokens.Radius),
-                            backgroundColor = md2CardContainerColor(),
+                            backgroundColor = md2ElevatedCardContainerColor(UiTokens.CardElevation),
                             elevation = 0.dp
                         ) {
                             Row(
@@ -12991,7 +12997,7 @@ fun QuickSubtitleScreen(
                                         shadowStyle = MdCardShadowStyle
                                     ),
                                 shape = RoundedCornerShape(UiTokens.Radius),
-                                backgroundColor = md2CardContainerColor(),
+                                backgroundColor = md2ElevatedCardContainerColor(),
                                 elevation = 0.dp
                             ) {
                                 Row(
@@ -13054,7 +13060,7 @@ fun QuickSubtitleScreen(
                                                                 )
                                                             },
                                                         shape = RoundedCornerShape(UiTokens.Radius),
-                                                        backgroundColor = md2CardContainerColor(),
+                                                        backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
                                                         elevation = 0.dp
                                                     ) {
                                                         Box(
@@ -13087,7 +13093,7 @@ fun QuickSubtitleScreen(
                                                             )
                                                         },
                                                     shape = RoundedCornerShape(UiTokens.Radius),
-                                                    backgroundColor = md2CardContainerColor(),
+                                                    backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
                                                     elevation = 0.dp
                                                 ) {
                                                     Box(
@@ -14139,7 +14145,7 @@ private fun QuickSubtitlePttConfirmBottomStrip(
                 shadowStyle = MdFabShadowStyle
             ),
         shape = RoundedCornerShape(42.dp),
-        color = md2CardContainerColor(),
+        color = md2ElevatedCardContainerColor(UiTokens.FabElevation),
         elevation = 0.dp
     ) {
         Row(
@@ -15869,7 +15875,7 @@ private fun DrawingToolbar(
                     shadowStyle = MdCardShadowStyle
                 ),
             shape = RoundedCornerShape(UiTokens.Radius),
-            backgroundColor = md2CardContainerColor(),
+            backgroundColor = md2ElevatedCardContainerColor(),
             elevation = 0.dp
         ) {
             val activeSize = if (eraserEnabled) eraserSize else brushSize
@@ -16077,7 +16083,7 @@ private fun DrawingToolbarMini(
                 shadowStyle = MdCardShadowStyle
             ),
             shape = RoundedCornerShape(UiTokens.Radius),
-            backgroundColor = md2CardContainerColor(),
+            backgroundColor = md2ElevatedCardContainerColor(),
             elevation = 0.dp
         ) {
             if (isLandscape) {
