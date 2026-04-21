@@ -48,6 +48,7 @@ import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Card
 import androidx.compose.material.Checkbox
+import androidx.compose.material.IconButton
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.OutlinedTextField
 import androidx.compose.material.Button
@@ -399,42 +400,58 @@ fun BuiltinFilePickerDialog(
                 )
             }
 
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = {
-                        if (navigationStack.size > 1) {
-                            navigationStack = navigationStack.dropLast(1)
-                        }
-                    },
-                    enabled = navigationStack.size > 1
-                ) { Text("上一级") }
-
-                OutlinedButton(onClick = { treePermissionLauncher.launch(null) }) {
-                    Text("授权目录")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(onClick = { treePermissionLauncher.launch(null) }) {
+                        Text("授权目录")
+                    }
+                    if (systemPickerAction != null) {
+                        OutlinedButton(onClick = systemPickerAction) { Text("系统文件选择器") }
+                    }
                 }
 
-                if (systemPickerAction != null) {
-                    OutlinedButton(onClick = systemPickerAction) { Text("系统文件选择器") }
-                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BuiltinFlatIconButton(
+                        onClick = {
+                            if (navigationStack.size > 1) {
+                                navigationStack = navigationStack.dropLast(1)
+                            }
+                        },
+                        enabled = navigationStack.size > 1,
+                        iconName = "arrow_upward",
+                        contentDescription = "上一级"
+                    )
 
-                Box {
-                    OutlinedButton(onClick = { sortExpanded = true }) { Text(sortOption.label) }
-                    BuiltinAnimatedDropdownMenu(
-                        expanded = sortExpanded,
-                        onDismissRequest = { sortExpanded = false }
-                    ) {
-                        BuiltinFileSortOption.entries.forEach { option ->
-                            DropdownMenuItem(
-                                onClick = {
-                                    sortExpanded = false
-                                    sortOption = option
+                    Box {
+                        BuiltinFlatIconButton(
+                            onClick = { sortExpanded = true },
+                            iconName = "sort",
+                            contentDescription = "排序方式"
+                        )
+                        BuiltinAnimatedDropdownMenu(
+                            expanded = sortExpanded,
+                            onDismissRequest = { sortExpanded = false }
+                        ) {
+                            BuiltinFileSortOption.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    onClick = {
+                                        sortExpanded = false
+                                        sortOption = option
+                                    }
+                                ) {
+                                    Text(option.label)
                                 }
-                            ) {
-                                Text(option.label)
                             }
                         }
                     }
@@ -640,6 +657,27 @@ fun BuiltinGalleryPickerDialog(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun BuiltinFlatIconButton(
+    onClick: () -> Unit,
+    iconName: String,
+    contentDescription: String,
+    enabled: Boolean = true
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(36.dp)
+    ) {
+        BuiltinMsIcon(
+            name = iconName,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(22.dp),
+            tint = if (enabled) MaterialTheme.colors.onSurface else MaterialTheme.colors.onSurface.copy(alpha = 0.38f)
+        )
     }
 }
 
