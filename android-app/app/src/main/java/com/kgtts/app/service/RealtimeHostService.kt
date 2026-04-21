@@ -272,6 +272,26 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setSileroVadEnabled(enabled)
     }
 
+    fun setSileroVadThreshold(threshold: Float) {
+        currentSettings = currentSettings.copy(
+            sileroVadThreshold = threshold.coerceIn(
+                UserPrefs.SILERO_VAD_MIN_THRESHOLD,
+                UserPrefs.SILERO_VAD_MAX_THRESHOLD
+            )
+        )
+        controller?.setSileroVadThreshold(currentSettings.sileroVadThreshold)
+    }
+
+    fun setSileroVadPreRollMs(preRollMs: Int) {
+        currentSettings = currentSettings.copy(
+            sileroVadPreRollMs = preRollMs.coerceIn(
+                UserPrefs.SILERO_VAD_MIN_PRE_ROLL_MS,
+                UserPrefs.SILERO_VAD_MAX_PRE_ROLL_MS
+            )
+        )
+        controller?.setSileroVadPreRollMs(currentSettings.sileroVadPreRollMs)
+    }
+
     fun setNumberReplaceMode(mode: Int) {
         controller?.setNumberReplaceMode(mode)
     }
@@ -662,6 +682,8 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialSpeechEnhancementMode = currentSettings.speechEnhancementMode,
             initialClassicVadEnabled = currentSettings.classicVadEnabled,
             initialSileroVadEnabled = currentSettings.sileroVadEnabled,
+            initialSileroVadThreshold = currentSettings.sileroVadThreshold,
+            initialSileroVadPreRollMs = currentSettings.sileroVadPreRollMs,
             initialNumberReplaceMode = currentSettings.numberReplaceMode,
             initialAllowSystemAecWithAec3 = currentSettings.allowSystemAecWithAec3,
             initialSpeakerVerifyEnabled = currentSettings.speakerVerifyEnabled && speakerProfiles.isNotEmpty(),
@@ -769,6 +791,8 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setSpeechEnhancementMode(settings.speechEnhancementMode)
         controller?.setClassicVadEnabled(settings.classicVadEnabled)
         controller?.setSileroVadEnabled(settings.sileroVadEnabled)
+        controller?.setSileroVadThreshold(settings.sileroVadThreshold)
+        controller?.setSileroVadPreRollMs(settings.sileroVadPreRollMs)
         controller?.setNumberReplaceMode(settings.numberReplaceMode)
         controller?.setAllowSystemAecWithAec3(settings.allowSystemAecWithAec3)
         controller?.setSpeakerVerifyEnabled(settings.speakerVerifyEnabled && speakerProfiles.isNotEmpty())

@@ -145,6 +145,7 @@ object SoundboardPresetIo {
                                 put("id", group.id)
                                 put("title", group.title)
                                 put("icon", group.icon)
+                                put("keywordWakeEnabled", group.keywordWakeEnabled)
                                 put(
                                     "items",
                                     JSONArray().apply {
@@ -272,6 +273,7 @@ object SoundboardPresetIo {
                 id = nextGroupId++,
                 title = title,
                 icon = groupObj.optString("icon", "music_note").ifBlank { "music_note" },
+                keywordWakeEnabled = groupObj.optBoolean("keywordWakeEnabled", true),
                 items = items
             )
         }

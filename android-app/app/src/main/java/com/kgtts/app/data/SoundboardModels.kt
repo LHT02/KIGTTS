@@ -35,6 +35,7 @@ data class SoundboardGroup(
     val id: Long,
     val title: String,
     val icon: String,
+    val keywordWakeEnabled: Boolean = true,
     val items: List<SoundboardItem>
 )
 
@@ -50,6 +51,7 @@ fun defaultSoundboardGroups(): List<SoundboardGroup> = listOf(
         id = 1L,
         title = "常用音效",
         icon = "music_note",
+        keywordWakeEnabled = true,
         items = emptyList()
     )
 )
@@ -91,6 +93,7 @@ fun parseSoundboardConfig(raw: String?): SoundboardConfig {
                 id = obj.optLong("id", i.toLong() + 1L),
                 title = obj.optString("title", "未命名分组").ifBlank { "未命名分组" },
                 icon = obj.optString("icon", "music_note").ifBlank { "music_note" },
+                keywordWakeEnabled = obj.optBoolean("keywordWakeEnabled", true),
                 items = items
             )
         }
@@ -119,6 +122,7 @@ fun serializeSoundboardConfig(config: SoundboardConfig): String {
                             put("id", group.id)
                             put("title", group.title)
                             put("icon", group.icon)
+                            put("keywordWakeEnabled", group.keywordWakeEnabled)
                             put(
                                 "items",
                                 JSONArray().apply {

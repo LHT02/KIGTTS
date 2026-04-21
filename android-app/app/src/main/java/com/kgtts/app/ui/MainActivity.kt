@@ -540,6 +540,8 @@ data class UiState(
     val aec3Diag: String = "AEC3 诊断：未启用",
     val classicVadEnabled: Boolean = true,
     val sileroVadEnabled: Boolean = false,
+    val sileroVadThreshold: Float = UserPrefs.SILERO_VAD_DEFAULT_THRESHOLD,
+    val sileroVadPreRollMs: Int = UserPrefs.SILERO_VAD_DEFAULT_PRE_ROLL_MS,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
     val piperNoiseScale: Float = 0.667f,
@@ -734,6 +736,78 @@ private fun defaultQuickSubtitleGroups(): List<QuickSubtitleGroup> = listOf(
     )
 )
 
+private val QuickSubtitleGroupIconChoices = listOf(
+    "sentiment_satisfied",
+    "sentiment_very_satisfied",
+    "sentiment_neutral",
+    "sentiment_dissatisfied",
+    "record_voice_over",
+    "chat",
+    "forum",
+    "sms",
+    "alternate_email",
+    "emoji_people",
+    "person",
+    "groups",
+    "accessibility_new",
+    "support_agent",
+    "translate",
+    "work",
+    "school",
+    "home",
+    "restaurant",
+    "shopping_bag",
+    "local_hospital",
+    "directions_car",
+    "train",
+    "flight",
+    "location_on",
+    "schedule",
+    "event",
+    "payments",
+    "sports_esports",
+    "favorite",
+    "thumb_up",
+    "handshake",
+    "celebration",
+    "pets",
+    "info",
+    "warning"
+)
+
+private val SoundboardGroupIconChoices = listOf(
+    "music_note",
+    "library_music",
+    "queue_music",
+    "album",
+    "graphic_eq",
+    "equalizer",
+    "volume_up",
+    "campaign",
+    "mic",
+    "record_voice_over",
+    "radio",
+    "piano",
+    "notifications",
+    "alarm",
+    "celebration",
+    "movie",
+    "theaters",
+    "sports_esports",
+    "sports_soccer",
+    "directions_run",
+    "emoji_events",
+    "bolt",
+    "rocket_launch",
+    "mood",
+    "favorite",
+    "chat",
+    "work",
+    "school",
+    "restaurant",
+    "pets"
+)
+
 class MainViewModel(
     private val repo: ModelRepository,
     private val appContext: ComponentActivity
@@ -924,6 +998,7 @@ class MainViewModel(
     private var soundboardNextGroupId = 2L
     private var soundboardNextItemId = 1L
     private var soundboardSaving = false
+    private var pendingSoundboardSavePayload: String? = null
     private var quickCardsNextId = 1L
     private var quickCardsSaving = false
 
@@ -1045,6 +1120,8 @@ class MainViewModel(
             aec3Diag = nextAec3Diag,
             classicVadEnabled = settings.classicVadEnabled,
             sileroVadEnabled = settings.sileroVadEnabled,
+            sileroVadThreshold = settings.sileroVadThreshold,
+            sileroVadPreRollMs = settings.sileroVadPreRollMs,
             minVolumePercent = settings.minVolumePercent,
             playbackGainPercent = settings.playbackGainPercent,
             piperNoiseScale = settings.piperNoiseScale,
@@ -1553,8 +1630,6 @@ class MainViewModel(
     }
 
     private fun saveSoundboardConfig() {
-        if (soundboardSaving) return
-        soundboardSaving = true
         val payload = serializeSoundboardConfig(
             SoundboardConfig(
                 groups = soundboardGroups,
@@ -1565,9 +1640,24 @@ class MainViewModel(
         )
         val cachedConfig = parseSoundboardConfig(payload)
         SoundboardManager.updateCachedConfig(cachedConfig)
+        if (soundboardSaving) {
+            pendingSoundboardSavePayload = payload
+            return
+        }
+        soundboardSaving = true
         viewModelScope.launch {
             try {
-                UserPrefs.setSoundboardConfig(appContext, payload)
+                var nextPayload = payload
+                while (true) {
+                    UserPrefs.setSoundboardConfig(appContext, nextPayload)
+                    val pending = pendingSoundboardSavePayload
+                    if (pending == null || pending == nextPayload) {
+                        pendingSoundboardSavePayload = null
+                        break
+                    }
+                    pendingSoundboardSavePayload = null
+                    nextPayload = pending
+                }
             } finally {
                 soundboardSaving = false
             }
@@ -1663,12 +1753,21 @@ class MainViewModel(
         saveSoundboardConfig()
     }
 
+    fun setSoundboardGroupKeywordWakeEnabled(index: Int, enabled: Boolean) {
+        if (index !in soundboardGroups.indices) return
+        val next = soundboardGroups.toMutableList()
+        next[index] = next[index].copy(keywordWakeEnabled = enabled)
+        soundboardGroups = next
+        saveSoundboardConfig()
+    }
+
     fun addSoundboardGroup() {
         val newId = soundboardNextGroupId++
         soundboardGroups = soundboardGroups + SoundboardGroup(
             id = newId,
             title = "新分组",
             icon = "music_note",
+            keywordWakeEnabled = true,
             items = emptyList()
         )
         soundboardSelectedGroupId = newId
@@ -2715,6 +2814,35 @@ class MainViewModel(
         persistVadFlags(classicEnabled, sileroEnabled)
     }
 
+    fun setSileroVadThreshold(threshold: Float) {
+        val clamped = threshold.coerceIn(
+            UserPrefs.SILERO_VAD_MIN_THRESHOLD,
+            UserPrefs.SILERO_VAD_MAX_THRESHOLD
+        )
+        val stepped = (clamped / 0.05f).roundToInt() * 0.05f
+        val normalized = stepped.coerceIn(
+            UserPrefs.SILERO_VAD_MIN_THRESHOLD,
+            UserPrefs.SILERO_VAD_MAX_THRESHOLD
+        )
+        uiState = uiState.copy(sileroVadThreshold = normalized)
+        realtimeHost?.setSileroVadThreshold(normalized)
+        viewModelScope.launch {
+            UserPrefs.setSileroVadThreshold(appContext, normalized)
+        }
+    }
+
+    fun setSileroVadPreRollMs(preRollMs: Int) {
+        val normalized = ((preRollMs / 50f).roundToInt() * 50).coerceIn(
+            UserPrefs.SILERO_VAD_MIN_PRE_ROLL_MS,
+            UserPrefs.SILERO_VAD_MAX_PRE_ROLL_MS
+        )
+        uiState = uiState.copy(sileroVadPreRollMs = normalized)
+        realtimeHost?.setSileroVadPreRollMs(normalized)
+        viewModelScope.launch {
+            UserPrefs.setSileroVadPreRollMs(appContext, normalized)
+        }
+    }
+
     fun setVadMode(mode: Int) {
         val (classicEnabled, sileroEnabled) = VadMode.toFlags(mode)
         uiState = uiState.copy(
@@ -3540,6 +3668,8 @@ class MainViewModel(
             host.setSpeechEnhancementMode(settings.speechEnhancementMode)
             host.setClassicVadEnabled(settings.classicVadEnabled)
             host.setSileroVadEnabled(settings.sileroVadEnabled)
+            host.setSileroVadThreshold(settings.sileroVadThreshold)
+            host.setSileroVadPreRollMs(settings.sileroVadPreRollMs)
             host.setNumberReplaceMode(settings.numberReplaceMode)
             host.setSpeakerVerifyEnabled(uiState.speakerVerifyEnabled)
             host.setSpeakerVerifyThreshold(settings.speakerVerifyThreshold)
@@ -10816,17 +10946,15 @@ private fun SoundboardScreen(
     val navBarsBottomInset = navBarsPadding.calculateBottomPadding()
     val groups = viewModel.soundboardGroups
     val selectedGroupIndex = viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
-    val selectedGroup = groups.getOrNull(selectedGroupIndex)
-    val items = selectedGroup?.items ?: emptyList()
     val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
-    val listContent: @Composable () -> Unit = {
+    val listContent: @Composable (List<SoundboardItem>) -> Unit = { targetItems ->
         if (layoutMode == SoundboardLayoutMode.List) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(items, key = { it.id }) { item ->
+                items(targetItems, key = { it.id }) { item ->
                     SoundboardListItem(
                         item = item,
                         playing = viewModel.isSoundboardItemPlaying(item.id),
@@ -10844,8 +10972,8 @@ private fun SoundboardScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(items.size, key = { index -> items[index].id }) { index ->
-                    val item = items[index]
+                items(targetItems.size, key = { index -> targetItems[index].id }) { index ->
+                    val item = targetItems[index]
                     SoundboardGridItem(
                         item = item,
                         playing = viewModel.isSoundboardItemPlaying(item.id),
@@ -10864,20 +10992,33 @@ private fun SoundboardScreen(
             backgroundColor = md2CardContainerColor(),
             elevation = UiTokens.CardElevation
         ) {
-            if (items.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "当前分组暂无音效，请进入编辑页添加",
-                        textAlign = TextAlign.Center
+            AnimatedContent(
+                targetState = selectedGroupIndex,
+                transitionSpec = {
+                    soundboardGroupSwitchTransform(
+                        initialIndex = initialState,
+                        targetIndex = targetState,
+                        isLandscape = isLandscape
                     )
+                },
+                label = "soundboard_items_switch"
+            ) { targetIndex ->
+                val targetItems = groups.getOrNull(targetIndex)?.items.orEmpty()
+                if (targetItems.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "当前分组暂无音效，请进入编辑页添加",
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    listContent(targetItems)
                 }
-            } else {
-                listContent()
             }
         }
     }
@@ -11040,6 +11181,55 @@ private fun SoundboardScreen(
     }
 }
 
+private fun soundboardGroupSwitchTransform(
+    initialIndex: Int,
+    targetIndex: Int,
+    isLandscape: Boolean
+): ContentTransform {
+    val forward = targetIndex >= initialIndex
+    return if (isLandscape) {
+        ContentTransform(
+            targetContentEnter = fadeIn(animationSpec = tween(200)) +
+                slideInVertically(
+                    initialOffsetY = { full ->
+                        val d = kotlin.math.min(full / 3, 56)
+                        if (forward) d else -d
+                    },
+                    animationSpec = tween(220, easing = FastOutSlowInEasing)
+                ),
+            initialContentExit = fadeOut(animationSpec = tween(170)) +
+                slideOutVertically(
+                    targetOffsetY = { full ->
+                        val d = kotlin.math.min(full / 4, 42)
+                        if (forward) -d else d
+                    },
+                    animationSpec = tween(180, easing = FastOutSlowInEasing)
+                ),
+            sizeTransform = null
+        )
+    } else {
+        ContentTransform(
+            targetContentEnter = fadeIn(animationSpec = tween(200)) +
+                slideInHorizontally(
+                    initialOffsetX = { full ->
+                        val d = kotlin.math.min(full / 3, 140)
+                        if (forward) d else -d
+                    },
+                    animationSpec = tween(230, easing = FastOutSlowInEasing)
+                ),
+            initialContentExit = fadeOut(animationSpec = tween(170)) +
+                slideOutHorizontally(
+                    targetOffsetX = { full ->
+                        val d = kotlin.math.min(full / 4, 104)
+                        if (forward) -d else d
+                    },
+                    animationSpec = tween(190, easing = FastOutSlowInEasing)
+                ),
+            sizeTransform = null
+        )
+    }
+}
+
 @Composable
 private fun SoundboardGridItem(
     item: SoundboardItem,
@@ -11176,16 +11366,7 @@ private fun SoundboardEditorScreen(
     val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
     var layoutExpanded by remember { mutableStateOf(false) }
     val layoutOptions = remember { SoundboardLayoutMode.entries.toList() }
-    val iconChoices = remember {
-        listOf(
-            "music_note",
-            "library_music",
-            "sports_esports",
-            "favorite",
-            "work",
-            "chat"
-        )
-    }
+    val iconChoices = remember { SoundboardGroupIconChoices }
 
     CenteredPageBox(
         maxWidth = UiTokens.WideContentMaxWidth,
@@ -11360,6 +11541,25 @@ private fun SoundboardEditorScreen(
                                 }
                             }
                             Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    MsIcon("hearing", contentDescription = "参与关键词唤醒")
+                                    Text("参与关键词唤醒", style = MaterialTheme.typography.bodySmall)
+                                }
+                                Md2Switch(
+                                    checked = selectedGroup.keywordWakeEnabled,
+                                    onCheckedChange = {
+                                        viewModel.setSoundboardGroupKeywordWakeEnabled(selectedGroupIndex, it)
+                                    }
+                                )
+                            }
+                            Row(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -11405,48 +11605,11 @@ private fun SoundboardEditorScreen(
                     AnimatedContent(
                         targetState = selectedGroupIndex.coerceIn(0, groups.lastIndex.coerceAtLeast(0)),
                         transitionSpec = {
-                            val forward = targetState >= initialState
-                            if (isLandscape) {
-                                ContentTransform(
-                                    targetContentEnter = fadeIn(animationSpec = tween(200)) +
-                                            slideInHorizontally(
-                                                initialOffsetX = { full ->
-                                                    val d = kotlin.math.min(full / 3, 96)
-                                                    if (forward) d else -d
-                                                },
-                                                animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                            ),
-                                    initialContentExit = fadeOut(animationSpec = tween(170)) +
-                                            slideOutHorizontally(
-                                                targetOffsetX = { full ->
-                                                    val d = kotlin.math.min(full / 4, 72)
-                                                    if (forward) -d else d
-                                                },
-                                                animationSpec = tween(180, easing = FastOutSlowInEasing)
-                                            ),
-                                    sizeTransform = null
-                                )
-                            } else {
-                                ContentTransform(
-                                    targetContentEnter = fadeIn(animationSpec = tween(200)) +
-                                            slideInVertically(
-                                                initialOffsetY = { full ->
-                                                    val d = kotlin.math.min(full / 3, 36)
-                                                    if (forward) d else -d
-                                                },
-                                                animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                            ),
-                                    initialContentExit = fadeOut(animationSpec = tween(170)) +
-                                            slideOutVertically(
-                                                targetOffsetY = { full ->
-                                                    val d = kotlin.math.min(full / 4, 28)
-                                                    if (forward) -d else d
-                                                },
-                                                animationSpec = tween(180, easing = FastOutSlowInEasing)
-                                            ),
-                                    sizeTransform = null
-                                )
-                            }
+                            soundboardGroupSwitchTransform(
+                                initialIndex = initialState,
+                                targetIndex = targetState,
+                                isLandscape = isLandscape
+                            )
                         },
                         label = "soundboard_editor_items_switch"
                     ) { targetIndex ->
@@ -14036,20 +14199,7 @@ private fun QuickSubtitleEditorScreen(
         )
     }
     val selectedGroup = groups.getOrNull(selectedGroupIndex)
-    val iconChoices = remember {
-        listOf(
-            "sentiment_satisfied",
-            "sentiment_very_satisfied",
-            "sentiment_neutral",
-            "sentiment_dissatisfied",
-            "record_voice_over",
-            "sports_esports",
-            "work",
-            "favorite",
-            "chat",
-            "emoji_people"
-        )
-    }
+    val iconChoices = remember { QuickSubtitleGroupIconChoices }
     val groupNameBringIntoViewRequester = remember { BringIntoViewRequester() }
     val bringIntoViewScope = rememberCoroutineScope()
 
@@ -16410,6 +16560,50 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             ) { Text(label) }
                         }
                     }
+                    val sileroVadControlsEnabled = state.sileroVadEnabled
+                    Text(
+                        "Silero 触发阈值：${String.format("%.2f", state.sileroVadThreshold)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LocalContentColor.current.copy(
+                            alpha = if (sileroVadControlsEnabled) 1f else 0.38f
+                        )
+                    )
+                    Slider(
+                        value = state.sileroVadThreshold,
+                        onValueChange = { viewModel.setSileroVadThreshold(it) },
+                        valueRange = UserPrefs.SILERO_VAD_MIN_THRESHOLD..UserPrefs.SILERO_VAD_MAX_THRESHOLD,
+                        steps = 17,
+                        enabled = sileroVadControlsEnabled
+                    )
+                    Text(
+                        "越低越容易触发；轻声吞首字可先试 0.35-0.45。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LocalContentColor.current.copy(
+                            alpha = if (sileroVadControlsEnabled) 0.74f else 0.38f
+                        )
+                    )
+                    Text(
+                        "Silero pre-roll：${state.sileroVadPreRollMs}ms",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LocalContentColor.current.copy(
+                            alpha = if (sileroVadControlsEnabled) 1f else 0.38f
+                        )
+                    )
+                    Slider(
+                        value = state.sileroVadPreRollMs.toFloat(),
+                        onValueChange = { viewModel.setSileroVadPreRollMs(it.roundToInt()) },
+                        valueRange = UserPrefs.SILERO_VAD_MIN_PRE_ROLL_MS.toFloat()..
+                            UserPrefs.SILERO_VAD_MAX_PRE_ROLL_MS.toFloat(),
+                        steps = 15,
+                        enabled = sileroVadControlsEnabled
+                    )
+                    Text(
+                        "触发前补入一小段录音，改善模型晚触发导致的首字被吞；过大可能带入更多环境音。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = LocalContentColor.current.copy(
+                            alpha = if (sileroVadControlsEnabled) 0.74f else 0.38f
+                        )
+                    )
                     Md2SettingDropdownRow(
                         title = "数字替换",
                         value = numberReplaceOptions.getOrElse(state.numberReplaceMode) { numberReplaceOptions[0] },

@@ -37,6 +37,7 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingManager
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import com.lhtstudio.kigtts.app.data.EspeakData
+import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
 import com.lhtstudio.kigtts.app.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
@@ -1523,6 +1524,8 @@ class RealtimeController(
     initialNumberReplaceMode: Int,
     initialClassicVadEnabled: Boolean,
     initialSileroVadEnabled: Boolean,
+    initialSileroVadThreshold: Float,
+    initialSileroVadPreRollMs: Int,
     initialAllowSystemAecWithAec3: Boolean,
     initialSpeakerVerifyEnabled: Boolean,
     initialSpeakerVerifyThreshold: Float,
@@ -1557,6 +1560,14 @@ class RealtimeController(
     @Volatile private var numberReplaceMode = initialNumberReplaceMode.coerceIn(0, 2)
     @Volatile private var classicVadEnabled = initialClassicVadEnabled
     @Volatile private var sileroVadEnabled = initialSileroVadEnabled
+    @Volatile private var sileroVadThreshold = initialSileroVadThreshold.coerceIn(
+        UserPrefs.SILERO_VAD_MIN_THRESHOLD,
+        UserPrefs.SILERO_VAD_MAX_THRESHOLD
+    )
+    @Volatile private var sileroVadPreRollMs = initialSileroVadPreRollMs.coerceIn(
+        UserPrefs.SILERO_VAD_MIN_PRE_ROLL_MS,
+        UserPrefs.SILERO_VAD_MAX_PRE_ROLL_MS
+    )
     @Volatile private var allowSystemAecWithAec3 = initialAllowSystemAecWithAec3
     @Volatile private var speakerVerifyEnabled = initialSpeakerVerifyEnabled
     @Volatile private var speakerVerifyThreshold = initialSpeakerVerifyThreshold.coerceIn(0.05f, 0.95f)
@@ -1585,6 +1596,10 @@ class RealtimeController(
     private var sileroVadProcessor: SileroVadProcessor? = null
     private val denoiserLock = Any()
     private val sileroVadLock = Any()
+    private val sileroPreRollLock = Any()
+    private val sileroPreRollSamples = mutableListOf<Float>()
+    private var sileroPendingPreRollSamples: FloatArray? = null
+    private var sileroSpeechDetected = false
     private var lastAcceptedTtsTextKey: String = ""
     private var lastAcceptedTtsAtMs: Long = 0L
     private val duplicateTtsWindowMs: Long = 1800L
@@ -1606,6 +1621,7 @@ class RealtimeController(
     private class SileroVadProcessor(
         modelFile: File,
         sampleRate: Int,
+        threshold: Float,
         numThreads: Int = 2
     ) {
         private val lock = Any()
@@ -1618,7 +1634,7 @@ class RealtimeController(
                 debug = false
                 sileroVadModelConfig = SileroVadModelConfig().apply {
                     model = modelFile.absolutePath
-                    threshold = 0.5f
+                    this.threshold = threshold
                     minSilenceDuration = 0.4f
                     minSpeechDuration = 0.2f
                     windowSize = 512
@@ -1982,6 +1998,24 @@ class RealtimeController(
         }
     }
 
+    fun setSileroVadThreshold(threshold: Float) {
+        val normalized = threshold.coerceIn(
+            UserPrefs.SILERO_VAD_MIN_THRESHOLD,
+            UserPrefs.SILERO_VAD_MAX_THRESHOLD
+        )
+        if (sileroVadThreshold == normalized) return
+        sileroVadThreshold = normalized
+        releaseSileroVadProcessor()
+    }
+
+    fun setSileroVadPreRollMs(preRollMs: Int) {
+        sileroVadPreRollMs = preRollMs.coerceIn(
+            UserPrefs.SILERO_VAD_MIN_PRE_ROLL_MS,
+            UserPrefs.SILERO_VAD_MAX_PRE_ROLL_MS
+        )
+        trimSileroPreRollSamples()
+    }
+
     fun setPushToTalkStreamingEnabled(enabled: Boolean) {
         val wasEnabled = pttStreamingEnabled
         pttStreamingEnabled = enabled
@@ -1990,8 +2024,9 @@ class RealtimeController(
             streamingDecodeBusy.set(false)
             if (wasEnabled && sileroVadEnabled) {
                 drainSileroVadSegments(flush = true).forEach { segment ->
-                    if (classicVadEnabled && !passesClassicVadGate(segment)) return@forEach
-                    processRecognizedSegment(segment)
+                    val audio = prependPendingSileroPreRoll(segment)
+                    if (classicVadEnabled && !passesClassicVadGate(audio)) return@forEach
+                    processRecognizedSegment(audio)
                 }
             }
         }
@@ -2524,7 +2559,8 @@ class RealtimeController(
         return runCatching {
             SileroVadProcessor(
                 modelFile = modelFile,
-                sampleRate = sampleRate
+                sampleRate = sampleRate,
+                threshold = sileroVadThreshold
             )
         }.onFailure {
             AppLogger.e("Silero VAD init failed", it)
@@ -2560,6 +2596,7 @@ class RealtimeController(
         synchronized(sileroVadLock) {
             sileroVadProcessor?.reset()
         }
+        resetSileroPreRollState()
     }
 
     private fun releaseSileroVadProcessor() {
@@ -2567,6 +2604,90 @@ class RealtimeController(
             sileroVadProcessor?.release()
             sileroVadProcessor = null
         }
+        resetSileroPreRollState()
+    }
+
+    private fun trimSileroPreRollSamples() {
+        synchronized(sileroPreRollLock) {
+            trimSileroPreRollSamplesLocked()
+        }
+    }
+
+    private fun resetSileroPreRollState() {
+        synchronized(sileroPreRollLock) {
+            sileroPreRollSamples.clear()
+            sileroPendingPreRollSamples = null
+            sileroSpeechDetected = false
+        }
+    }
+
+    private fun updateSileroPreRollState(samples: FloatArray, speechDetected: Boolean) {
+        synchronized(sileroPreRollLock) {
+            if (!sileroSpeechDetected && speechDetected) {
+                sileroPendingPreRollSamples = sileroPreRollSamples.toFloatArray()
+            }
+            sileroSpeechDetected = speechDetected
+            if (!speechDetected) {
+                appendSileroPreRollSamplesLocked(samples)
+            }
+        }
+    }
+
+    private fun prependPendingSileroPreRoll(segment: FloatArray): FloatArray {
+        val prefix = synchronized(sileroPreRollLock) {
+            val pending = sileroPendingPreRollSamples
+            sileroPendingPreRollSamples = null
+            pending
+        } ?: return segment
+        if (prefix.isEmpty() || segment.isEmpty()) return segment
+        val limit = sileroPreRollSampleLimit()
+        val effectivePrefix = if (limit > 0 && prefix.size > limit) {
+            prefix.copyOfRange(prefix.size - limit, prefix.size)
+        } else {
+            prefix
+        }
+        if (effectivePrefix.isEmpty()) return segment
+        val out = FloatArray(effectivePrefix.size + segment.size)
+        System.arraycopy(effectivePrefix, 0, out, 0, effectivePrefix.size)
+        System.arraycopy(segment, 0, out, effectivePrefix.size, segment.size)
+        return out
+    }
+
+    private fun appendSileroPreRollSamplesLocked(samples: FloatArray) {
+        if (samples.isEmpty()) return
+        val limit = sileroPreRollSampleLimit()
+        if (limit <= 0) {
+            sileroPreRollSamples.clear()
+            return
+        }
+        for (sample in samples) {
+            sileroPreRollSamples.add(sample)
+        }
+        trimSileroPreRollSamplesLocked()
+    }
+
+    private fun trimSileroPreRollSamplesLocked() {
+        val limit = sileroPreRollSampleLimit()
+        if (limit <= 0) {
+            sileroPreRollSamples.clear()
+            sileroPendingPreRollSamples = null
+            return
+        }
+        val overflow = sileroPreRollSamples.size - limit
+        if (overflow > 0) {
+            sileroPreRollSamples.subList(0, overflow).clear()
+        }
+        val pending = sileroPendingPreRollSamples
+        if (pending != null && pending.size > limit) {
+            sileroPendingPreRollSamples = pending.copyOfRange(pending.size - limit, pending.size)
+        }
+    }
+
+    private fun sileroPreRollSampleLimit(): Int {
+        return (sampleRate * sileroVadPreRollMs.coerceIn(
+            UserPrefs.SILERO_VAD_MIN_PRE_ROLL_MS,
+            UserPrefs.SILERO_VAD_MAX_PRE_ROLL_MS
+        )) / 1000
     }
 
     private fun disableSpeechEnhancement(mode: Int, cause: Throwable? = null) {
@@ -2920,6 +3041,7 @@ class RealtimeController(
                     }
                     if (suppressWhilePlaying && (player.isPlaying || now < suppressUntilMs)) {
                         window.clear()
+                        resetSileroPreRollState()
                         silenceMs = 0
                         voicedMs = 0
                         continue
@@ -2933,9 +3055,12 @@ class RealtimeController(
                     }
                     if (sileroVadEnabled) {
                         acceptSileroVadWaveform(recognitionBuf)
-                        drainSileroVadSegments(flush = false).forEach { segment ->
-                            if (classicVadEnabled && !passesClassicVadGate(segment)) return@forEach
-                            processRecognizedSegment(segment)
+                        val segments = drainSileroVadSegments(flush = false)
+                        updateSileroPreRollState(recognitionBuf, isSileroSpeechDetected())
+                        segments.forEach { segment ->
+                            val audio = prependPendingSileroPreRoll(segment)
+                            if (classicVadEnabled && !passesClassicVadGate(audio)) return@forEach
+                            processRecognizedSegment(audio)
                         }
                         val maxStreamingWindowSamples = sampleRate * 3
                         if (window.size > maxStreamingWindowSamples) {
@@ -2944,6 +3069,8 @@ class RealtimeController(
                                 window.subList(0, overflow).clear()
                             }
                         }
+                    } else {
+                        resetSileroPreRollState()
                     }
                     maybeDecodeStreamingSenseVoice(window, now)
                     if (classicVadEnabled && !sileroVadEnabled) {

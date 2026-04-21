@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
+import kotlin.random.Random
 
 data class SoundboardPlaybackState(
     val playing: Boolean = false,
@@ -48,14 +49,16 @@ object SoundboardManager {
 
     suspend fun loadConfig(context: Context): SoundboardConfig {
         val parsed = parseSoundboardConfig(UserPrefs.getSoundboardConfig(context))
-        cachedConfig = parsed
-        hasLoadedConfig = true
+        updateCachedConfig(parsed)
         return parsed
     }
 
     fun updateCachedConfig(config: SoundboardConfig) {
         cachedConfig = config
         hasLoadedConfig = true
+        scope.launch {
+            cleanupStalePlaybacks(config)
+        }
     }
 
     fun cachedOrDefaultConfig(): SoundboardConfig = cachedConfig
@@ -146,16 +149,40 @@ object SoundboardManager {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
         val config = if (!hasLoadedConfig) loadConfig(context) else cachedConfig
-        val matches = mutableListOf<SoundboardItem>()
+        val matchesByWakeWord = linkedMapOf<String, MutableList<SoundboardItem>>()
         config.groups.forEach { group ->
+            if (!group.keywordWakeEnabled) return@forEach
             group.items.forEach { item ->
                 val wakeWord = item.wakeWord.trim()
-                if (wakeWord.isNotEmpty() && normalized.contains(wakeWord)) {
-                    matches += item
+                if (wakeWord.isNotEmpty() &&
+                    normalized.contains(wakeWord) &&
+                    item.audioPath.isNotBlank() &&
+                    File(item.audioPath).exists()
+                ) {
+                    matchesByWakeWord.getOrPut(wakeWord) { mutableListOf() } += item
                 }
             }
         }
-        matches.forEach { item -> play(item) }
+        matchesByWakeWord.values.forEach { candidates ->
+            val selected = if (candidates.size == 1) candidates.first() else candidates.random(Random.Default)
+            play(selected)
+        }
+    }
+
+    private suspend fun cleanupStalePlaybacks(config: SoundboardConfig) {
+        val validItemIds = config.groups.asSequence()
+            .flatMap { it.items.asSequence() }
+            .map { it.id }
+            .toSet()
+        stateMutex.withLock {
+            players.keys.filterNot { it in validItemIds }.forEach(::releasePlaybackLocked)
+            val staleStateIds = playbackStates.value.keys.filterNot { it in validItemIds }
+            if (staleStateIds.isNotEmpty()) {
+                val next = playbackStates.value.toMutableMap()
+                staleStateIds.forEach { next.remove(it) }
+                playbackStates.value = next
+            }
+        }
     }
 
     private suspend fun updatePlaybackState(itemId: Long, state: SoundboardPlaybackState) {
