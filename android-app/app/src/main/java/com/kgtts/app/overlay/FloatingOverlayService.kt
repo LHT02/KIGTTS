@@ -1527,10 +1527,14 @@ class FloatingOverlayService : Service() {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             text = ""
+            alpha = 0f
+            visibility = View.INVISIBLE
         }
         panelStatusLogoView = ImageView(this).apply {
             setImageResource(if (overlayDarkTheme) R.drawable.logo_white else R.drawable.logo_black)
             adjustViewBounds = true
+            alpha = 1f
+            visibility = View.VISIBLE
         }
         panelStatusTriggerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1995,10 +1999,14 @@ class FloatingOverlayService : Service() {
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             text = ""
+            alpha = 0f
+            visibility = View.INVISIBLE
         }
         miniStatusLogoView = ImageView(this).apply {
             setImageResource(if (overlayDarkTheme) R.drawable.logo_white else R.drawable.logo_black)
             adjustViewBounds = true
+            alpha = 1f
+            visibility = View.VISIBLE
         }
         miniStatusTriggerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2976,21 +2984,81 @@ class FloatingOverlayService : Service() {
     }
 
     private fun showTopStatusLogo() {
-        panelStatusTextView?.visibility = View.INVISIBLE
-        panelStatusLogoView?.visibility = View.VISIBLE
-        miniStatusTextView?.visibility = View.INVISIBLE
-        miniStatusLogoView?.visibility = View.VISIBLE
+        val shouldAnimate = topStatusShowingText
+        crossfadeTopStatusViews(
+            incoming = panelStatusLogoView,
+            outgoing = panelStatusTextView,
+            outgoingEndVisibility = View.INVISIBLE,
+            animate = shouldAnimate
+        )
+        crossfadeTopStatusViews(
+            incoming = miniStatusLogoView,
+            outgoing = miniStatusTextView,
+            outgoingEndVisibility = View.INVISIBLE,
+            animate = shouldAnimate
+        )
         topStatusShowingText = false
     }
 
     private fun showTopStatusText(text: String) {
         panelStatusTextView?.text = text
-        panelStatusTextView?.visibility = View.VISIBLE
-        panelStatusLogoView?.visibility = View.GONE
         miniStatusTextView?.text = text
-        miniStatusTextView?.visibility = View.VISIBLE
-        miniStatusLogoView?.visibility = View.GONE
+        val shouldAnimate = !topStatusShowingText
+        crossfadeTopStatusViews(
+            incoming = panelStatusTextView,
+            outgoing = panelStatusLogoView,
+            outgoingEndVisibility = View.GONE,
+            animate = shouldAnimate
+        )
+        crossfadeTopStatusViews(
+            incoming = miniStatusTextView,
+            outgoing = miniStatusLogoView,
+            outgoingEndVisibility = View.GONE,
+            animate = shouldAnimate
+        )
         topStatusShowingText = true
+    }
+
+    private fun crossfadeTopStatusViews(
+        incoming: View?,
+        outgoing: View?,
+        outgoingEndVisibility: Int,
+        animate: Boolean
+    ) {
+        incoming?.animate()?.cancel()
+        outgoing?.animate()?.cancel()
+        val incomingVisible = incoming?.visibility == View.VISIBLE && incoming.alpha >= 0.98f
+        val outgoingHidden = outgoing == null || outgoing.visibility != View.VISIBLE || outgoing.alpha <= 0.02f
+        if (!animate || (incomingVisible && outgoingHidden)) {
+            incoming?.apply {
+                alpha = 1f
+                visibility = View.VISIBLE
+            }
+            outgoing?.apply {
+                alpha = 0f
+                visibility = outgoingEndVisibility
+            }
+            return
+        }
+        incoming?.apply {
+            if (visibility != View.VISIBLE) {
+                alpha = 0f
+                visibility = View.VISIBLE
+            }
+            animate()
+                .alpha(1f)
+                .setDuration(180L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
+        outgoing?.animate()
+            ?.alpha(0f)
+            ?.setDuration(180L)
+            ?.setInterpolator(DecelerateInterpolator())
+            ?.withEndAction {
+                outgoing.visibility = outgoingEndVisibility
+            }
+            ?.start()
     }
 
     private fun syncTopStatusContent(text: String) {
