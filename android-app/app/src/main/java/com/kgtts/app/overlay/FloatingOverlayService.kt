@@ -8635,7 +8635,7 @@ class FloatingOverlayService : Service() {
 
     private fun launcherFabIconView(): ImageView =
         ImageView(this).apply {
-            setImageResource(R.drawable.ic_launcher_foreground)
+            setImageResource(R.drawable.ic_overlay_fab_foreground)
             scaleType = ImageView.ScaleType.FIT_CENTER
             adjustViewBounds = true
             layoutParams = FrameLayout.LayoutParams(dp(28), dp(28), Gravity.CENTER)
