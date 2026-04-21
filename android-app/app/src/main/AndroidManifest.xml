@@ -46,13 +46,6 @@
             android:theme="@style/Theme.KGTTS.Cropper"
             tools:replace="android:theme" />
         <activity
-            android:name=".ui.LauncherShortcutProxyActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:noHistory="true"
-            android:theme="@android:style/Theme.NoDisplay" />
-        <activity
             android:name=".ui.MainActivity"
             android:exported="true">
             <intent-filter>
@@ -116,6 +109,9 @@
             android:foregroundServiceType="microphone|mediaPlayback" />
         <service
             android:name=".service.RealtimeHostService"
+            android:exported="false" />
+        <service
+            android:name=".service.VolumeHotkeyService"
             android:exported="false" />
         <service
             android:name=".overlay.FloatingOverlayService"
