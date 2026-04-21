@@ -113,11 +113,11 @@ object UserPrefs {
         val communicationMode: Boolean = false,
         val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
         val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
-        val aec3Enabled: Boolean = false,
+        val aec3Enabled: Boolean = true,
         val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
-        val speechEnhancementMode: Int = SpeechEnhancementMode.OFF,
-        val classicVadEnabled: Boolean = true,
-        val sileroVadEnabled: Boolean = false,
+        val speechEnhancementMode: Int = SpeechEnhancementMode.DPDFNET4_STREAMING,
+        val classicVadEnabled: Boolean = false,
+        val sileroVadEnabled: Boolean = true,
         val sileroVadThreshold: Float = SILERO_VAD_DEFAULT_THRESHOLD,
         val sileroVadPreRollMs: Int = SILERO_VAD_DEFAULT_PRE_ROLL_MS,
         val minVolumePercent: Int = 2,
@@ -132,8 +132,8 @@ object UserPrefs {
         val solidTopBar: Boolean = true,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val quickCardAutoSaveOnExit: Boolean = false,
-        val useBuiltinFileManager: Boolean = false,
-        val useBuiltinGallery: Boolean = false,
+        val useBuiltinFileManager: Boolean = true,
+        val useBuiltinGallery: Boolean = true,
         val asrSendToQuickSubtitle: Boolean = true,
         val pushToTalkMode: Boolean = false,
         val pushToTalkConfirmInput: Boolean = false,
@@ -223,19 +223,19 @@ object UserPrefs {
     private fun Preferences.toAppSettings(): AppSettings {
         val legacyPreferUsb = this[KEY_PREFER_USB_MIC] ?: false
         val legacySpeaker = this[KEY_COMMUNICATION_SPEAKER] ?: false
-        var classicVadEnabled = this[KEY_CLASSIC_VAD_ENABLED] ?: true
-        var sileroVadEnabled = this[KEY_SILERO_VAD_ENABLED] ?: false
+        var classicVadEnabled = this[KEY_CLASSIC_VAD_ENABLED] ?: false
+        var sileroVadEnabled = this[KEY_SILERO_VAD_ENABLED] ?: true
         val legacySpeechEnhancementEnabled = this[KEY_SPEECH_ENHANCEMENT_ENABLED] ?: false
         val speechEnhancementMode = if (contains(KEY_SPEECH_ENHANCEMENT_MODE)) {
             SpeechEnhancementMode.clamp(this[KEY_SPEECH_ENHANCEMENT_MODE] ?: SpeechEnhancementMode.OFF)
         } else if (legacySpeechEnhancementEnabled) {
             SpeechEnhancementMode.GTCRN_OFFLINE
         } else {
-            SpeechEnhancementMode.OFF
+            SpeechEnhancementMode.DPDFNET4_STREAMING
         }
         if (!classicVadEnabled && !sileroVadEnabled) {
-            classicVadEnabled = true
-            sileroVadEnabled = false
+            classicVadEnabled = false
+            sileroVadEnabled = true
         }
         return AppSettings(
             muteWhilePlaying = this[KEY_MUTE_WHILE_PLAYING] ?: true,
@@ -246,7 +246,7 @@ object UserPrefs {
                 ?: if (legacyPreferUsb) AudioRoutePreference.INPUT_USB else AudioRoutePreference.INPUT_AUTO,
             preferredOutputType = this[KEY_PREFERRED_OUTPUT_TYPE]
                 ?: if (legacySpeaker) AudioRoutePreference.OUTPUT_SPEAKER else AudioRoutePreference.OUTPUT_AUTO,
-            aec3Enabled = this[KEY_AEC3_ENABLED] ?: false,
+            aec3Enabled = this[KEY_AEC3_ENABLED] ?: true,
             denoiserMode = (this[KEY_DENOISER_MODE] ?: AudioDenoiserMode.RNNOISE)
                 .coerceIn(AudioDenoiserMode.OFF, AudioDenoiserMode.SPEEX),
             speechEnhancementMode = speechEnhancementMode,
@@ -270,8 +270,8 @@ object UserPrefs {
             drawingSaveRelativePath = (this[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             quickCardAutoSaveOnExit = this[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
-            useBuiltinFileManager = this[KEY_USE_BUILTIN_FILE_MANAGER] ?: false,
-            useBuiltinGallery = this[KEY_USE_BUILTIN_GALLERY] ?: false,
+            useBuiltinFileManager = this[KEY_USE_BUILTIN_FILE_MANAGER] ?: true,
+            useBuiltinGallery = this[KEY_USE_BUILTIN_GALLERY] ?: true,
             asrSendToQuickSubtitle = this[KEY_ASR_SEND_TO_QUICK_SUBTITLE] ?: true,
             pushToTalkMode = this[KEY_PUSH_TO_TALK_MODE] ?: false,
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
