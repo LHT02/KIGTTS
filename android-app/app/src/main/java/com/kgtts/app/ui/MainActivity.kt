@@ -238,9 +238,19 @@ import com.lhtstudio.kigtts.app.overlay.RealtimeOwnerGate
 import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
 import com.lhtstudio.kigtts.app.service.KeepAliveService
 import com.lhtstudio.kigtts.app.service.RealtimeHostService
+import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityGuideService
+import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityService
+import com.lhtstudio.kigtts.app.service.VolumeHotkeyService
+import com.lhtstudio.kigtts.app.util.AlipayScannerSupport
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.ExternalShortcutCatalog
+import com.lhtstudio.kigtts.app.util.ExternalShortcutChoice
 import com.lhtstudio.kigtts.app.util.LauncherMenuShortcuts
+import com.lhtstudio.kigtts.app.util.QqScannerSupport
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
+import com.lhtstudio.kigtts.app.util.VolumeHotkeyActionSpec
+import com.lhtstudio.kigtts.app.util.VolumeHotkeyActions
+import com.lhtstudio.kigtts.app.util.VolumeHotkeySequence
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
@@ -562,7 +572,16 @@ data class UiState(
     val pushToTalkMode: Boolean = false,
     val pushToTalkConfirmInputMode: Boolean = false,
     val floatingOverlayEnabled: Boolean = false,
-    val floatingOverlayAutoDock: Boolean = false,
+    val floatingOverlayAutoDock: Boolean = true,
+    val floatingOverlayHardcodedShortcutSupplement: Boolean = false,
+    val volumeHotkeyUpDownEnabled: Boolean = false,
+    val volumeHotkeyDownUpEnabled: Boolean = false,
+    val volumeHotkeyWindowMs: Int = UserPrefs.VOLUME_HOTKEY_DEFAULT_WINDOW_MS,
+    val volumeHotkeyAccessibilityEnabled: Boolean = false,
+    val volumeHotkeyUpDownAction: VolumeHotkeyActionSpec =
+        VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown),
+    val volumeHotkeyDownUpAction: VolumeHotkeyActionSpec =
+        VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.DownUp),
     val ttsDisabled: Boolean = false,
     val soundboardKeywordTriggerEnabled: Boolean = false,
     val allowQuickTextTriggerSoundboard: Boolean = false,
@@ -628,6 +647,7 @@ private fun isOverlayOpenTarget(target: String): Boolean {
             target == OverlayBridge.TARGET_OPEN_QUICK_CARD ||
             target == OverlayBridge.TARGET_OPEN_DRAWING ||
             target == OverlayBridge.TARGET_OPEN_SOUNDBOARD ||
+            target == OverlayBridge.TARGET_OPEN_VOICE_PACK ||
             target == OverlayBridge.TARGET_OPEN_SETTINGS ||
             target == OverlayBridge.TARGET_OPEN_QR_SCANNER
 }
@@ -977,7 +997,7 @@ class MainViewModel(
         private set
     var soundboardSelectedGroupId by mutableLongStateOf(1L)
         private set
-    var soundboardPortraitLayout by mutableStateOf(SoundboardLayoutMode.Grid3)
+    var soundboardPortraitLayout by mutableStateOf(SoundboardLayoutMode.List)
         private set
     var soundboardLandscapeLayout by mutableStateOf(SoundboardLayoutMode.Grid5)
         private set
@@ -1143,6 +1163,14 @@ class MainViewModel(
             pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
             floatingOverlayEnabled = settings.floatingOverlayEnabled,
             floatingOverlayAutoDock = settings.floatingOverlayAutoDock,
+            floatingOverlayHardcodedShortcutSupplement =
+                settings.floatingOverlayHardcodedShortcutSupplement,
+            volumeHotkeyUpDownEnabled = settings.volumeHotkeyUpDownEnabled,
+            volumeHotkeyDownUpEnabled = settings.volumeHotkeyDownUpEnabled,
+            volumeHotkeyWindowMs = settings.volumeHotkeyWindowMs,
+            volumeHotkeyAccessibilityEnabled = settings.volumeHotkeyAccessibilityEnabled,
+            volumeHotkeyUpDownAction = settings.volumeHotkeyUpDownAction,
+            volumeHotkeyDownUpAction = settings.volumeHotkeyDownUpAction,
             ttsDisabled = settings.ttsDisabled,
             soundboardKeywordTriggerEnabled = settings.soundboardKeywordTriggerEnabled,
             allowQuickTextTriggerSoundboard = settings.allowQuickTextTriggerSoundboard,
@@ -1167,6 +1195,7 @@ class MainViewModel(
         settingsObserveJob = viewModelScope.launch {
             UserPrefs.observeSettings(appContext).collectLatest { settings ->
                 applySettingsSnapshot(settings)
+                VolumeHotkeyService.syncWithSettings(appContext)
             }
         }
     }
@@ -2793,8 +2822,7 @@ class MainViewModel(
         realtimeHost?.setClassicVadEnabled(classicEnabled)
         realtimeHost?.setSileroVadEnabled(sileroEnabled)
         viewModelScope.launch {
-            UserPrefs.setClassicVadEnabled(appContext, classicEnabled)
-            UserPrefs.setSileroVadEnabled(appContext, sileroEnabled)
+            UserPrefs.setVadFlags(appContext, classicEnabled, sileroEnabled)
         }
     }
 
@@ -2971,6 +2999,52 @@ class MainViewModel(
         uiState = uiState.copy(floatingOverlayAutoDock = enabled)
         viewModelScope.launch {
             UserPrefs.setFloatingOverlayAutoDock(appContext, enabled)
+        }
+    }
+
+    fun setFloatingOverlayHardcodedShortcutSupplement(enabled: Boolean) {
+        uiState = uiState.copy(floatingOverlayHardcodedShortcutSupplement = enabled)
+        viewModelScope.launch {
+            UserPrefs.setFloatingOverlayHardcodedShortcutSupplement(appContext, enabled)
+        }
+    }
+
+    fun setVolumeHotkeyEnabled(sequence: VolumeHotkeySequence, enabled: Boolean) {
+        uiState = when (sequence) {
+            VolumeHotkeySequence.UpDown -> uiState.copy(volumeHotkeyUpDownEnabled = enabled)
+            VolumeHotkeySequence.DownUp -> uiState.copy(volumeHotkeyDownUpEnabled = enabled)
+        }
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyEnabled(appContext, sequence, enabled)
+        }
+    }
+
+    fun setVolumeHotkeyAction(sequence: VolumeHotkeySequence, action: VolumeHotkeyActionSpec) {
+        uiState = when (sequence) {
+            VolumeHotkeySequence.UpDown -> uiState.copy(volumeHotkeyUpDownAction = action)
+            VolumeHotkeySequence.DownUp -> uiState.copy(volumeHotkeyDownUpAction = action)
+        }
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyAction(appContext, sequence, action)
+        }
+    }
+
+    fun setVolumeHotkeyWindowMs(windowMs: Int) {
+        val normalized = (windowMs / 100) * 100
+        val clamped = normalized.coerceIn(
+            UserPrefs.VOLUME_HOTKEY_MIN_WINDOW_MS,
+            UserPrefs.VOLUME_HOTKEY_MAX_WINDOW_MS
+        )
+        uiState = uiState.copy(volumeHotkeyWindowMs = clamped)
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyWindowMs(appContext, clamped)
+        }
+    }
+
+    fun setVolumeHotkeyAccessibilityEnabled(enabled: Boolean) {
+        uiState = uiState.copy(volumeHotkeyAccessibilityEnabled = enabled)
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyAccessibilityEnabled(appContext, enabled)
         }
     }
 
@@ -4008,6 +4082,9 @@ private fun QuickCardNavHost(
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit
 ) {
     val context = LocalContext.current
+    DisposableEffect(Unit) {
+        onDispose { onTopBarActionsChange(null) }
+    }
     val navigateDecodedQrResult: (String, String) -> Unit = { decoded, popRoute ->
         if (isWeChatQrContent(decoded)) {
             if (isPackageInstalled(context, WECHAT_PACKAGE_NAME)) {
@@ -4018,6 +4095,48 @@ private fun QuickCardNavHost(
             } else {
                 toast(context, "该二维码为微信二维码，需要安装微信")
                 val browserTarget = normalizeQrTextToWebUrl(decoded) ?: WECHAT_BROWSER_FALLBACK_URL
+                if (!openExternalBrowser(context, browserTarget)) {
+                    toast(context, "无法打开系统浏览器")
+                }
+            }
+            navController.popBackStack(popRoute, inclusive = true)
+        } else if (QqScannerSupport.isQqQrContent(decoded)) {
+            if (isPackageInstalled(context, QqScannerSupport.QQ_PACKAGE_NAME)) {
+                val qqAccessibilityEnabled = VolumeHotkeyAccessibilityService.isEnabled(context)
+                if (qqAccessibilityEnabled) {
+                    if (
+                        VolumeHotkeyAccessibilityService.requestOpenQqScanner(context) ||
+                        QqScannerSupport.launchQq(context)
+                    ) {
+                        toast(context, "该二维码为QQ二维码，请使用QQ进行扫描")
+                    } else {
+                        toast(context, "打开QQ失败，请手动打开QQ扫一扫")
+                    }
+                } else {
+                    if (QqScannerSupport.launchQq(context)) {
+                        toast(context, "该二维码为QQ二维码，已跳转至QQ。直达QQ扫一扫需要开启无障碍权限")
+                    } else {
+                        toast(context, "打开QQ失败，请手动打开QQ扫一扫")
+                    }
+                }
+            } else {
+                toast(context, "该二维码为QQ二维码，需要安装QQ")
+                val browserTarget = normalizeQrTextToWebUrl(decoded) ?: QqScannerSupport.QQ_BROWSER_FALLBACK_URL
+                if (!openExternalBrowser(context, browserTarget)) {
+                    toast(context, "无法打开系统浏览器")
+                }
+            }
+            navController.popBackStack(popRoute, inclusive = true)
+        } else if (AlipayScannerSupport.isAlipayQrContent(decoded)) {
+            if (isPackageInstalled(context, AlipayScannerSupport.ALIPAY_PACKAGE_NAME)) {
+                toast(context, "该二维码为支付宝二维码，需要使用支付宝进行扫描")
+                if (!AlipayScannerSupport.launchScanner(context)) {
+                    toast(context, "打开支付宝失败，请手动打开支付宝扫一扫")
+                }
+            } else {
+                toast(context, "该二维码为支付宝二维码，需要安装支付宝")
+                val browserTarget = normalizeQrTextToWebUrl(decoded)
+                    ?: AlipayScannerSupport.ALIPAY_BROWSER_FALLBACK_URL
                 if (!openExternalBrowser(context, browserTarget)) {
                     toast(context, "无法打开系统浏览器")
                 }
@@ -4209,38 +4328,49 @@ private fun QuickCardMainScreen(
         previewCardId?.let { id -> cards.firstOrNull { it.id == id } }
     }
     val closePreview: () -> Unit = { viewModel.closeQuickCardPreview() }
+    val onCreateCardState = rememberUpdatedState(onCreateCard)
+    val onOpenScannerState = rememberUpdatedState(onOpenScanner)
     val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
-            onOpenScanner()
+            onOpenScannerState.value()
         } else {
             toast(context, "未授予相机权限")
         }
     }
 
-    val topActions = remember(cameraPermissionLauncher, context, onCreateCard) {
+    val topActions = remember(cameraPermissionLauncher, context) {
         QuickCardTopBarActions(
-            onNew = { onCreateCard(QuickCardType.Text, "") },
+            onNew = { onCreateCardState.value(QuickCardType.Text, "") },
             onScan = {
                 val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
                 if (granted) {
-                    onOpenScanner()
+                    onOpenScannerState.value()
                 } else {
                     cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 }
             }
         )
     }
-    SideEffect {
+    LaunchedEffect(topActions) {
         onTopBarActionsChange(topActions)
-    }
-    DisposableEffect(Unit) {
-        onDispose { onTopBarActionsChange(null) }
     }
 
     val pageCount = (cards.size + 1).coerceAtLeast(1) // always keep a trailing "new card" page
     val selectedPage = if (cards.isEmpty()) 0 else viewModel.quickCardSelectedIndex.coerceIn(0, cards.lastIndex)
     var pagerPageIndex by rememberSaveable { mutableIntStateOf(selectedPage) }
+    var showSortHint by rememberSaveable { mutableStateOf(false) }
+    val canShowSortHint = cards.size > 1
+    LaunchedEffect(canShowSortHint) {
+        if (canShowSortHint && !quickCardSortHintShownThisProcess) {
+            quickCardSortHintShownThisProcess = true
+            showSortHint = true
+            delay(2_000)
+            showSortHint = false
+        } else if (!canShowSortHint) {
+            showSortHint = false
+        }
+    }
     LaunchedEffect(pageCount, selectedPage) {
         val maxPage = (pageCount - 1).coerceAtLeast(0)
         if (pagerPageIndex > maxPage) {
@@ -4268,37 +4398,44 @@ private fun QuickCardMainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     key("quick_card_pager_landscape") {
-                        QuickCardPagerView(
-                            cards = cards,
-                            currentIndex = pagerPageIndex,
-                            landscape = true,
-                            modifier = Modifier.fillMaxSize(),
-                            onPageChanged = { page ->
-                                val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                                pagerPageIndex = safePage
-                                if (cards.isNotEmpty() && safePage < cards.size) {
-                                    viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            QuickCardPagerView(
+                                cards = cards,
+                                currentIndex = pagerPageIndex,
+                                landscape = true,
+                                modifier = Modifier.fillMaxSize(),
+                                onPageChanged = { page ->
+                                    val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                    pagerPageIndex = safePage
+                                    if (cards.isNotEmpty() && safePage < cards.size) {
+                                        viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                                    }
+                                },
+                                onCardClick = { card ->
+                                    if (card == null) {
+                                        onCreateCard(QuickCardType.Text, "")
+                                    } else {
+                                        viewModel.openQuickCardPreview(card.id)
+                                    }
+                                },
+                                onCardLongPress = { card ->
+                                    if (card != null) {
+                                        onOpenSort()
+                                    }
+                                },
+                                onEdit = { card ->
+                                    onOpenEditor(card.id)
+                                },
+                                onShare = { target ->
+                                    shareQuickCard(context, target, true)
                                 }
-                            },
-                            onCardClick = { card ->
-                                if (card == null) {
-                                    onCreateCard(QuickCardType.Text, "")
-                                } else {
-                                    viewModel.openQuickCardPreview(card.id)
-                                }
-                            },
-                            onCardLongPress = { card ->
-                                if (card != null) {
-                                    onOpenSort()
-                                }
-                            },
-                            onEdit = { card ->
-                                onOpenEditor(card.id)
-                            },
-                            onShare = { target ->
-                                shareQuickCard(context, target, true)
-                            }
-                        )
+                            )
+                            QuickCardSortHintOverlay(
+                                visible = showSortHint,
+                                landscape = true,
+                                onDismiss = { showSortHint = false }
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -4319,38 +4456,45 @@ private fun QuickCardMainScreen(
                         .fillMaxWidth()
                 ) {
                     key("quick_card_pager_portrait") {
-                        QuickCardPagerView(
-                            cards = cards,
-                            currentIndex = pagerPageIndex,
-                            landscape = false,
-                            modifier = Modifier
-                                .fillMaxSize(),
-                            onPageChanged = { page ->
-                                val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-                                pagerPageIndex = safePage
-                                if (cards.isNotEmpty() && safePage < cards.size) {
-                                    viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            QuickCardPagerView(
+                                cards = cards,
+                                currentIndex = pagerPageIndex,
+                                landscape = false,
+                                modifier = Modifier
+                                    .fillMaxSize(),
+                                onPageChanged = { page ->
+                                    val safePage = page.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+                                    pagerPageIndex = safePage
+                                    if (cards.isNotEmpty() && safePage < cards.size) {
+                                        viewModel.updateQuickCardSelectedIndex(safePage.coerceIn(0, cards.lastIndex))
+                                    }
+                                },
+                                onCardClick = { card ->
+                                    if (card == null) {
+                                        onCreateCard(QuickCardType.Text, "")
+                                    } else {
+                                        viewModel.openQuickCardPreview(card.id)
+                                    }
+                                },
+                                onCardLongPress = { card ->
+                                    if (card != null) {
+                                        onOpenSort()
+                                    }
+                                },
+                                onEdit = { card ->
+                                    onOpenEditor(card.id)
+                                },
+                                onShare = { target ->
+                                    shareQuickCard(context, target, false)
                                 }
-                            },
-                            onCardClick = { card ->
-                                if (card == null) {
-                                    onCreateCard(QuickCardType.Text, "")
-                                } else {
-                                    viewModel.openQuickCardPreview(card.id)
-                                }
-                            },
-                            onCardLongPress = { card ->
-                                if (card != null) {
-                                    onOpenSort()
-                                }
-                            },
-                            onEdit = { card ->
-                                onOpenEditor(card.id)
-                            },
-                            onShare = { target ->
-                                shareQuickCard(context, target, false)
-                            }
-                        )
+                            )
+                            QuickCardSortHintOverlay(
+                                visible = showSortHint,
+                                landscape = false,
+                                onDismiss = { showSortHint = false }
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -4449,6 +4593,61 @@ private fun QuickCardMainScreen(
 }
 
 @Composable
+private fun QuickCardSortHintOverlay(
+    visible: Boolean,
+    landscape: Boolean,
+    onDismiss: () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(animationSpec = tween(170, easing = FastOutSlowInEasing)),
+        exit = fadeOut(animationSpec = tween(220, easing = FastOutSlowInEasing)),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                        onDismiss()
+                    }
+                }
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(
+                        horizontal = if (landscape) 54.dp else 38.dp,
+                        vertical = if (landscape) 18.dp else 26.dp
+                    )
+                    .fillMaxWidth(if (landscape) 0.62f else 0.82f)
+                    .heightIn(min = 46.dp)
+                    .background(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.42f)
+                            )
+                        ),
+                        shape = RoundedCornerShape(UiTokens.Radius)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Text(
+                    text = "长按对名片进行排序。",
+                    color = Color.White.copy(alpha = 0.86f),
+                    style = MaterialTheme.typography.caption,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun QuickCardSortScreen(
     viewModel: MainViewModel,
     onTopBarActionsChange: (QuickCardTopBarActions?) -> Unit,
@@ -4458,16 +4657,14 @@ private fun QuickCardSortScreen(
     val topBlank = UiTokens.PageTopBlank
     val bottomBlank = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 8.dp
 
-    SideEffect {
-        onTopBarActionsChange(
-            QuickCardTopBarActions(
-                onConfirm = onDone,
-                canConfirm = true
-            )
+    val topActions = remember(onDone) {
+        QuickCardTopBarActions(
+            onConfirm = onDone,
+            canConfirm = true
         )
     }
-    DisposableEffect(Unit) {
-        onDispose { onTopBarActionsChange(null) }
+    LaunchedEffect(topActions) {
+        onTopBarActionsChange(topActions)
     }
 
     CenteredPageColumn(
@@ -6438,6 +6635,7 @@ private fun QuickCardEditorScreen(
     BackHandler {
         requestExitEditor()
     }
+    val requestExitEditorState = rememberUpdatedState { requestExitEditor() }
 
     val isExisting = !draft.isNew && draft.editId != null
     LaunchedEffect(draft.themeColor) {
@@ -6449,32 +6647,31 @@ private fun QuickCardEditorScreen(
             themeLight = hsl[2]
         }
     }
-    val editorActions = if (!isExisting) {
-        QuickCardTopBarActions(
-            onNew = {},
-            onScan = {},
-            onBackRequest = { requestExitEditor() }
-        )
-    } else {
-        QuickCardTopBarActions(
-            onNew = {},
-            onScan = {},
-            onCopy = {
-                val copied = viewModel.duplicateEditingQuickCard()
-                if (copied != null) toast(context, "已复制名片")
-            },
-            onDelete = { showDeleteConfirm = true },
-            onBackRequest = { requestExitEditor() },
-            canCopy = true,
-            canDelete = true
-        )
+    val editorActions = remember(isExisting, context, viewModel) {
+        if (!isExisting) {
+            QuickCardTopBarActions(
+                onNew = {},
+                onScan = {},
+                onBackRequest = { requestExitEditorState.value() }
+            )
+        } else {
+            QuickCardTopBarActions(
+                onNew = {},
+                onScan = {},
+                onCopy = {
+                    val copied = viewModel.duplicateEditingQuickCard()
+                    if (copied != null) toast(context, "已复制名片")
+                },
+                onDelete = { showDeleteConfirm = true },
+                onBackRequest = { requestExitEditorState.value() },
+                canCopy = true,
+                canDelete = true
+            )
+        }
     }
 
-    SideEffect {
+    LaunchedEffect(editorActions) {
         onTopBarActionsChange(editorActions)
-    }
-    DisposableEffect(Unit) {
-        onDispose { onTopBarActionsChange(null) }
     }
 
     CenteredPageColumn(
@@ -7111,6 +7308,7 @@ private val SoundboardAudioFileExtensions = setOf(
 )
 
 private const val TTS_DISABLED_MESSAGE = "TTS已禁用，如需打开，请打开顶部音频状态菜单将“禁用TTS”选项关闭"
+private var quickCardSortHintShownThisProcess = false
 
 class MainActivity : ComponentActivity() {
     private var lastDecorFitsSystemWindows: Boolean = false
@@ -7162,7 +7360,7 @@ class MainActivity : ComponentActivity() {
         )
         viewModel.loadSettings()
         lifecycleScope.launch(Dispatchers.Default) {
-            LauncherMenuShortcuts.syncFromOverlayShortcuts(applicationContext)
+            LauncherMenuShortcuts.syncAppShortcuts(applicationContext)
         }
         setContent {
             val dark = isSystemInDarkTheme()
@@ -8254,7 +8452,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         DrawerItem(pageQuickCard, "快捷名片", "id_card"),
         DrawerItem(pageDrawing, "画板", "draw"),
         DrawerItem(pageSoundboard, "音效板", "library_music"),
-        DrawerItem(pageOverlay, "悬浮窗", "open_in_new"),
+        DrawerItem(pageOverlay, "悬浮窗与热键", "open_in_new"),
         DrawerItem(pageVoicePack, "语音包", "record_voice_over"),
         DrawerItem(pageSettings, "设置", "tune")
     )
@@ -8339,6 +8537,9 @@ fun AppScaffold(viewModel: MainViewModel) {
                 if (soundboardRoute != SoundboardRoutes.Main) {
                     soundboardNavController.popBackStack(SoundboardRoutes.Main, inclusive = false)
                 }
+            }
+            OverlayBridge.TARGET_OPEN_VOICE_PACK -> {
+                page = pageVoicePack
             }
             OverlayBridge.TARGET_OPEN_SETTINGS -> {
                 page = pageSettings
@@ -8744,7 +8945,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         } else {
             when (basePage) {
                 pageQuickSubtitle -> "便捷字幕"
-                pageOverlay -> "悬浮窗"
+                pageOverlay -> "悬浮窗与热键"
                 pageQuickCard -> "快捷名片"
                 pageVoicePack -> "语音包"
                 pageDrawing -> "画板"
@@ -8855,17 +9056,14 @@ fun AppScaffold(viewModel: MainViewModel) {
                         basePage == pageSoundboard && soundboardRoute == SoundboardRoutes.Editor
                     val showQuickCardMainActions =
                         basePage == pageQuickCard &&
-                                quickCardRoute == QuickCardRoutes.Main &&
-                                quickCardActions != null
+                                quickCardRoute == QuickCardRoutes.Main
                     val showQuickCardEditorActions =
                         basePage == pageQuickCard &&
                                 quickCardRoute == QuickCardRoutes.Editor &&
-                                quickCardActions != null &&
-                                (quickCardActions.canCopy || quickCardActions.canDelete)
+                                viewModel.quickCardDraft?.isNew == false
                     val showQuickCardSortActions =
                         basePage == pageQuickCard &&
-                                quickCardRoute == QuickCardRoutes.Sort &&
-                                quickCardActions?.canConfirm == true
+                                quickCardRoute == QuickCardRoutes.Sort
                     val showQuickCardWebActions =
                         basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Web
                     val showDrawingActions = basePage == pageDrawing
@@ -8988,13 +9186,13 @@ fun AppScaffold(viewModel: MainViewModel) {
                                     },
                                     enabled = showQuickSubtitleEditorActions
                                 ) {
-                                    MsIcon("file_upload", contentDescription = "导入便捷字幕预设")
+                                    MsIcon("folder_open", contentDescription = "导入便捷字幕预设")
                                 }
                                 IconButton(
                                     onClick = { quickSubtitlePresetExportDialog = true },
                                     enabled = showQuickSubtitleEditorActions && viewModel.quickSubtitleGroups.isNotEmpty()
                                 ) {
-                                    MsIcon("file_download", contentDescription = "导出便捷字幕预设")
+                                    MsIcon("share", contentDescription = "导出便捷字幕预设")
                                 }
                             }
                         }
@@ -9018,13 +9216,13 @@ fun AppScaffold(viewModel: MainViewModel) {
                                     },
                                     enabled = showSoundboardEditorActions
                                 ) {
-                                    MsIcon("file_upload", contentDescription = "导入音效板预设")
+                                    MsIcon("folder_open", contentDescription = "导入音效板预设")
                                 }
                                 IconButton(
                                     onClick = { soundboardPresetExportDialog = true },
                                     enabled = showSoundboardEditorActions && viewModel.soundboardGroups.isNotEmpty()
                                 ) {
-                                    MsIcon("file_download", contentDescription = "导出音效板预设")
+                                    MsIcon("share", contentDescription = "导出音效板预设")
                                 }
                             }
                         }
@@ -9106,7 +9304,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                             ) {
                                 IconButton(
                                     onClick = { quickCardActions?.onConfirm?.invoke() },
-                                    enabled = showQuickCardSortActions
+                                    enabled = showQuickCardSortActions && quickCardActions?.canConfirm == true
                                 ) {
                                     MsIcon("check", contentDescription = "保存排序并返回")
                                 }
@@ -11361,6 +11559,55 @@ private fun SoundboardListItem(
 }
 
 @Composable
+private fun SoundboardLayoutDropdownRow(
+    title: String,
+    selected: SoundboardLayoutMode,
+    options: List<SoundboardLayoutMode>,
+    onSelected: (SoundboardLayoutMode) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(UiTokens.Radius))
+                .clickable { expanded = true }
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(selected.label, modifier = Modifier.weight(1f))
+                MsIcon("keyboard_arrow_down", contentDescription = "切换排列方式")
+            }
+            Md2AnimatedOptionMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                options.forEach { mode ->
+                    M2DropdownMenuItem(
+                        onClick = {
+                            expanded = false
+                            onSelected(mode)
+                        }
+                    ) {
+                        Text(
+                            mode.label,
+                            fontWeight = if (mode == selected) FontWeight.SemiBold else null
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalFoundationApi::class)
 private fun SoundboardEditorScreen(
     viewModel: MainViewModel,
@@ -11374,9 +11621,14 @@ private fun SoundboardEditorScreen(
         mutableIntStateOf(viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0)))
     }
     val selectedGroup = groups.getOrNull(selectedGroupIndex)
-    val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
-    var layoutExpanded by remember { mutableStateOf(false) }
-    val layoutOptions = remember { SoundboardLayoutMode.entries.toList() }
+    val portraitLayout = viewModel.soundboardPortraitLayout
+    val landscapeLayout = viewModel.soundboardLandscapeLayout
+    val portraitLayoutOptions = remember {
+        SoundboardLayoutMode.entries.filter {
+            it != SoundboardLayoutMode.Grid7 && it != SoundboardLayoutMode.Grid8
+        }
+    }
+    val landscapeLayoutOptions = remember { SoundboardLayoutMode.entries.toList() }
     val iconChoices = remember { SoundboardGroupIconChoices }
 
     CenteredPageBox(
@@ -11423,45 +11675,18 @@ private fun SoundboardEditorScreen(
                                 onCheckedChange = { viewModel.setTtsDisabled(it) }
                             )
                         }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("布局样式：", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(UiTokens.Radius))
-                                    .clickable { layoutExpanded = true }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(layoutMode.label, modifier = Modifier.weight(1f))
-                                    MsIcon("keyboard_arrow_down", contentDescription = "切换排列方式")
-                                }
-                                Md2AnimatedOptionMenu(
-                                    expanded = layoutExpanded,
-                                    onDismissRequest = { layoutExpanded = false }
-                                ) {
-                                    layoutOptions.forEach { mode ->
-                                        M2DropdownMenuItem(
-                                            onClick = {
-                                                layoutExpanded = false
-                                                viewModel.updateSoundboardLayout(isLandscape, mode)
-                                            }
-                                        ) {
-                                            Text(
-                                                mode.label,
-                                                fontWeight = if (mode == layoutMode) FontWeight.SemiBold else null
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        SoundboardLayoutDropdownRow(
+                            title = "竖屏布局样式：",
+                            selected = portraitLayout,
+                            options = portraitLayoutOptions,
+                            onSelected = { viewModel.updateSoundboardLayout(landscape = false, layout = it) }
+                        )
+                        SoundboardLayoutDropdownRow(
+                            title = "横屏布局样式：",
+                            selected = landscapeLayout,
+                            options = landscapeLayoutOptions,
+                            onSelected = { viewModel.updateSoundboardLayout(landscape = true, layout = it) }
+                        )
                     }
                 }
             }
@@ -14865,30 +15090,19 @@ fun FloatingOverlayScreen(
     onOpenMainSettings: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val overlayPermissionGranted = remember { mutableStateOf(FloatingOverlayService.canDrawOverlays(context)) }
+    val accessibilityPermissionGranted =
+        remember { mutableStateOf(VolumeHotkeyAccessibilityService.isEnabled(context)) }
     var pendingOverlayPermissionEnable by remember { mutableStateOf(false) }
-    var inputTypeExpanded by remember { mutableStateOf(false) }
-    var outputTypeExpanded by remember { mutableStateOf(false) }
-    val inputTypeOptions = remember {
-        listOf(
-            AudioRoutePreference.INPUT_AUTO to "自动",
-            AudioRoutePreference.INPUT_BUILTIN_MIC to "内置麦克风/话筒",
-            AudioRoutePreference.INPUT_USB to "USB 麦克风",
-            AudioRoutePreference.INPUT_BLUETOOTH to "蓝牙麦克风",
-            AudioRoutePreference.INPUT_WIRED to "有线麦克风"
-        )
-    }
-    val outputTypeOptions = remember {
-        listOf(
-            AudioRoutePreference.OUTPUT_AUTO to "自动",
-            AudioRoutePreference.OUTPUT_SPEAKER to "扬声器",
-            AudioRoutePreference.OUTPUT_EARPIECE to "听筒",
-            AudioRoutePreference.OUTPUT_BLUETOOTH to "蓝牙音频",
-            AudioRoutePreference.OUTPUT_USB to "USB 音频",
-            AudioRoutePreference.OUTPUT_WIRED to "有线耳机/线路"
-        )
-    }
+    var hotkeyActionPickerSequence by remember { mutableStateOf<VolumeHotkeySequence?>(null) }
+    var externalShortcutPickerSequence by remember { mutableStateOf<VolumeHotkeySequence?>(null) }
+    var externalShortcutSearchQuery by remember { mutableStateOf("") }
+    var externalShortcutChoices by remember { mutableStateOf<List<ExternalShortcutChoice>>(emptyList()) }
+    var externalShortcutLoading by remember { mutableStateOf(false) }
+    var accessibilityExplainDialogOpen by remember { mutableStateOf(false) }
     val overlayPermissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             val granted = FloatingOverlayService.canDrawOverlays(context)
@@ -14903,16 +15117,89 @@ fun FloatingOverlayScreen(
             }
             pendingOverlayPermissionEnable = false
         }
+    val accessibilitySettingsLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            val enabled = VolumeHotkeyAccessibilityService.isEnabled(context)
+            accessibilityPermissionGranted.value = enabled
+            if (enabled) {
+                VolumeHotkeyAccessibilityGuideService.stop(context)
+            }
+            scope.launch {
+                VolumeHotkeyService.syncWithSettings(context)
+            }
+        }
 
     LaunchedEffect(Unit) {
         overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
+        accessibilityPermissionGranted.value = VolumeHotkeyAccessibilityService.isEnabled(context)
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START || event == Lifecycle.Event.ON_RESUME) {
+                overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
+                accessibilityPermissionGranted.value = VolumeHotkeyAccessibilityService.isEnabled(context)
+                if (accessibilityPermissionGranted.value) {
+                    VolumeHotkeyAccessibilityGuideService.stop(context)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    LaunchedEffect(externalShortcutPickerSequence) {
+        if (externalShortcutPickerSequence == null) return@LaunchedEffect
+        externalShortcutLoading = true
+        externalShortcutSearchQuery = ""
+        externalShortcutChoices = withContext(Dispatchers.IO) {
+            ExternalShortcutCatalog.loadAllShortcutChoices(context)
+        }
+        externalShortcutLoading = false
+    }
+
+    val filteredExternalShortcutChoices =
+        remember(externalShortcutChoices, externalShortcutSearchQuery) {
+            val query = externalShortcutSearchQuery.trim()
+            if (query.isBlank()) {
+                externalShortcutChoices
+            } else {
+                externalShortcutChoices.filter { choice ->
+                    val haystack = "${choice.appLabel} ${choice.shortcutTitle} ${choice.packageName}"
+                    haystack.contains(query, ignoreCase = true)
+                }
+            }
+        }
+
+    val hotkeyMonitorModeLabel =
+        when {
+            state.volumeHotkeyAccessibilityEnabled && accessibilityPermissionGranted.value ->
+                "无障碍按键监听"
+
+            state.volumeHotkeyAccessibilityEnabled ->
+                "等待无障碍授权，当前暂用音量变化监听"
+
+            else -> "系统音量变化监听"
+        }
+    fun openAccessibilitySettingsWithGuide() {
+        viewModel.setVolumeHotkeyAccessibilityEnabled(true)
+        if (overlayPermissionGranted.value) {
+            VolumeHotkeyAccessibilityGuideService.start(context)
+        } else {
+            toast(context, "未授予悬浮窗权限，引导悬浮窗不会显示")
+        }
+        accessibilitySettingsLauncher.launch(
+            VolumeHotkeyAccessibilityService.buildSettingsIntent()
+        )
     }
 
     CenteredPageColumn(
         maxWidth = UiTokens.WideContentMaxWidth,
         scroll = scroll
     ) {
-            Spacer(Modifier.height(UiTokens.PageTopBlank))
+        Spacer(Modifier.height(UiTokens.PageTopBlank))
 
         Md2StaggeredFloatIn(index = 0) {
             Md2SettingsCard(title = "悬浮窗状态") {
@@ -14976,7 +15263,7 @@ fun FloatingOverlayScreen(
                     }
                 }
                 Text(
-                    "悬浮窗可吸附到屏幕边缘，并可在软件外直接触发快捷字幕输入。",
+                    "悬浮窗可吸附到屏幕边缘，并可在软件外直接打开快捷字幕、快捷名片、画板和音效板。",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
@@ -14988,106 +15275,432 @@ fun FloatingOverlayScreen(
                         checked = state.floatingOverlayAutoDock,
                         onCheckedChange = { viewModel.setFloatingOverlayAutoDock(it) }
                     )
-                    Text("长时间不操作时自动贴边")
+                    Text("长时间不操作自动贴边")
                 }
                 Text(
                     "开启后，悬浮 FAB 在 3 秒无操作时会自动吸附到屏幕边缘，仅露出半边并降低透明度。",
                     style = MaterialTheme.typography.bodySmall
                 )
+                Spacer(Modifier.height(8.dp))
+                Md2OutlinedButton(onClick = onOpenMainSettings) {
+                    Text("前往主设置页")
+                }
             }
         }
 
         Md2StaggeredFloatIn(index = 1) {
-            Md2SettingsCard(title = "交互模式") {
-                Text(
-                    "以下交互设置与主设置页完全同步，这里仅显示当前状态，不再提供第二套独立开关。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "按住说话模式：${if (state.pushToTalkMode) "已开启" else "未开启"}",
-                    style = MaterialTheme.typography.bodySmall
+            Md2SettingsCard(title = "启动器快捷方式补全") {
+                Md2SettingSwitchRow(
+                    title = "使用内嵌列表补全第三方快捷方式",
+                    checked = state.floatingOverlayHardcodedShortcutSupplement,
+                    onCheckedChange = { viewModel.setFloatingOverlayHardcodedShortcutSupplement(it) },
+                    supportingText = "默认关闭。开启后，悬浮窗启动器里第三方应用的长按菜单会用内置国内常用应用列表补齐缺失项；微信“扫一扫”始终保留。"
                 )
                 Text(
-                    "按下输入文本确认：${
-                        if (state.pushToTalkMode && state.pushToTalkConfirmInputMode) "已开启"
-                        else if (state.pushToTalkMode) "未开启"
-                        else "按住说话未开启"
-                    }",
+                    "运行时能正常查询到的系统快捷方式不受影响；该开关只控制写死列表的额外增补。",
                     style = MaterialTheme.typography.bodySmall
                 )
-                Spacer(Modifier.height(8.dp))
-                Md2OutlinedButton(onClick = onOpenMainSettings) {
-                    Text("前往主设置修改")
-                }
             }
         }
 
         Md2StaggeredFloatIn(index = 2) {
-            Md2SettingsCard(title = "音频与设备") {
-                Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
-                Slider(
-                    value = state.playbackGainPercent.toFloat(),
-                    onValueChange = { viewModel.setPlaybackGainPercent(it.toInt()) },
-                    valueRange = 0f..1000f
+            Md2SettingsCard(title = "音量热键") {
+                Text(
+                    "序列监听由独立服务处理，不挂在现有悬浮窗服务上。开启无障碍稳定监听后，会优先直接读取音量键事件；未授权时会自动回退到系统音量变化判定。",
+                    style = MaterialTheme.typography.bodySmall
                 )
-                Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
-
-                Text("首选输入设备类型", fontWeight = FontWeight.Bold)
-                Box {
-                    val label = inputTypeOptions.firstOrNull { it.first == state.preferredInputType }?.second
-                        ?: inputTypeOptions.first().second
-                    Md2DropdownButton(
-                        label = label,
-                        onClick = { inputTypeExpanded = true },
-                        expanded = inputTypeExpanded
-                    )
-                    Md2AnimatedOptionMenu(
-                        expanded = inputTypeExpanded,
-                        onDismissRequest = { inputTypeExpanded = false }
-                    ) {
-                        inputTypeOptions.forEach { (value, label) ->
-                            M2DropdownMenuItem(
-                                onClick = {
-                                    inputTypeExpanded = false
-                                    viewModel.setPreferredInputType(value)
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.volumeHotkeyAccessibilityEnabled,
+                        onCheckedChange = { enabled ->
+                            if (!enabled) {
+                                viewModel.setVolumeHotkeyAccessibilityEnabled(false)
+                                VolumeHotkeyAccessibilityGuideService.stop(context)
+                                scope.launch {
+                                    VolumeHotkeyService.syncWithSettings(context)
                                 }
-                            ) { Text(label) }
+                            } else if (accessibilityPermissionGranted.value) {
+                                viewModel.setVolumeHotkeyAccessibilityEnabled(true)
+                                scope.launch {
+                                    VolumeHotkeyService.syncWithSettings(context)
+                                }
+                            } else {
+                                accessibilityExplainDialogOpen = true
+                            }
+                        }
+                    )
+                    Text("优先使用无障碍稳定监听")
+                }
+                Text(
+                    "权限状态：${if (accessibilityPermissionGranted.value) "已开启" else "未开启"}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "当前监听方式：$hotkeyMonitorModeLabel",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Md2OutlinedButton(
+                        onClick = {
+                            if (
+                                state.volumeHotkeyAccessibilityEnabled &&
+                                !accessibilityPermissionGranted.value
+                            ) {
+                                accessibilityExplainDialogOpen = true
+                            } else {
+                                accessibilitySettingsLauncher.launch(
+                                    VolumeHotkeyAccessibilityService.buildSettingsIntent()
+                                )
+                            }
+                        }
+                    ) {
+                        Text("打开无障碍设置")
+                    }
+                    if (!accessibilityPermissionGranted.value && overlayPermissionGranted.value) {
+                        Md2TextButton(
+                            onClick = { VolumeHotkeyAccessibilityGuideService.stop(context) }
+                        ) {
+                            Text("关闭引导悬浮窗")
                         }
                     }
                 }
-                Text("当前输入设备：${state.inputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
-
-                Text("首选输出设备类型", fontWeight = FontWeight.Bold)
-                Box {
-                    val label = outputTypeOptions.firstOrNull { it.first == state.preferredOutputType }?.second
-                        ?: outputTypeOptions.first().second
-                    Md2DropdownButton(
-                        label = label,
-                        onClick = { outputTypeExpanded = true },
-                        expanded = outputTypeExpanded
+                Divider(
+                    modifier = Modifier.padding(vertical = 10.dp),
+                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.12f)
+                )
+                Text(
+                    "序列判定时间：${"%.1f".format(Locale.US, state.volumeHotkeyWindowMs / 1000f)}s",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Slider(
+                    value = state.volumeHotkeyWindowMs.toFloat(),
+                    onValueChange = { viewModel.setVolumeHotkeyWindowMs(it.roundToInt()) },
+                    valueRange = UserPrefs.VOLUME_HOTKEY_MIN_WINDOW_MS.toFloat()..
+                        UserPrefs.VOLUME_HOTKEY_MAX_WINDOW_MS.toFloat(),
+                    steps = ((UserPrefs.VOLUME_HOTKEY_MAX_WINDOW_MS - UserPrefs.VOLUME_HOTKEY_MIN_WINDOW_MS) / 100) - 1,
+                    colors = SliderDefaults.colors(
+                        activeTickColor = Color.Transparent,
+                        inactiveTickColor = Color.Transparent
                     )
-                    Md2AnimatedOptionMenu(
-                        expanded = outputTypeExpanded,
-                        onDismissRequest = { outputTypeExpanded = false }
-                    ) {
-                        outputTypeOptions.forEach { (value, label) ->
-                            M2DropdownMenuItem(
-                                onClick = {
-                                    outputTypeExpanded = false
-                                    viewModel.setPreferredOutputType(value)
-                                }
-                            ) { Text(label) }
-                        }
-                    }
-                }
-                Text("当前输出设备：${state.outputDeviceLabel}", style = MaterialTheme.typography.bodySmall)
+                )
+                Text(
+                    "默认 1.5 秒。时间越长越容易触发，但误触概率也会更高。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
+                )
+                Spacer(Modifier.height(8.dp))
+                VolumeHotkeySettingRow(
+                    title = "音量加后减",
+                    enabled = state.volumeHotkeyUpDownEnabled,
+                    actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyUpDownAction),
+                    supportingText = "先按音量加，再在设定时间内按音量减。",
+                    onEnabledChange = {
+                        viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.UpDown, it)
+                    },
+                    onPickAction = { hotkeyActionPickerSequence = VolumeHotkeySequence.UpDown }
+                )
+                Divider(
+                    modifier = Modifier.padding(vertical = 10.dp),
+                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.12f)
+                )
+                VolumeHotkeySettingRow(
+                    title = "音量减后加",
+                    enabled = state.volumeHotkeyDownUpEnabled,
+                    actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyDownUpAction),
+                    supportingText = "先按音量减，再在设定时间内按音量加。",
+                    onEnabledChange = {
+                        viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.DownUp, it)
+                    },
+                    onPickAction = { hotkeyActionPickerSequence = VolumeHotkeySequence.DownUp }
+                )
             }
         }
 
-            Spacer(Modifier.height(UiTokens.PageBottomBlank))
+        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+
+    hotkeyActionPickerSequence?.let { sequence ->
+        AlertDialog(
+            onDismissRequest = { hotkeyActionPickerSequence = null },
+            title = {
+                Text(
+                    if (sequence == VolumeHotkeySequence.UpDown) "音量加后减"
+                    else "音量减后加"
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("选择这个序列触发后的功能。", style = MaterialTheme.typography.bodySmall)
+                    Text("直接打开", fontWeight = FontWeight.Bold)
+                    VolumeHotkeyActions.directOptions.forEach { action ->
+                        TextButton(
+                            onClick = {
+                                viewModel.setVolumeHotkeyAction(sequence, action)
+                                hotkeyActionPickerSequence = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                VolumeHotkeyActions.labelOf(action),
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Start
+                            )
+                        }
+                    }
+                    Divider(color = MaterialTheme.colors.onSurface.copy(alpha = 0.12f))
+                    Text("悬浮窗", fontWeight = FontWeight.Bold)
+                    VolumeHotkeyActions.overlayOptions.forEach { action ->
+                        TextButton(
+                            onClick = {
+                                viewModel.setVolumeHotkeyAction(sequence, action)
+                                hotkeyActionPickerSequence = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                VolumeHotkeyActions.labelOf(action),
+                                modifier = Modifier.fillMaxWidth(),
+                                textAlign = TextAlign.Start
+                            )
+                        }
+                    }
+                    Divider(color = MaterialTheme.colors.onSurface.copy(alpha = 0.12f))
+                    TextButton(
+                        onClick = {
+                            externalShortcutSearchQuery = ""
+                            externalShortcutPickerSequence = sequence
+                            hotkeyActionPickerSequence = null
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "第三方快捷方式",
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Start
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { hotkeyActionPickerSequence = null }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+
+    if (accessibilityExplainDialogOpen) {
+        AlertDialog(
+            onDismissRequest = { accessibilityExplainDialogOpen = false },
+            title = { Text("启用无障碍稳定监听") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("KIGTTS 会通过无障碍服务更稳定地监听音量键上下序列，用来触发你配置的音量热键功能。")
+                    Text("该服务还会在你主动打开 QQ 扫一扫时读取 QQ 界面节点并执行点击手势，用于直达 QQ 扫码页。")
+                    Text("除上述热键和 QQ 扫一扫直达外，不会读取其它应用内容，也不会替你点击其它流程。")
+                    Text("确认后会进入系统无障碍页面，请找到“KIGTTS 音量热键辅助”并开启。若已授予悬浮窗权限，会同时显示一个可拖动的步骤提示窗。")
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        accessibilityExplainDialogOpen = false
+                        openAccessibilitySettingsWithGuide()
+                    }
+                ) {
+                    Text("前往无障碍设置")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { accessibilityExplainDialogOpen = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    externalShortcutPickerSequence?.let { sequence ->
+        AlertDialog(
+            onDismissRequest = {
+                externalShortcutPickerSequence = null
+                externalShortcutLoading = false
+            },
+            title = { Text("第三方快捷方式") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "这里读取当前已加入悬浮窗启动器的应用快捷方式；内嵌列表补全关闭时仅保留运行时可查询项和微信“扫一扫”。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = externalShortcutSearchQuery,
+                        onValueChange = { externalShortcutSearchQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        label = { Text("搜索应用或快捷方式") }
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 220.dp, max = 320.dp)
+                    ) {
+                        when {
+                            externalShortcutLoading -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                            filteredExternalShortcutChoices.isEmpty() -> {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("没有可用快捷方式", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            else -> {
+                                LazyColumn(
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    items(filteredExternalShortcutChoices) { choice ->
+                                        TextButton(
+                                            onClick = {
+                                                viewModel.setVolumeHotkeyAction(
+                                                    sequence,
+                                                    VolumeHotkeyActions.external(choice)
+                                                )
+                                                externalShortcutPickerSequence = null
+                                                externalShortcutLoading = false
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                ExternalShortcutChoiceIcon(choice)
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(choice.shortcutTitle)
+                                                    Text(
+                                                        choice.appLabel,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        externalShortcutPickerSequence = null
+                        externalShortcutLoading = false
+                    }
+                ) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ExternalShortcutChoiceIcon(
+    choice: ExternalShortcutChoice,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    AndroidView(
+        modifier = modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colors.onSurface.copy(alpha = 0.08f)),
+        factory = { viewContext ->
+            android.widget.ImageView(viewContext).apply {
+                scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+                setPadding(5, 5, 5, 5)
+            }
+        },
+        update = { imageView ->
+            val icon =
+                runCatching {
+                    val pm = context.packageManager
+                    if (choice.className.isNotBlank()) {
+                        pm.getActivityIcon(ComponentName(choice.packageName, choice.className))
+                    } else {
+                        pm.getApplicationIcon(choice.packageName)
+                    }
+                }.recoverCatching {
+                    context.packageManager.getApplicationIcon(choice.packageName)
+                }.getOrElse {
+                    ContextCompat.getDrawable(context, R.mipmap.ic_launcher_round)
+                }
+            imageView.setImageDrawable(icon)
+        }
+    )
+}
+
+@Composable
+private fun VolumeHotkeySettingRow(
+    title: String,
+    enabled: Boolean,
+    actionLabel: String,
+    supportingText: String,
+    onEnabledChange: (Boolean) -> Unit,
+    onPickAction: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Md2Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(title, fontWeight = FontWeight.Bold)
+                Text(
+                    supportingText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.68f)
+                )
+            }
+        }
+        Text(
+            "当前功能：$actionLabel",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Md2OutlinedButton(
+            onClick = onPickAction,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("配置触发功能")
         }
     }
+}
 
 @Composable
 @OptIn(ExperimentalFoundationApi::class)
@@ -16551,12 +17164,13 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                             ) { Text(label) }
                         }
                     }
+                    val currentVadMode = VadMode.fromFlags(state.classicVadEnabled, state.sileroVadEnabled)
                     Md2SettingDropdownRow(
                         title = "语音活动检测",
-                        value = VadMode.labelOf(VadMode.fromFlags(state.classicVadEnabled, state.sileroVadEnabled)),
+                        value = VadMode.labelOf(currentVadMode),
                         expanded = vadModeExpanded,
                         onExpandedChange = { vadModeExpanded = it },
-                        supportingText = when (VadMode.fromFlags(state.classicVadEnabled, state.sileroVadEnabled)) {
+                        supportingText = when (currentVadMode) {
                             VadMode.SILERO -> "仅使用 SileroVAD 做语音活动检测，对轻声和彩噪更稳。"
                             VadMode.HYBRID -> "同时使用阈值式VAD和 SileroVAD，兼顾静音门限与模型断句。"
                             else -> "仅使用现有音量阈值、静音时长和 voiced ratio 断句。"
@@ -16584,7 +17198,11 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         onValueChange = { viewModel.setSileroVadThreshold(it) },
                         valueRange = UserPrefs.SILERO_VAD_MIN_THRESHOLD..UserPrefs.SILERO_VAD_MAX_THRESHOLD,
                         steps = 17,
-                        enabled = sileroVadControlsEnabled
+                        enabled = sileroVadControlsEnabled,
+                        colors = SliderDefaults.colors(
+                            activeTickColor = Color.Transparent,
+                            inactiveTickColor = Color.Transparent
+                        )
                     )
                     Text(
                         "越低越容易触发；轻声吞首字可先试 0.35-0.45。",
@@ -16606,7 +17224,11 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         valueRange = UserPrefs.SILERO_VAD_MIN_PRE_ROLL_MS.toFloat()..
                             UserPrefs.SILERO_VAD_MAX_PRE_ROLL_MS.toFloat(),
                         steps = 15,
-                        enabled = sileroVadControlsEnabled
+                        enabled = sileroVadControlsEnabled,
+                        colors = SliderDefaults.colors(
+                            activeTickColor = Color.Transparent,
+                            inactiveTickColor = Color.Transparent
+                        )
                     )
                     Text(
                         "触发前补入一小段录音，改善模型晚触发导致的首字被吞；过大可能带入更多环境音。",
@@ -16757,6 +17379,12 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         "当前朗读后端：${if (isSystemTtsSelected) SYSTEM_TTS_DEFAULT_LABEL else "语音包"}",
                         style = MaterialTheme.typography.bodySmall
                     )
+                    Md2SettingSwitchRow(
+                        title = "禁用TTS",
+                        checked = state.ttsDisabled,
+                        onCheckedChange = { viewModel.setTtsDisabled(it) },
+                        supportingText = "关闭后不会发声，但仍会上屏并可继续触发音效板。"
+                    )
                     Text("播放音量倍率：${state.playbackGainPercent}%", style = MaterialTheme.typography.bodySmall)
                     Slider(
                         value = state.playbackGainPercent.toFloat(),
@@ -16816,13 +17444,13 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
             Md2StaggeredFloatIn(index = 2) {
                 Md2SettingsCard(title = "回声与降噪") {
                     Md2SettingSwitchRow(
-                        title = "回声抑制(VOICE_COMMUNICATION)",
+                        title = "回声抑制",
                         checked = state.echoSuppression,
                         onCheckedChange = { viewModel.setEchoSuppression(it) },
                         supportingText = "开启后使用通话录音源，可能有回声抑制/降噪效果"
                     )
                     Md2SettingSwitchRow(
-                        title = "通话模式降噪(MODE_IN_COMMUNICATION)",
+                        title = "通话模式降噪",
                         checked = state.communicationMode,
                         onCheckedChange = { viewModel.setCommunicationMode(it) },
                         supportingText = "开启后切换系统通话模式并统一播放属性"
@@ -17024,6 +17652,20 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         checked = state.useBuiltinGallery,
                         onCheckedChange = { viewModel.setUseBuiltinGallery(it) },
                         supportingText = "关闭时使用系统图库选择器。"
+                    )
+                }
+            }
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "启动器快捷方式补全") {
+                    Md2SettingSwitchRow(
+                        title = "使用内嵌列表补全第三方快捷方式",
+                        checked = state.floatingOverlayHardcodedShortcutSupplement,
+                        onCheckedChange = { viewModel.setFloatingOverlayHardcodedShortcutSupplement(it) },
+                        supportingText = "默认关闭。开启后，悬浮窗启动器里第三方应用的长按菜单会用内置国内常用应用列表补齐缺失项；微信“扫一扫”始终保留。"
+                    )
+                    Text(
+                        "运行时能正常查询到的系统快捷方式不受影响；该开关只控制写死列表的额外增补。",
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }

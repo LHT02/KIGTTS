@@ -46,13 +46,6 @@
             android:theme="@style/Theme.KGTTS.Cropper"
             tools:replace="android:theme" />
         <activity
-            android:name=".ui.LauncherShortcutProxyActivity"
-            android:excludeFromRecents="true"
-            android:exported="true"
-            android:launchMode="singleTop"
-            android:noHistory="true"
-            android:theme="@android:style/Theme.NoDisplay" />
-        <activity
             android:name=".ui.MainActivity"
             android:exported="true">
             <intent-filter>
@@ -116,6 +109,29 @@
             android:foregroundServiceType="microphone|mediaPlayback" />
         <service
             android:name=".service.RealtimeHostService"
+            android:exported="false" />
+        <service
+            android:name=".service.VolumeHotkeyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="volume_hotkey_listener" />
+        </service>
+        <service
+            android:name=".service.VolumeHotkeyAccessibilityService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="false"
+            android:label="@string/accessibility_volume_hotkey_service_label">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/volume_hotkey_accessibility_service" />
+        </service>
+        <service
+            android:name=".service.VolumeHotkeyAccessibilityGuideService"
             android:exported="false" />
         <service
             android:name=".overlay.FloatingOverlayService"
