@@ -218,6 +218,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
 
     fun setPlaybackGainPercent(percent: Int) {
         controller?.setPlaybackGainPercent(percent)
+        SoundboardManager.setPlaybackGainPercent(percent)
     }
 
     fun setPiperNoiseScale(value: Float) {
@@ -524,6 +525,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             UserPrefs.observeSettings(this@RealtimeHostService).collectLatest { next ->
                 val previous = currentSettings
                 currentSettings = next
+                SoundboardManager.setPlaybackGainPercent(next.playbackGainPercent)
                 val resetBackend = ensureSpeakerBackend(next)
                 speakerProfiles = if (resetBackend) {
                     mutableListOf()
@@ -778,6 +780,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setSuppressDelaySec(settings.muteWhilePlayingDelaySec)
         controller?.setMinVolumePercent(settings.minVolumePercent)
         controller?.setPlaybackGainPercent(settings.playbackGainPercent)
+        SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
         controller?.setPiperNoiseScale(settings.piperNoiseScale)
         controller?.setPiperLengthScale(settings.piperLengthScale)
         controller?.setPiperNoiseW(settings.piperNoiseW)

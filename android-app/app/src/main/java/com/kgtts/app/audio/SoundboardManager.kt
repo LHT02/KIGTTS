@@ -3,6 +3,7 @@ package com.lhtstudio.kigtts.app.audio
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.media.audiofx.LoudnessEnhancer
 import com.lhtstudio.kigtts.app.data.SoundboardConfig
 import com.lhtstudio.kigtts.app.data.SoundboardItem
 import com.lhtstudio.kigtts.app.data.UserPrefs
@@ -21,6 +22,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import kotlin.random.Random
+import kotlin.math.log10
+import kotlin.math.roundToInt
 
 data class SoundboardPlaybackState(
     val playing: Boolean = false,
@@ -37,10 +40,13 @@ object SoundboardManager {
     private var cachedConfig: SoundboardConfig = defaultSoundboardConfig()
     @Volatile
     private var hasLoadedConfig = false
+    @Volatile
+    private var playbackGainPercent = 100
 
     private data class ActivePlayback(
         val itemId: Long,
         val player: MediaPlayer,
+        val enhancer: LoudnessEnhancer?,
         val pollJob: Job,
         val stopJob: Job?
     )
@@ -58,6 +64,21 @@ object SoundboardManager {
         hasLoadedConfig = true
         scope.launch {
             cleanupStalePlaybacks(config)
+        }
+    }
+
+    fun setPlaybackGainPercent(percent: Int) {
+        playbackGainPercent = percent.coerceIn(0, 1000)
+        scope.launch {
+            stateMutex.withLock {
+                players.values.forEach { active ->
+                    applyPlaybackGain(
+                        player = active.player,
+                        enhancer = active.enhancer,
+                        percent = playbackGainPercent
+                    )
+                }
+            }
         }
     }
 
@@ -92,6 +113,8 @@ object SoundboardManager {
             mediaPlayer.setAudioAttributes(audioAttrs)
             mediaPlayer.setDataSource(targetFile.absolutePath)
             mediaPlayer.prepare()
+            val enhancer = createLoudnessEnhancer(mediaPlayer)
+            applyPlaybackGain(mediaPlayer, enhancer, playbackGainPercent)
             val duration = mediaPlayer.duration.coerceAtLeast(0)
             val trimStart = item.trimStartMs.coerceIn(0L, duration.toLong()).toInt()
             val trimEnd = when {
@@ -137,6 +160,7 @@ object SoundboardManager {
             players[item.id] = ActivePlayback(
                 itemId = item.id,
                 player = mediaPlayer,
+                enhancer = enhancer,
                 pollJob = pollJob,
                 stopJob = stopJob
             )
@@ -208,11 +232,48 @@ object SoundboardManager {
         existing.pollJob.cancel()
         existing.stopJob?.cancel()
         runCatching {
+            existing.enhancer?.enabled = false
+        }
+        runCatching {
+            existing.enhancer?.release()
+        }
+        runCatching {
             existing.player.setOnCompletionListener(null)
             existing.player.setOnErrorListener(null)
             if (existing.player.isPlaying) existing.player.stop()
         }
         runCatching { existing.player.release() }
         setPlaybackStateLocked(itemId, SoundboardPlaybackState(playing = false, progress = 0f))
+    }
+
+    private fun createLoudnessEnhancer(player: MediaPlayer): LoudnessEnhancer? {
+        return runCatching {
+            LoudnessEnhancer(player.audioSessionId).apply {
+                enabled = false
+            }
+        }.getOrNull()
+    }
+
+    private fun applyPlaybackGain(
+        player: MediaPlayer,
+        enhancer: LoudnessEnhancer?,
+        percent: Int
+    ) {
+        val linearGain = (percent.coerceIn(0, 1000) / 100f).coerceAtLeast(0f)
+        val directVolume = linearGain.coerceIn(0f, 1f)
+        runCatching {
+            player.setVolume(directVolume, directVolume)
+        }
+        if (enhancer == null) return
+        val extraGain = linearGain.coerceAtLeast(1f)
+        val targetGainMb = if (linearGain <= 1f) {
+            0
+        } else {
+            (2000f * log10(extraGain)).roundToInt().coerceAtLeast(0)
+        }
+        runCatching {
+            enhancer.setTargetGain(targetGainMb)
+            enhancer.enabled = linearGain > 1f
+        }
     }
 }

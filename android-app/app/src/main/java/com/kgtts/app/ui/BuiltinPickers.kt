@@ -2,11 +2,13 @@ package com.lhtstudio.kigtts.app.ui
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -46,6 +48,7 @@ import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Card
 import androidx.compose.material.Checkbox
+import androidx.compose.material.IconButton
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.OutlinedTextField
 import androidx.compose.material.Button
@@ -70,16 +73,25 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
+import com.lhtstudio.kigtts.app.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -98,6 +110,93 @@ data class BuiltinGalleryItem(
     val bucketName: String,
     val dateMs: Long
 )
+
+private data class BuiltinFileRoot(
+    val dir: File,
+    val label: String,
+    val iconName: String
+)
+
+private data class BuiltinSafRoot(
+    val treeUri: Uri,
+    val label: String,
+    val iconName: String,
+    val document: DocumentFile
+)
+
+private sealed interface BuiltinBrowserLocation {
+    data object Root : BuiltinBrowserLocation
+
+    data class FileDirectory(
+        val root: BuiltinFileRoot,
+        val dir: File
+    ) : BuiltinBrowserLocation
+
+    data class SafDirectory(
+        val root: BuiltinSafRoot,
+        val document: DocumentFile,
+        val displayName: String
+    ) : BuiltinBrowserLocation
+}
+
+private sealed interface BuiltinBrowserEntry {
+    val id: String
+    val label: String
+    val iconName: String
+    val isDirectory: Boolean
+
+    data class Directory(
+        override val id: String,
+        override val label: String,
+        override val iconName: String,
+        val location: BuiltinBrowserLocation
+    ) : BuiltinBrowserEntry {
+        override val isDirectory: Boolean = true
+    }
+
+    data class FileItem(
+        override val id: String,
+        override val label: String,
+        override val iconName: String,
+        val uri: Uri
+    ) : BuiltinBrowserEntry {
+        override val isDirectory: Boolean = false
+    }
+}
+
+private val BuiltinMaterialSymbolsSharp = FontFamily(
+    Font(
+        resId = R.font.material_symbols_sharp,
+        weight = FontWeight.W500
+    )
+)
+
+@Composable
+private fun BuiltinMsIcon(
+    name: String,
+    contentDescription: String? = null,
+    modifier: Modifier = Modifier,
+    tint: Color? = null
+) {
+    val a11yModifier = if (contentDescription != null) {
+        modifier.semantics { this.contentDescription = contentDescription }
+    } else {
+        modifier
+    }
+    Text(
+        text = name,
+        modifier = a11yModifier,
+        color = tint ?: MaterialTheme.colors.onSurface,
+        style = TextStyle(
+            fontFamily = BuiltinMaterialSymbolsSharp,
+            fontWeight = FontWeight.W500,
+            fontSize = 22.sp,
+            lineHeight = 22.sp,
+            letterSpacing = 0.sp,
+            fontFeatureSettings = "'liga' 1"
+        )
+    )
+}
 
 @Composable
 private fun rememberBuiltinTopEndPopupPositionProvider(verticalMargin: androidx.compose.ui.unit.Dp = 4.dp): PopupPositionProvider {
@@ -192,21 +291,40 @@ fun BuiltinFilePickerDialog(
     multiSelect: Boolean = false,
     onDismiss: () -> Unit,
     onPicked: (Uri) -> Unit,
-    onPickedMultiple: (List<Uri>) -> Unit = {}
+    onPickedMultiple: (List<Uri>) -> Unit = {},
+    onOpenSystemPicker: (() -> Unit)? = null,
+    onOpenSystemPickerMultiple: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var search by remember { mutableStateOf("") }
     var sortOption by remember { mutableStateOf(BuiltinFileSortOption.TimeDesc) }
     var sortExpanded by remember { mutableStateOf(false) }
 
-    val roots = remember { builtinFileRoots(context) }
-    var currentDir by remember(roots) { mutableStateOf(roots.firstOrNull()) }
-    var selectedPaths by remember { mutableStateOf(setOf<String>()) }
+    val fileRoots = remember { builtinFileRoots(context) }
+    var selectedUris by remember { mutableStateOf<Map<String, Uri>>(emptyMap()) }
+    var safRootsRevision by remember { mutableStateOf(0) }
+    var navigationStack by remember { mutableStateOf(listOf<BuiltinBrowserLocation>(BuiltinBrowserLocation.Root)) }
+    val currentLocation = navigationStack.lastOrNull() ?: BuiltinBrowserLocation.Root
 
     val normalizedExt = remember(allowedExtensions) {
         allowedExtensions.map { it.lowercase(Locale.US).trim('.') }.filter { it.isNotBlank() }.toSet()
     }
     val readPermission = remember(normalizedExt) { builtinReadPermissionForExtensions(normalizedExt) }
+    val usesSharedNonMediaFallback = remember(normalizedExt) {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            normalizedExt.any { it !in BuiltinAudioFileExtensions && it !in BuiltinImageFileExtensions }
+    }
+    val systemPickerAction = remember(multiSelect, onOpenSystemPicker, onOpenSystemPickerMultiple) {
+        if (multiSelect) onOpenSystemPickerMultiple ?: onOpenSystemPicker else onOpenSystemPicker
+    }
+    val readPermissionMessage = remember(readPermission) {
+        when (readPermission) {
+            Manifest.permission.READ_MEDIA_AUDIO -> "需要音频读取权限，否则共享目录中的音频文件可能无法显示。"
+            Manifest.permission.READ_MEDIA_IMAGES -> "需要图片读取权限，否则共享目录中的图片文件可能无法显示。"
+            Manifest.permission.READ_EXTERNAL_STORAGE -> "需要存储读取权限，否则共享目录中的文件可能无法显示。"
+            else -> null
+        }
+    }
     var hasReadPermission by remember(readPermission) {
         mutableStateOf(
             readPermission == null ||
@@ -216,18 +334,43 @@ fun BuiltinFilePickerDialog(
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasReadPermission = granted
     }
+    val treePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(uri, flags)
+        }
+        safRootsRevision += 1
+        createBuiltinSafRoot(context, uri)?.let { root ->
+            navigationStack = listOf(
+                BuiltinBrowserLocation.Root,
+                BuiltinBrowserLocation.SafDirectory(
+                    root = root,
+                    document = root.document,
+                    displayName = root.label
+                )
+            )
+        }
+    }
 
-    val fileItems by produceState<List<File>>(
+    val safRoots by produceState<List<BuiltinSafRoot>>(initialValue = emptyList(), safRootsRevision) {
+        value = withContext(Dispatchers.IO) { loadBuiltinSafRoots(context) }
+    }
+
+    val fileItems by produceState<List<BuiltinBrowserEntry>>(
         initialValue = emptyList(),
-        currentDir,
+        currentLocation,
         search,
         sortOption,
         normalizedExt,
-        hasReadPermission
+        hasReadPermission,
+        safRoots
     ) {
         value = withContext(Dispatchers.IO) {
-            loadBuiltinFiles(
-                directory = currentDir,
+            loadBuiltinEntries(
+                location = currentLocation,
+                fileRoots = fileRoots,
+                safRoots = safRoots,
                 query = search,
                 sortOption = sortOption,
                 allowedExtensions = normalizedExt
@@ -246,43 +389,69 @@ fun BuiltinFilePickerDialog(
             Text(title, style = MaterialTheme.typography.h6)
 
             if (readPermission != null && !hasReadPermission) {
-                Text("需要音频文件读取权限，否则系统媒体目录可能无法显示。", style = MaterialTheme.typography.body2)
+                Text(readPermissionMessage ?: "需要读取权限。", style = MaterialTheme.typography.body2)
                 Button(onClick = { permissionLauncher.launch(readPermission) }) {
-                    Text("授予音频读取权限")
+                    Text("授予读取权限")
                 }
+            } else if ((usesSharedNonMediaFallback || Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) && systemPickerAction != null) {
+                Text(
+                    "若共享目录中的语音包、预设包、模型或音频文件没有显示，请点击“授权目录”授予目录访问，或直接使用系统文件选择器。",
+                    style = MaterialTheme.typography.body2
+                )
             }
 
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = {
-                        val parent = currentDir?.parentFile
-                        if (parent != null && parent.exists() && parent.canRead()) {
-                            currentDir = parent
-                        } else {
-                            currentDir = null
-                        }
-                    },
-                    enabled = currentDir != null
-                ) { Text("上一级") }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(onClick = { treePermissionLauncher.launch(null) }) {
+                        Text("授权目录")
+                    }
+                    if (systemPickerAction != null) {
+                        OutlinedButton(onClick = systemPickerAction) { Text("系统文件选择器") }
+                    }
+                }
 
-                Box {
-                    OutlinedButton(onClick = { sortExpanded = true }) { Text(sortOption.label) }
-                    BuiltinAnimatedDropdownMenu(
-                        expanded = sortExpanded,
-                        onDismissRequest = { sortExpanded = false }
-                    ) {
-                        BuiltinFileSortOption.entries.forEach { option ->
-                            DropdownMenuItem(
-                                onClick = {
-                                    sortExpanded = false
-                                    sortOption = option
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BuiltinFlatIconButton(
+                        onClick = {
+                            if (navigationStack.size > 1) {
+                                navigationStack = navigationStack.dropLast(1)
+                            }
+                        },
+                        enabled = navigationStack.size > 1,
+                        iconName = "arrow_upward",
+                        contentDescription = "上一级"
+                    )
+
+                    Box {
+                        BuiltinFlatIconButton(
+                            onClick = { sortExpanded = true },
+                            iconName = "sort",
+                            contentDescription = "排序方式"
+                        )
+                        BuiltinAnimatedDropdownMenu(
+                            expanded = sortExpanded,
+                            onDismissRequest = { sortExpanded = false }
+                        ) {
+                            BuiltinFileSortOption.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    onClick = {
+                                        sortExpanded = false
+                                        sortOption = option
+                                    }
+                                ) {
+                                    Text(option.label)
                                 }
-                            ) {
-                                Text(option.label)
                             }
                         }
                     }
@@ -299,78 +468,68 @@ fun BuiltinFilePickerDialog(
             )
 
             Text(
-                text = currentDir?.absolutePath ?: "根目录",
+                text = builtinDisplayPath(navigationStack),
                 style = MaterialTheme.typography.caption,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
 
-            if (currentDir == null) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(320.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(roots) { root ->
-                        BuiltinFileItemRow(
-                            label = root.absolutePath,
-                            isDirectory = true,
-                            onClick = { currentDir = root }
-                        )
-                    }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(320.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(fileItems, key = { it.absolutePath }) { file ->
-                        BuiltinFileItemRow(
-                            label = file.name,
-                            isDirectory = file.isDirectory,
-                            selected = selectedPaths.contains(file.absolutePath),
-                            multiSelect = multiSelect && !file.isDirectory,
-                            onClick = {
-                                if (file.isDirectory) {
-                                    currentDir = file
-                                } else if (multiSelect) {
-                                    selectedPaths = if (selectedPaths.contains(file.absolutePath)) {
-                                        selectedPaths - file.absolutePath
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(320.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(fileItems, key = { it.id }) { entry ->
+                    BuiltinFileItemRow(
+                        label = entry.label,
+                        isDirectory = entry.isDirectory,
+                        iconName = entry.iconName,
+                        selected = selectedUris.containsKey(entry.id),
+                        multiSelect = multiSelect && !entry.isDirectory,
+                        onClick = {
+                            when (entry) {
+                                is BuiltinBrowserEntry.Directory -> {
+                                    navigationStack = navigationStack + entry.location
+                                }
+
+                                is BuiltinBrowserEntry.FileItem -> {
+                                    if (multiSelect) {
+                                        selectedUris = if (selectedUris.containsKey(entry.id)) {
+                                            selectedUris - entry.id
+                                        } else {
+                                            selectedUris + (entry.id to entry.uri)
+                                        }
                                     } else {
-                                        selectedPaths + file.absolutePath
+                                        onPicked(entry.uri)
                                     }
-                                } else {
-                                    onPicked(Uri.fromFile(file))
                                 }
                             }
-                        )
-                    }
+                        }
+                    )
                 }
             }
 
-            if (currentDir != null && fileItems.isEmpty()) {
-                Text("无可用文件", style = MaterialTheme.typography.body2)
+            if (fileItems.isEmpty()) {
+                Text(
+                    if (currentLocation is BuiltinBrowserLocation.Root) "无可用目录" else "无可用文件",
+                    style = MaterialTheme.typography.body2
+                )
             }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
-                ) {
+            ) {
                 if (multiSelect) {
                     TextButton(
                         onClick = {
-                            val picked = selectedPaths
-                                .map(::File)
-                                .filter { it.exists() && it.isFile }
-                                .map(Uri::fromFile)
+                            val picked = selectedUris.values.toList()
                             if (picked.isNotEmpty()) {
                                 onPickedMultiple(picked)
                             }
                         },
-                        enabled = selectedPaths.isNotEmpty()
+                        enabled = selectedUris.isNotEmpty()
                     ) {
                         Text("确认选择")
                     }
@@ -502,9 +661,31 @@ fun BuiltinGalleryPickerDialog(
 }
 
 @Composable
+private fun BuiltinFlatIconButton(
+    onClick: () -> Unit,
+    iconName: String,
+    contentDescription: String,
+    enabled: Boolean = true
+) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.size(36.dp)
+    ) {
+        BuiltinMsIcon(
+            name = iconName,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(22.dp),
+            tint = if (enabled) MaterialTheme.colors.onSurface else MaterialTheme.colors.onSurface.copy(alpha = 0.38f)
+        )
+    }
+}
+
+@Composable
 private fun BuiltinFileItemRow(
     label: String,
     isDirectory: Boolean,
+    iconName: String,
     selected: Boolean = false,
     multiSelect: Boolean = false,
     onClick: () -> Unit
@@ -521,7 +702,11 @@ private fun BuiltinFileItemRow(
         if (multiSelect) {
             Checkbox(checked = selected, onCheckedChange = { onClick() })
         }
-        Text(if (isDirectory) "📁" else "📄")
+        BuiltinMsIcon(
+            name = iconName,
+            contentDescription = if (isDirectory) "文件夹" else "文件",
+            modifier = Modifier.size(22.dp)
+        )
         Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
@@ -566,26 +751,56 @@ private fun BuiltinGalleryGridItem(
     }
 }
 
-private fun builtinFileRoots(context: Context): List<File> {
-    val roots = linkedSetOf<File>()
-    roots += context.filesDir
-    context.getExternalFilesDir(null)?.let { roots += it }
-    runCatching { Environment.getExternalStorageDirectory() }.getOrNull()?.let { roots += it }
-    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC) }
-        .getOrNull()?.let { roots += it }
-    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RINGTONES) }
-        .getOrNull()?.let { roots += it }
-    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_NOTIFICATIONS) }
-        .getOrNull()?.let { roots += it }
-    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_ALARMS) }
-        .getOrNull()?.let { roots += it }
-    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) }
-        .getOrNull()?.let { roots += it }
-    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS) }
-        .getOrNull()?.let { roots += it }
-    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) }
-        .getOrNull()?.let { roots += it }
-    return roots.filter { it.exists() && it.canRead() }
+private fun builtinFileRoots(context: Context): List<BuiltinFileRoot> {
+    val roots = linkedMapOf<String, BuiltinFileRoot>()
+
+    fun add(file: File?, label: String, iconName: String) {
+        if (file == null || !file.exists()) return
+        val key = runCatching { file.canonicalPath }.getOrElse { file.absolutePath }
+        if (roots.containsKey(key)) return
+        roots[key] = BuiltinFileRoot(dir = file, label = label, iconName = iconName)
+    }
+
+    add(runCatching { Environment.getExternalStorageDirectory() }.getOrNull(), "内部存储", "storage")
+    add(
+        runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) }.getOrNull(),
+        "下载",
+        "download"
+    )
+    add(
+        runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS) }.getOrNull(),
+        "文档",
+        "description"
+    )
+    add(
+        runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) }.getOrNull(),
+        "图片",
+        "image"
+    )
+    add(
+        runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC) }.getOrNull(),
+        "音乐",
+        "music_note"
+    )
+    add(
+        runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RINGTONES) }.getOrNull(),
+        "铃声",
+        "notifications"
+    )
+    add(
+        runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_NOTIFICATIONS) }.getOrNull(),
+        "通知音",
+        "notifications_active"
+    )
+    add(
+        runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_ALARMS) }.getOrNull(),
+        "闹钟",
+        "alarm"
+    )
+    add(context.getExternalFilesDir(null), "应用外部文件", "folder_open")
+    add(context.filesDir, "应用内部文件", "folder")
+
+    return roots.values.toList()
 }
 
 private val BuiltinAudioFileExtensions = setOf(
@@ -606,44 +821,280 @@ private val BuiltinAudioFileExtensions = setOf(
     "webm"
 )
 
+private val BuiltinImageFileExtensions = setOf(
+    "jpg",
+    "jpeg",
+    "png",
+    "webp",
+    "bmp",
+    "gif",
+    "heic",
+    "heif"
+)
+
+private val BuiltinArchiveFileExtensions = setOf(
+    "zip",
+    "json",
+    "kigvpk",
+    "kigtpk",
+    "kigspk"
+)
+
 private fun builtinReadPermissionForExtensions(allowedExtensions: Set<String>): String? {
-    val needsAudioAccess = allowedExtensions.any { it in BuiltinAudioFileExtensions }
-    if (!needsAudioAccess) return null
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        Manifest.permission.READ_MEDIA_AUDIO
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        return when {
+            allowedExtensions.any { it in BuiltinAudioFileExtensions } -> Manifest.permission.READ_MEDIA_AUDIO
+            allowedExtensions.any { it in BuiltinImageFileExtensions } -> Manifest.permission.READ_MEDIA_IMAGES
+            else -> null
+        }
     } else {
-        Manifest.permission.READ_EXTERNAL_STORAGE
+        return Manifest.permission.READ_EXTERNAL_STORAGE
     }
 }
 
-private fun loadBuiltinFiles(
-    directory: File?,
+private fun builtinItemIconName(name: String, isDirectory: Boolean): String {
+    if (isDirectory) return "folder"
+    return when (builtinFileExtension(name)) {
+        in BuiltinAudioFileExtensions -> "audio_file"
+        in BuiltinImageFileExtensions -> "image"
+        in BuiltinArchiveFileExtensions -> "folder_zip"
+        else -> "description"
+    }
+}
+
+private fun builtinFileExtension(name: String?): String {
+    val fileName = name?.trim().orEmpty()
+    if (fileName.isBlank()) return ""
+    val dotIndex = fileName.lastIndexOf('.')
+    if (dotIndex <= 0 || dotIndex >= fileName.lastIndex) return ""
+    return fileName.substring(dotIndex + 1).lowercase(Locale.US)
+}
+
+private fun builtinDisplayPath(navigationStack: List<BuiltinBrowserLocation>): String {
+    if (navigationStack.size <= 1) return "根目录"
+    return when (val rootLocation = navigationStack.getOrNull(1)) {
+        is BuiltinBrowserLocation.FileDirectory -> {
+            buildList {
+                add(rootLocation.root.label)
+                navigationStack.drop(2).forEach { location ->
+                    if (location is BuiltinBrowserLocation.FileDirectory) {
+                        add(location.dir.name)
+                    }
+                }
+            }.joinToString("/")
+        }
+
+        is BuiltinBrowserLocation.SafDirectory -> {
+            buildList {
+                add(rootLocation.root.label)
+                navigationStack.drop(2).forEach { location ->
+                    if (location is BuiltinBrowserLocation.SafDirectory) {
+                        add(location.displayName)
+                    }
+                }
+            }.joinToString("/")
+        }
+
+        else -> "根目录"
+    }
+}
+
+private fun builtinDisplayNameForSegment(segment: String): String {
+    return when (segment.trim().lowercase(Locale.US)) {
+        "download", "downloads" -> "下载"
+        "documents" -> "文档"
+        "pictures" -> "图片"
+        "music" -> "音乐"
+        "movies" -> "视频"
+        "dcim" -> "相机"
+        "ringtones" -> "铃声"
+        "notifications" -> "通知音"
+        "alarms" -> "闹钟"
+        "android" -> "Android"
+        else -> segment
+    }
+}
+
+private fun builtinRootIconNameForSegment(segment: String): String {
+    return when (segment.trim().lowercase(Locale.US)) {
+        "内部存储" -> "storage"
+        "下载" -> "download"
+        "文档" -> "description"
+        "图片", "相机" -> "image"
+        "音乐" -> "music_note"
+        "铃声" -> "notifications"
+        "通知音" -> "notifications_active"
+        "闹钟" -> "alarm"
+        else -> "folder_open"
+    }
+}
+
+private fun builtinLabelForTreeDocumentId(documentId: String): String {
+    val parts = documentId.split(':', limit = 2)
+    val volumeLabel = if (parts.firstOrNull().orEmpty().equals("primary", ignoreCase = true)) {
+        "内部存储"
+    } else {
+        parts.firstOrNull().orEmpty().ifBlank { "已授权目录" }
+    }
+    val relativePath = parts.getOrNull(1).orEmpty().trim('/')
+    if (relativePath.isBlank()) return volumeLabel
+    val segments = relativePath
+        .split('/')
+        .filter { it.isNotBlank() }
+        .map(::builtinDisplayNameForSegment)
+    return (listOf(volumeLabel) + segments).joinToString("/")
+}
+
+private fun createBuiltinSafRoot(context: Context, treeUri: Uri): BuiltinSafRoot? {
+    val document = runCatching { DocumentFile.fromTreeUri(context, treeUri) }.getOrNull() ?: return null
+    if (!document.exists() || !document.canRead()) return null
+    val baseLabel = runCatching {
+        builtinLabelForTreeDocumentId(DocumentsContract.getTreeDocumentId(treeUri))
+    }.getOrElse {
+        document.name?.takeIf { name -> name.isNotBlank() } ?: "已授权目录"
+    }
+    val label = if (baseLabel.endsWith("（授权）")) baseLabel else "$baseLabel（授权）"
+    return BuiltinSafRoot(
+        treeUri = treeUri,
+        label = label,
+        iconName = builtinRootIconNameForSegment(baseLabel.substringAfterLast('/')),
+        document = document
+    )
+}
+
+private fun loadBuiltinSafRoots(context: Context): List<BuiltinSafRoot> {
+    return context.contentResolver.persistedUriPermissions
+        .filter { it.isReadPermission }
+        .mapNotNull { createBuiltinSafRoot(context, it.uri) }
+        .distinctBy { it.treeUri.toString() }
+        .sortedBy { it.label }
+}
+
+private fun loadBuiltinEntries(
+    location: BuiltinBrowserLocation,
+    fileRoots: List<BuiltinFileRoot>,
+    safRoots: List<BuiltinSafRoot>,
     query: String,
     sortOption: BuiltinFileSortOption,
     allowedExtensions: Set<String>
-): List<File> {
-    val dir = directory ?: return emptyList()
-    val list = runCatching { dir.listFiles()?.toList().orEmpty() }.getOrDefault(emptyList())
+): List<BuiltinBrowserEntry> {
     val q = query.trim().lowercase(Locale.US)
-    val filtered = list.filter { file ->
-        if (file.isDirectory) {
-            q.isEmpty() || file.name.lowercase(Locale.US).contains(q)
-        } else {
-            val nameHit = q.isEmpty() || file.name.lowercase(Locale.US).contains(q)
-            val extHit =
-                allowedExtensions.isEmpty() || allowedExtensions.contains(file.extension.lowercase(Locale.US))
-            nameHit && extHit
+    return when (location) {
+        BuiltinBrowserLocation.Root -> buildList {
+            fileRoots.forEach { root ->
+                if (q.isEmpty() || root.label.lowercase(Locale.US).contains(q)) {
+                    add(
+                        BuiltinBrowserEntry.Directory(
+                            id = "file-root:${root.dir.absolutePath}",
+                            label = root.label,
+                            iconName = root.iconName,
+                            location = BuiltinBrowserLocation.FileDirectory(root = root, dir = root.dir)
+                        )
+                    )
+                }
+            }
+            safRoots.forEach { root ->
+                if (q.isEmpty() || root.label.lowercase(Locale.US).contains(q)) {
+                    add(
+                        BuiltinBrowserEntry.Directory(
+                            id = "saf-root:${root.treeUri}",
+                            label = root.label,
+                            iconName = root.iconName,
+                            location = BuiltinBrowserLocation.SafDirectory(
+                                root = root,
+                                document = root.document,
+                                displayName = root.label
+                            )
+                        )
+                    )
+                }
+            }
+        }
+
+        is BuiltinBrowserLocation.FileDirectory -> {
+            val list = runCatching { location.dir.listFiles()?.toList().orEmpty() }.getOrDefault(emptyList())
+            val filtered = list.filter { file ->
+                if (file.isDirectory) {
+                    q.isEmpty() || file.name.lowercase(Locale.US).contains(q)
+                } else {
+                    val nameHit = q.isEmpty() || file.name.lowercase(Locale.US).contains(q)
+                    val extHit = allowedExtensions.isEmpty() || allowedExtensions.contains(file.extension.lowercase(Locale.US))
+                    nameHit && extHit
+                }
+            }
+            val comparator = when (sortOption) {
+                BuiltinFileSortOption.NameAsc -> compareBy<File> { it.name.lowercase(Locale.US) }
+                BuiltinFileSortOption.NameDesc -> compareByDescending<File> { it.name.lowercase(Locale.US) }
+                BuiltinFileSortOption.TimeAsc -> compareBy<File> { it.lastModified() }
+                BuiltinFileSortOption.TimeDesc -> compareByDescending<File> { it.lastModified() }
+            }
+            filtered.sortedWith(compareBy<File> { !it.isDirectory }.then(comparator)).map { file ->
+                if (file.isDirectory) {
+                    BuiltinBrowserEntry.Directory(
+                        id = "file-dir:${file.absolutePath}",
+                        label = file.name,
+                        iconName = builtinItemIconName(file.name, true),
+                        location = BuiltinBrowserLocation.FileDirectory(root = location.root, dir = file)
+                    )
+                } else {
+                    BuiltinBrowserEntry.FileItem(
+                        id = Uri.fromFile(file).toString(),
+                        label = file.name,
+                        iconName = builtinItemIconName(file.name, false),
+                        uri = Uri.fromFile(file)
+                    )
+                }
+            }
+        }
+
+        is BuiltinBrowserLocation.SafDirectory -> {
+            val list = runCatching { location.document.listFiles().toList() }.getOrDefault(emptyList())
+            val filtered = list.filter { document ->
+                val name = document.name?.ifBlank { "未命名项目" } ?: "未命名项目"
+                if (document.isDirectory) {
+                    q.isEmpty() || name.lowercase(Locale.US).contains(q)
+                } else {
+                    val nameHit = q.isEmpty() || name.lowercase(Locale.US).contains(q)
+                    val extHit = allowedExtensions.isEmpty() || allowedExtensions.contains(builtinFileExtension(name))
+                    nameHit && extHit
+                }
+            }
+            val comparator = when (sortOption) {
+                BuiltinFileSortOption.NameAsc -> compareBy<DocumentFile> {
+                    it.name?.lowercase(Locale.US).orEmpty()
+                }
+
+                BuiltinFileSortOption.NameDesc -> compareByDescending<DocumentFile> {
+                    it.name?.lowercase(Locale.US).orEmpty()
+                }
+
+                BuiltinFileSortOption.TimeAsc -> compareBy<DocumentFile> { it.lastModified() }
+                BuiltinFileSortOption.TimeDesc -> compareByDescending<DocumentFile> { it.lastModified() }
+            }
+            filtered.sortedWith(compareBy<DocumentFile> { !it.isDirectory }.then(comparator)).map { document ->
+                val name = document.name?.ifBlank { "未命名项目" } ?: "未命名项目"
+                if (document.isDirectory) {
+                    BuiltinBrowserEntry.Directory(
+                        id = "saf-dir:${document.uri}",
+                        label = name,
+                        iconName = builtinItemIconName(name, true),
+                        location = BuiltinBrowserLocation.SafDirectory(
+                            root = location.root,
+                            document = document,
+                            displayName = name
+                        )
+                    )
+                } else {
+                    BuiltinBrowserEntry.FileItem(
+                        id = document.uri.toString(),
+                        label = name,
+                        iconName = builtinItemIconName(name, false),
+                        uri = document.uri
+                    )
+                }
+            }
         }
     }
-
-    val comparator = when (sortOption) {
-        BuiltinFileSortOption.NameAsc -> compareBy<File> { it.name.lowercase(Locale.US) }
-        BuiltinFileSortOption.NameDesc -> compareByDescending<File> { it.name.lowercase(Locale.US) }
-        BuiltinFileSortOption.TimeAsc -> compareBy<File> { it.lastModified() }
-        BuiltinFileSortOption.TimeDesc -> compareByDescending<File> { it.lastModified() }
-    }
-
-    return filtered.sortedWith(compareBy<File> { !it.isDirectory }.then(comparator))
 }
 
 private fun galleryReadPermission(): String {

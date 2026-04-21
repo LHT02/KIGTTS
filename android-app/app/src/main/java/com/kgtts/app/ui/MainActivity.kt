@@ -545,13 +545,13 @@ data class UiState(
     val communicationMode: Boolean = false,
     val preferredInputType: Int = AudioRoutePreference.INPUT_AUTO,
     val preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO,
-    val aec3Enabled: Boolean = false,
+    val aec3Enabled: Boolean = true,
     val denoiserMode: Int = AudioDenoiserMode.RNNOISE,
-    val speechEnhancementMode: Int = SpeechEnhancementMode.OFF,
+    val speechEnhancementMode: Int = SpeechEnhancementMode.DPDFNET4_STREAMING,
     val aec3Status: String = "未启用",
     val aec3Diag: String = "AEC3 诊断：未启用",
-    val classicVadEnabled: Boolean = true,
-    val sileroVadEnabled: Boolean = false,
+    val classicVadEnabled: Boolean = false,
+    val sileroVadEnabled: Boolean = true,
     val sileroVadThreshold: Float = UserPrefs.SILERO_VAD_DEFAULT_THRESHOLD,
     val sileroVadPreRollMs: Int = UserPrefs.SILERO_VAD_DEFAULT_PRE_ROLL_MS,
     val minVolumePercent: Int = 2,
@@ -566,8 +566,8 @@ data class UiState(
     val solidTopBar: Boolean = true,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val quickCardAutoSaveOnExit: Boolean = false,
-    val useBuiltinFileManager: Boolean = false,
-    val useBuiltinGallery: Boolean = false,
+    val useBuiltinFileManager: Boolean = true,
+    val useBuiltinGallery: Boolean = true,
     val asrSendToQuickSubtitle: Boolean = true,
     val pushToTalkMode: Boolean = false,
     val pushToTalkConfirmInputMode: Boolean = false,
@@ -1101,6 +1101,7 @@ class MainViewModel(
     }
 
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
+        SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
         val needsSpeakerBackendReset =
             settings.speakerVerifyBackendVersion != UserPrefs.SPEAKER_VERIFY_BACKEND_SHERPA_V1 &&
                     (settings.speakerVerifyEnabled || settings.speakerVerifyProfileCsv.isNotBlank())
@@ -2885,6 +2886,7 @@ class MainViewModel(
     fun setPlaybackGainPercent(percent: Int) {
         val clamped = snapPlaybackGainPercent(percent)
         uiState = uiState.copy(playbackGainPercent = clamped)
+        SoundboardManager.setPlaybackGainPercent(clamped)
         realtimeHost?.setPlaybackGainPercent(clamped)
         viewModelScope.launch {
             UserPrefs.setPlaybackGainPercent(appContext, clamped)
@@ -8816,6 +8818,10 @@ fun AppScaffold(viewModel: MainViewModel) {
             onPicked = { uri ->
                 showBuiltinVoicePicker = false
                 viewModel.importVoice(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinVoicePicker = false
+                voicePicker.launch("*/*")
             }
         )
     }
@@ -8827,6 +8833,10 @@ fun AppScaffold(viewModel: MainViewModel) {
             onPicked = { uri ->
                 showBuiltinQuickSubtitlePresetPicker = false
                 viewModel.importQuickSubtitlePresetPackage(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinQuickSubtitlePresetPicker = false
+                quickSubtitlePresetPicker.launch("*/*")
             }
         )
     }
@@ -8838,6 +8848,10 @@ fun AppScaffold(viewModel: MainViewModel) {
             onPicked = { uri ->
                 showBuiltinSoundboardPresetPicker = false
                 viewModel.importSoundboardPresetPackage(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinSoundboardPresetPicker = false
+                soundboardPresetPicker.launch("*/*")
             }
         )
     }
@@ -10082,6 +10096,31 @@ private fun rememberAvatarBitmap(file: File): android.graphics.Bitmap? {
 }
 
 @Composable
+private fun VoicePackAvatarPlaceholder(
+    modifier: Modifier,
+    isSystemPack: Boolean,
+    logoSize: Dp = 50.dp
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(UiTokens.Radius))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isSystemPack) {
+            Image(
+                painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_monochrome),
+                contentDescription = null,
+                modifier = Modifier.size(logoSize),
+                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(LocalContentColor.current)
+            )
+        } else {
+            Text("无头像", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
 fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
     val context = LocalContext.current
     var detailPackPath by remember { mutableStateOf<String?>(null) }
@@ -10222,15 +10261,11 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                                     .clip(RoundedCornerShape(UiTokens.Radius))
                             )
                         } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(64.dp)
-                                    .clip(RoundedCornerShape(UiTokens.Radius))
-                                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("无头像", style = MaterialTheme.typography.bodySmall)
-                            }
+                            VoicePackAvatarPlaceholder(
+                                modifier = Modifier.size(64.dp),
+                                isSystemPack = isSystemTtsVoiceDir(detailPack.dir),
+                                logoSize = 50.dp
+                            )
                         }
                         Spacer(Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
@@ -10772,15 +10807,11 @@ private fun VoicePackCardContent(
                                 .clip(RoundedCornerShape(UiTokens.Radius))
                         )
                     } else {
-                        Box(
-                            modifier = Modifier
-                                .size(72.dp)
-                                .clip(RoundedCornerShape(UiTokens.Radius))
-                                .background(MaterialTheme.colorScheme.surfaceVariant),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("无头像", style = MaterialTheme.typography.bodySmall)
-                        }
+                        VoicePackAvatarPlaceholder(
+                            modifier = Modifier.size(72.dp),
+                            isSystemPack = isSystemPack,
+                            logoSize = 58.dp
+                        )
                     }
                     Spacer(Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
@@ -11970,6 +12001,10 @@ private fun SoundboardItemsRecyclerCard(
             onPicked = { uri ->
                 showBuiltinAudioPicker = false
                 clipSourceUri = uri
+            },
+            onOpenSystemPicker = {
+                showBuiltinAudioPicker = false
+                audioPicker.launch("audio/*")
             }
         )
     }
@@ -11987,6 +12022,10 @@ private fun SoundboardItemsRecyclerCard(
             onPickedMultiple = { uris ->
                 showBuiltinBatchAudioPicker = false
                 viewModel.importSoundboardAudioFiles(groupIndex, uris)
+            },
+            onOpenSystemPickerMultiple = {
+                showBuiltinBatchAudioPicker = false
+                batchAudioPicker.launch("audio/*")
             }
         )
     }
@@ -17798,6 +17837,10 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
             onPicked = { uri ->
                 showBuiltinAsrPicker = false
                 viewModel.importAsr(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinAsrPicker = false
+                asrPicker.launch("*/*")
             }
         )
     }
