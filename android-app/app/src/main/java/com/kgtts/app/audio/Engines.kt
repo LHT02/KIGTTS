@@ -2362,7 +2362,7 @@ class RealtimeController(
 
     suspend fun restartRecorder() {
         recorderMutex.withLock {
-            if (asr == null || tts == null) return
+            if (asr == null) return
             if (recorder == null) return
             stopRecorderOnlyLocked()
             SherpaSpeechEnhancer.resetStreaming()

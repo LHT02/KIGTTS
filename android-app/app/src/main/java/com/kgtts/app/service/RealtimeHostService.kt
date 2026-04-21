@@ -7,6 +7,7 @@ import android.os.Binder
 import android.os.IBinder
 import android.os.SystemClock
 import com.lhtstudio.kigtts.app.audio.RealtimeController
+import com.lhtstudio.kigtts.app.audio.SoundboardManager
 import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
 import com.lhtstudio.kigtts.app.data.ModelRepository
 import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
@@ -166,6 +167,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
     suspend fun speakText(text: String): Long? {
         val message = text.trim()
         if (message.isEmpty()) return null
+        if (currentSettings.ttsDisabled) return null
         val voice = currentState().voiceDir ?: return null
         return withContext(Dispatchers.IO) {
             val activeController = ensureController()
@@ -193,6 +195,13 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
 
     fun setQuickSubtitlePlayOnSend(enabled: Boolean) {
         quickSubtitlePlayOnSend = enabled
+    }
+
+    fun setTtsDisabled(enabled: Boolean) {
+        currentSettings = currentSettings.copy(ttsDisabled = enabled)
+        controller?.setSuppressAsrAutoSpeak(
+            enabled || (currentSettings.pushToTalkMode && currentSettings.pushToTalkConfirmInput)
+        )
     }
 
     fun setSuppressWhilePlaying(enabled: Boolean) {
@@ -339,17 +348,17 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         when (target) {
             OverlayBridge.TARGET_INPUT -> {
                 if (normalized.isNotEmpty()) {
-                    appendRecognizedHistory(normalized)
+                    appendRecognizedHistory(normalized, fromQuickText = true)
                 }
             }
             OverlayBridge.TARGET_SUBTITLE -> {
                 if (normalized.isNotEmpty()) {
-                    if (quickSubtitlePlayOnSend) {
+                    if (quickSubtitlePlayOnSend && !currentSettings.ttsDisabled) {
                         serviceScope.launch {
-                            enqueueSpeakAndAppendHistory(normalized)
+                            enqueueSpeakAndAppendHistory(normalized, fromQuickText = true)
                         }
                     } else {
-                        appendRecognizedHistory(normalized)
+                        appendRecognizedHistory(normalized, fromQuickText = true)
                     }
                 }
             }
@@ -400,7 +409,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         when (action) {
             RealtimeRuntimeBridge.PttCommitAction.SendToSubtitle -> {
                 if (text.isNotEmpty()) {
-                    if (!quickSubtitlePlayOnSend) {
+                    if (!quickSubtitlePlayOnSend || currentSettings.ttsDisabled) {
                         appendRecognizedHistory(text)
                     } else {
                         serviceScope.launch {
@@ -665,7 +674,8 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
                 currentState().pushToTalkPressed
         )
         created.setSuppressAsrAutoSpeak(
-            currentSettings.pushToTalkMode && currentSettings.pushToTalkConfirmInput
+            currentSettings.ttsDisabled ||
+                (currentSettings.pushToTalkMode && currentSettings.pushToTalkConfirmInput)
         )
         controller = created
         return created
@@ -674,8 +684,9 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
     private suspend fun startRealtimeInternal(): Boolean {
         val asr = currentState().asrDir
         val voice = currentState().voiceDir
-        if (asr == null || voice == null) {
-            updateStatus("请先导入 ASR 模型和 voicepack")
+        val requireVoice = !currentSettings.ttsDisabled
+        if (asr == null || (requireVoice && voice == null)) {
+            updateStatus(if (requireVoice) "请先导入 ASR 模型和 voicepack" else "请先导入 ASR 模型")
             return false
         }
         if (currentState().running) return true
@@ -696,7 +707,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         val started = withContext(Dispatchers.IO) {
             val activeController = ensureController()
             if (!activeController.loadAsr(asr)) return@withContext false
-            if (!activeController.loadTts(voice)) return@withContext false
+            if (requireVoice && voice != null && !activeController.loadTts(voice)) return@withContext false
             activeController.startMic()
         }
         if (started && currentState().running) {
@@ -764,7 +775,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setSpeakerVerifyThreshold(settings.speakerVerifyThreshold)
         controller?.setSpeakerProfiles(speakerProfiles.map { it.vector.copyOf() })
         controller?.setSuppressAsrAutoSpeak(
-            settings.pushToTalkMode && settings.pushToTalkConfirmInput
+            settings.ttsDisabled || (settings.pushToTalkMode && settings.pushToTalkConfirmInput)
         )
         controller?.setPushToTalkStreamingEnabled(
             settings.pushToTalkMode &&
@@ -789,7 +800,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         return resolved ?: repo.systemTtsVirtualDir()
     }
 
-    private fun appendRecognizedHistory(text: String, id: Long? = null) {
+    private fun appendRecognizedHistory(text: String, id: Long? = null, fromQuickText: Boolean = false) {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
         val historyId = id ?: manualRecognizedIdSeed--
@@ -798,17 +809,24 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         val next = (listOf(item) + currentState().recognized).take(MAX_RECOGNIZED_ITEMS)
         lastProgressUpdateAtMs.keys.retainAll(next.asSequence().map { it.id }.toSet())
         updateState { it.copy(recognized = next) }
+        if (currentSettings.soundboardKeywordTriggerEnabled &&
+            (!fromQuickText || currentSettings.allowQuickTextTriggerSoundboard)
+        ) {
+            serviceScope.launch {
+                SoundboardManager.triggerByText(applicationContext, normalized)
+            }
+        }
     }
 
-    private suspend fun enqueueSpeakAndAppendHistory(text: String) {
+    private suspend fun enqueueSpeakAndAppendHistory(text: String, fromQuickText: Boolean = false) {
         val message = text.trim()
         if (message.isEmpty()) return
         val queuedId = speakText(message)
         if (queuedId != null) {
-            appendRecognizedHistory(message, queuedId)
+            appendRecognizedHistory(message, queuedId, fromQuickText = fromQuickText)
             updateStatus("已加入朗读队列")
         } else {
-            appendRecognizedHistory(message)
+            appendRecognizedHistory(message, fromQuickText = fromQuickText)
         }
     }
 

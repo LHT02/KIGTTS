@@ -60,6 +60,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
@@ -383,6 +384,7 @@ class FloatingOverlayService : Service() {
         val inputLabel: TextView,
         val outputLabel: TextView,
         val pttIcon: TextView,
+        val ttsIcon: TextView,
         val volumeLabel: TextView,
         val volumeSeekBar: SeekBar
     )
@@ -2773,7 +2775,11 @@ class FloatingOverlayService : Service() {
         bubbleTextView?.text = latestText
         bubbleRow?.visibility = View.GONE
         val hasLatestResult = latestText.isNotBlank()
-        val topMicIcon = if (settings.pushToTalkMode && pttPressedState) "settings_voice" else "mic"
+        val topMicIcon = when {
+            settings.ttsDisabled -> "mic_off"
+            settings.pushToTalkMode && pttPressedState -> "settings_voice"
+            else -> "mic"
+        }
         syncTopStatusContent(latestText)
         panelStatusMicIconView?.text = topMicIcon
         panelStatusEqIconView?.text = "graphic_eq"
@@ -3030,6 +3036,11 @@ class FloatingOverlayService : Service() {
             if (effectiveRunningState()) {
                 stopListeningInternal()
             } else {
+                if (settings.ttsDisabled) {
+                    overlayHintText = "TTS已禁用，如需打开，请打开顶部音频状态菜单将“禁用TTS”选项关闭"
+                    Toast.makeText(this@FloatingOverlayService, overlayHintText, Toast.LENGTH_SHORT).show()
+                    updateFabUi()
+                }
                 startListeningInternal(true)
             }
         }
@@ -6200,6 +6211,7 @@ class FloatingOverlayService : Service() {
         OverlayLauncherTile("builtin_subtitles", "快捷字幕", "subtitles"),
         OverlayLauncherTile("builtin_quick_card", "快捷名片", "id_card"),
         OverlayLauncherTile("builtin_drawing", "画板", "draw"),
+        OverlayLauncherTile("builtin_soundboard", "音效板", "library_music"),
         OverlayLauncherTile("builtin_scanner", "二维码扫描", "qr_code_2"),
         OverlayLauncherTile("builtin_settings", "设置", "tune")
     )
@@ -6831,6 +6843,10 @@ class FloatingOverlayService : Service() {
                 hidePanel()
                 launchAppPage(OverlayBridge.TARGET_OPEN_DRAWING)
             }
+            tile.key == "builtin_soundboard" -> {
+                hidePanel()
+                launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
+            }
             tile.key == "builtin_scanner" -> {
                 hidePanel()
                 launchAppPage(OverlayBridge.TARGET_OPEN_QR_SCANNER)
@@ -6859,6 +6875,11 @@ class FloatingOverlayService : Service() {
                 launchQuickCardPage()
                 true
             }
+            "builtin_soundboard" -> {
+                hidePanel()
+                launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
+                true
+            }
             else -> {
                 when (tile.label) {
                     "快捷字幕" -> {
@@ -6869,6 +6890,11 @@ class FloatingOverlayService : Service() {
                     "快捷名片" -> {
                         hidePanel()
                         launchQuickCardPage()
+                        true
+                    }
+                    "音效板" -> {
+                        hidePanel()
+                        launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
                         true
                     }
                     else -> false
@@ -7397,6 +7423,8 @@ class FloatingOverlayService : Service() {
             refs.outputLabel.text = outputLabel
             refs.pttIcon.text = if (settings.pushToTalkMode) "toggle_on" else "toggle_off"
             refs.pttIcon.setTextColor(if (settings.pushToTalkMode) overlayPrimaryColor() else overlayOnSurfaceVariantColor())
+            refs.ttsIcon.text = if (settings.ttsDisabled) "toggle_on" else "toggle_off"
+            refs.ttsIcon.setTextColor(if (settings.ttsDisabled) overlayPrimaryColor() else overlayOnSurfaceVariantColor())
             refs.volumeLabel.text = "音量倍率：${settings.playbackGainPercent}%"
             refs.volumeSeekBar.progress = settings.playbackGainPercent.coerceIn(0, 1000)
         }
@@ -7512,6 +7540,31 @@ class FloatingOverlayService : Service() {
                 }
             }
         }
+        val ttsIcon = symbolTextView("toggle_off", 28f, overlayOnSurfaceVariantColor())
+        val ttsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                foreground = selectableDrawable()
+            }
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+            addView(symbolTextView("mic_off", 18f, overlayOnSurfaceColor()))
+            addView(spaceView(dp(8), 1))
+            addView(
+                TextView(this@FloatingOverlayService).apply {
+                    setTextColor(overlayOnSurfaceColor())
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    text = "禁用TTS"
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            addView(ttsIcon)
+            setOnClickListener {
+                scope.launch(Dispatchers.IO) {
+                    UserPrefs.setTtsDisabled(this@FloatingOverlayService, !settings.ttsDisabled)
+                }
+            }
+        }
         val volumeLabel = TextView(this).apply {
             setTextColor(overlayOnSurfaceVariantColor())
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -7555,6 +7608,8 @@ class FloatingOverlayService : Service() {
             addView(spaceView(1, dp(8)))
             addView(pttRow)
             addView(spaceView(1, dp(8)))
+            addView(ttsRow)
+            addView(spaceView(1, dp(8)))
             addView(volumeLabel)
             addView(
                 volumeSeekBar,
@@ -7571,6 +7626,7 @@ class FloatingOverlayService : Service() {
             inputLabel = inputDeviceLabel,
             outputLabel = outputDeviceLabel,
             pttIcon = pttIcon,
+            ttsIcon = ttsIcon,
             volumeLabel = volumeLabel,
             volumeSeekBar = volumeSeekBar
         )

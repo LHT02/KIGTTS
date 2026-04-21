@@ -45,6 +45,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Card
+import androidx.compose.material.Checkbox
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.OutlinedTextField
 import androidx.compose.material.Button
@@ -188,8 +189,10 @@ private fun BuiltinAnimatedDropdownMenu(
 fun BuiltinFilePickerDialog(
     title: String,
     allowedExtensions: Set<String> = emptySet(),
+    multiSelect: Boolean = false,
     onDismiss: () -> Unit,
-    onPicked: (Uri) -> Unit
+    onPicked: (Uri) -> Unit,
+    onPickedMultiple: (List<Uri>) -> Unit = {}
 ) {
     val context = LocalContext.current
     var search by remember { mutableStateOf("") }
@@ -198,12 +201,30 @@ fun BuiltinFilePickerDialog(
 
     val roots = remember { builtinFileRoots(context) }
     var currentDir by remember(roots) { mutableStateOf(roots.firstOrNull()) }
+    var selectedPaths by remember { mutableStateOf(setOf<String>()) }
 
     val normalizedExt = remember(allowedExtensions) {
         allowedExtensions.map { it.lowercase(Locale.US).trim('.') }.filter { it.isNotBlank() }.toSet()
     }
+    val readPermission = remember(normalizedExt) { builtinReadPermissionForExtensions(normalizedExt) }
+    var hasReadPermission by remember(readPermission) {
+        mutableStateOf(
+            readPermission == null ||
+                    ContextCompat.checkSelfPermission(context, readPermission) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        hasReadPermission = granted
+    }
 
-    val fileItems by produceState<List<File>>(initialValue = emptyList(), currentDir, search, sortOption, normalizedExt) {
+    val fileItems by produceState<List<File>>(
+        initialValue = emptyList(),
+        currentDir,
+        search,
+        sortOption,
+        normalizedExt,
+        hasReadPermission
+    ) {
         value = withContext(Dispatchers.IO) {
             loadBuiltinFiles(
                 directory = currentDir,
@@ -223,6 +244,13 @@ fun BuiltinFilePickerDialog(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(title, style = MaterialTheme.typography.h6)
+
+            if (readPermission != null && !hasReadPermission) {
+                Text("需要音频文件读取权限，否则系统媒体目录可能无法显示。", style = MaterialTheme.typography.body2)
+                Button(onClick = { permissionLauncher.launch(readPermission) }) {
+                    Text("授予音频读取权限")
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -303,9 +331,17 @@ fun BuiltinFilePickerDialog(
                         BuiltinFileItemRow(
                             label = file.name,
                             isDirectory = file.isDirectory,
+                            selected = selectedPaths.contains(file.absolutePath),
+                            multiSelect = multiSelect && !file.isDirectory,
                             onClick = {
                                 if (file.isDirectory) {
                                     currentDir = file
+                                } else if (multiSelect) {
+                                    selectedPaths = if (selectedPaths.contains(file.absolutePath)) {
+                                        selectedPaths - file.absolutePath
+                                    } else {
+                                        selectedPaths + file.absolutePath
+                                    }
                                 } else {
                                     onPicked(Uri.fromFile(file))
                                 }
@@ -323,6 +359,22 @@ fun BuiltinFilePickerDialog(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
                 ) {
+                if (multiSelect) {
+                    TextButton(
+                        onClick = {
+                            val picked = selectedPaths
+                                .map(::File)
+                                .filter { it.exists() && it.isFile }
+                                .map(Uri::fromFile)
+                            if (picked.isNotEmpty()) {
+                                onPickedMultiple(picked)
+                            }
+                        },
+                        enabled = selectedPaths.isNotEmpty()
+                    ) {
+                        Text("确认选择")
+                    }
+                }
                 TextButton(onClick = onDismiss) {
                     Text("关闭")
                 }
@@ -453,6 +505,8 @@ fun BuiltinGalleryPickerDialog(
 private fun BuiltinFileItemRow(
     label: String,
     isDirectory: Boolean,
+    selected: Boolean = false,
+    multiSelect: Boolean = false,
     onClick: () -> Unit
 ) {
     Row(
@@ -464,6 +518,9 @@ private fun BuiltinFileItemRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        if (multiSelect) {
+            Checkbox(checked = selected, onCheckedChange = { onClick() })
+        }
         Text(if (isDirectory) "📁" else "📄")
         Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
@@ -514,6 +571,14 @@ private fun builtinFileRoots(context: Context): List<File> {
     roots += context.filesDir
     context.getExternalFilesDir(null)?.let { roots += it }
     runCatching { Environment.getExternalStorageDirectory() }.getOrNull()?.let { roots += it }
+    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC) }
+        .getOrNull()?.let { roots += it }
+    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_RINGTONES) }
+        .getOrNull()?.let { roots += it }
+    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_NOTIFICATIONS) }
+        .getOrNull()?.let { roots += it }
+    runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_ALARMS) }
+        .getOrNull()?.let { roots += it }
     runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS) }
         .getOrNull()?.let { roots += it }
     runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS) }
@@ -521,6 +586,34 @@ private fun builtinFileRoots(context: Context): List<File> {
     runCatching { Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES) }
         .getOrNull()?.let { roots += it }
     return roots.filter { it.exists() && it.canRead() }
+}
+
+private val BuiltinAudioFileExtensions = setOf(
+    "m4a",
+    "mp4",
+    "aac",
+    "mp3",
+    "wav",
+    "wave",
+    "flac",
+    "ogg",
+    "oga",
+    "opus",
+    "amr",
+    "awb",
+    "3gp",
+    "3gpp",
+    "webm"
+)
+
+private fun builtinReadPermissionForExtensions(allowedExtensions: Set<String>): String? {
+    val needsAudioAccess = allowedExtensions.any { it in BuiltinAudioFileExtensions }
+    if (!needsAudioAccess) return null
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_AUDIO
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
 }
 
 private fun loadBuiltinFiles(

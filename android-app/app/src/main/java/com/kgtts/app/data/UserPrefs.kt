@@ -65,7 +65,11 @@ object UserPrefs {
     private val KEY_FLOATING_OVERLAY_LAYOUT = stringPreferencesKey("floating_overlay_layout")
     private val KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE = floatPreferencesKey("floating_overlay_quick_subtitle_font_size")
     private val KEY_QUICK_SUBTITLE_CONFIG = stringPreferencesKey("quick_subtitle_config")
+    private val KEY_SOUNDBOARD_CONFIG = stringPreferencesKey("soundboard_config")
     private val KEY_QUICK_CARD_CONFIG = stringPreferencesKey("quick_card_config")
+    private val KEY_TTS_DISABLED = booleanPreferencesKey("tts_disabled")
+    private val KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED = booleanPreferencesKey("soundboard_keyword_trigger_enabled")
+    private val KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD = booleanPreferencesKey("allow_quick_text_trigger_soundboard")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
@@ -110,6 +114,9 @@ object UserPrefs {
         val pushToTalkConfirmInput: Boolean = false,
         val floatingOverlayEnabled: Boolean = false,
         val floatingOverlayAutoDock: Boolean = false,
+        val ttsDisabled: Boolean = false,
+        val soundboardKeywordTriggerEnabled: Boolean = false,
+        val allowQuickTextTriggerSoundboard: Boolean = false,
         val speakerVerifyEnabled: Boolean = false,
         val speakerVerifyThreshold: Float = 0.5f,
         val speakerVerifyProfileCsv: String = "",
@@ -232,6 +239,9 @@ object UserPrefs {
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
             floatingOverlayEnabled = this[KEY_FLOATING_OVERLAY_ENABLED] ?: false,
             floatingOverlayAutoDock = this[KEY_FLOATING_OVERLAY_AUTO_DOCK] ?: false,
+            ttsDisabled = this[KEY_TTS_DISABLED] ?: false,
+            soundboardKeywordTriggerEnabled = this[KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED] ?: false,
+            allowQuickTextTriggerSoundboard = this[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] ?: false,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
             speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
             speakerVerifyProfileCsv = this[KEY_SPEAKER_VERIFY_PROFILE] ?: "",
@@ -429,6 +439,24 @@ object UserPrefs {
         }
     }
 
+    suspend fun setTtsDisabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_TTS_DISABLED] = enabled
+        }
+    }
+
+    suspend fun setSoundboardKeywordTriggerEnabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setAllowQuickTextTriggerSoundboard(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] = enabled
+        }
+    }
+
     suspend fun setSpeakerVerifyEnabled(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_SPEAKER_VERIFY_ENABLED] = enabled
@@ -581,6 +609,17 @@ object UserPrefs {
     suspend fun setQuickSubtitleConfig(context: Context, json: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_SUBTITLE_CONFIG] = json
+        }
+    }
+
+    suspend fun getSoundboardConfig(context: Context): String? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_SOUNDBOARD_CONFIG]
+    }
+
+    suspend fun setSoundboardConfig(context: Context, json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SOUNDBOARD_CONFIG] = json
         }
     }
 

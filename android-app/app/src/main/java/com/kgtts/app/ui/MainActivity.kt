@@ -16,6 +16,8 @@ import android.graphics.BitmapFactory
 import android.graphics.BlurMaskFilter
 import android.graphics.Paint
 import android.graphics.RectF
+import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -83,6 +85,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.ScrollState
@@ -207,15 +211,26 @@ import com.lhtstudio.kigtts.app.audio.AudioRoutePreference
 import com.lhtstudio.kigtts.app.audio.AudioDenoiserMode
 import com.lhtstudio.kigtts.app.audio.AudioLoopbackTester
 import com.lhtstudio.kigtts.app.audio.AudioTestConfig
+import com.lhtstudio.kigtts.app.audio.SoundboardManager
+import com.lhtstudio.kigtts.app.audio.SoundboardPlaybackState
 import com.lhtstudio.kigtts.app.audio.SpeechEnhancementMode
 import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
 import com.lhtstudio.kigtts.app.audio.VadMode
 import com.lhtstudio.kigtts.app.data.ModelRepository
+import com.lhtstudio.kigtts.app.data.SoundboardGroup
+import com.lhtstudio.kigtts.app.data.SoundboardItem
+import com.lhtstudio.kigtts.app.data.SoundboardLayoutMode
+import com.lhtstudio.kigtts.app.data.SoundboardConfig
+import com.lhtstudio.kigtts.app.data.SoundboardPresetIo
 import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.VoicePackInfo
 import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.data.VoicePackMeta
+import com.lhtstudio.kigtts.app.data.defaultSoundboardGroups
 import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
+import com.lhtstudio.kigtts.app.data.parseSoundboardConfig
+import com.lhtstudio.kigtts.app.data.serializeSoundboardConfig
+import com.lhtstudio.kigtts.app.data.uniqueImportedGroupTitle
 import com.lhtstudio.kigtts.app.overlay.FloatingOverlayService
 import com.lhtstudio.kigtts.app.overlay.OverlayBridge
 import com.lhtstudio.kigtts.app.overlay.RealtimeOwnerGate
@@ -269,8 +284,12 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import kotlin.coroutines.resume
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -540,6 +559,9 @@ data class UiState(
     val pushToTalkConfirmInputMode: Boolean = false,
     val floatingOverlayEnabled: Boolean = false,
     val floatingOverlayAutoDock: Boolean = false,
+    val ttsDisabled: Boolean = false,
+    val soundboardKeywordTriggerEnabled: Boolean = false,
+    val allowQuickTextTriggerSoundboard: Boolean = false,
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
     val speakerVerifyEnabled: Boolean = false,
@@ -585,11 +607,23 @@ data class ExternalVoicePackInstallRequest(
     val message: String
 )
 
+data class ExternalPresetInstallRequest(
+    val requestId: Long,
+    val target: PresetInstallTarget,
+    val message: String
+)
+
+enum class PresetInstallTarget {
+    QuickSubtitle,
+    Soundboard
+}
+
 private fun isOverlayOpenTarget(target: String): Boolean {
     return target == OverlayBridge.TARGET_OPEN ||
             target == OverlayBridge.TARGET_OPEN_OVERLAY ||
             target == OverlayBridge.TARGET_OPEN_QUICK_CARD ||
             target == OverlayBridge.TARGET_OPEN_DRAWING ||
+            target == OverlayBridge.TARGET_OPEN_SOUNDBOARD ||
             target == OverlayBridge.TARGET_OPEN_SETTINGS ||
             target == OverlayBridge.TARGET_OPEN_QR_SCANNER
 }
@@ -716,6 +750,8 @@ class MainViewModel(
         private set
     var pendingVoicePackInstallRequest by mutableStateOf<ExternalVoicePackInstallRequest?>(null)
         private set
+    var pendingPresetInstallRequest by mutableStateOf<ExternalPresetInstallRequest?>(null)
+        private set
     var pendingRecordAudioPermissionRequest by mutableStateOf<ExternalRecordAudioPermissionRequest?>(null)
         private set
 
@@ -810,7 +846,7 @@ class MainViewModel(
         lastPttHistoryAtMs = 0L
     }
 
-    private fun appendRecognizedHistory(text: String, id: Long? = null) {
+    private fun appendRecognizedHistory(text: String, id: Long? = null, fromQuickText: Boolean = false) {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
         val historyId = id ?: manualRecognizedIdSeed--
@@ -820,6 +856,7 @@ class MainViewModel(
         realtimeRecognized = next
         val validIds = next.asSequence().map { it.id }.toSet()
         lastProgressUpdateAtMs.keys.retainAll(validIds)
+        maybeTriggerSoundboardFromText(normalized, fromQuickText = fromQuickText)
     }
 
     private companion object {
@@ -860,6 +897,16 @@ class MainViewModel(
         private set
     var quickSubtitlePreviewVisible by mutableStateOf(false)
         private set
+    var soundboardGroups by mutableStateOf(defaultSoundboardGroups())
+        private set
+    var soundboardSelectedGroupId by mutableLongStateOf(1L)
+        private set
+    var soundboardPortraitLayout by mutableStateOf(SoundboardLayoutMode.Grid3)
+        private set
+    var soundboardLandscapeLayout by mutableStateOf(SoundboardLayoutMode.Grid5)
+        private set
+    var soundboardPlaybackStates by mutableStateOf<Map<Long, SoundboardPlaybackState>>(emptyMap())
+        private set
     var settingsSelectedCategoryName by mutableStateOf(SettingsCategory.Resources.name)
         private set
     var quickCards by mutableStateOf<List<QuickCard>>(emptyList())
@@ -874,12 +921,17 @@ class MainViewModel(
         private set
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
+    private var soundboardNextGroupId = 2L
+    private var soundboardNextItemId = 1L
+    private var soundboardSaving = false
     private var quickCardsNextId = 1L
     private var quickCardsSaving = false
 
     init {
         loadQuickSubtitleConfig()
+        loadSoundboardConfig()
         loadQuickCardConfig()
+        observeSoundboardPlayback()
         observeSettingsChanges()
     }
 
@@ -1012,6 +1064,9 @@ class MainViewModel(
             pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
             floatingOverlayEnabled = settings.floatingOverlayEnabled,
             floatingOverlayAutoDock = settings.floatingOverlayAutoDock,
+            ttsDisabled = settings.ttsDisabled,
+            soundboardKeywordTriggerEnabled = settings.soundboardKeywordTriggerEnabled,
+            allowQuickTextTriggerSoundboard = settings.allowQuickTextTriggerSoundboard,
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
             speakerProfileReady = hasProfiles,
@@ -1146,7 +1201,11 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
-        if (enqueueSpeak) speakText(message)
+        if (enqueueSpeak) {
+            speakText(message, fromQuickText = true)
+        } else {
+            maybeTriggerSoundboardFromText(message, fromQuickText = true)
+        }
         saveQuickSubtitleConfig()
     }
 
@@ -1155,8 +1214,9 @@ class MainViewModel(
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
         if (quickSubtitlePlayOnSend && hasVoice) {
-            speakText(message)
+            speakText(message, fromQuickText = true)
         } else {
+            maybeTriggerSoundboardFromText(message, fromQuickText = true)
             uiState = uiState.copy(status = "已更新字幕文本")
         }
         saveQuickSubtitleConfig()
@@ -1172,8 +1232,9 @@ class MainViewModel(
         quickSubtitleCurrentText = message
         quickSubtitleInputText = ""
         if (playVoice) {
-            speakText(message)
+            speakText(message, fromQuickText = true)
         } else {
+            maybeTriggerSoundboardFromText(message, fromQuickText = true)
             uiState = uiState.copy(status = "已更新字幕文本")
         }
         saveQuickSubtitleConfig()
@@ -1214,6 +1275,73 @@ class MainViewModel(
     fun consumeVoicePackInstallRequest(requestId: Long) {
         if (pendingVoicePackInstallRequest?.requestId == requestId) {
             pendingVoicePackInstallRequest = null
+        }
+    }
+
+    private fun requestPresetInstallNavigation(target: PresetInstallTarget, message: String) {
+        pendingPresetInstallRequest = ExternalPresetInstallRequest(
+            requestId = SystemClock.uptimeMillis(),
+            target = target,
+            message = message
+        )
+    }
+
+    fun consumePresetInstallRequest(requestId: Long) {
+        if (pendingPresetInstallRequest?.requestId == requestId) {
+            pendingPresetInstallRequest = null
+        }
+    }
+
+    fun exportQuickSubtitlePresetPackage(groupIds: Set<Long>) {
+        if (groupIds.isEmpty()) {
+            uiState = uiState.copy(status = "请先选择要导出的便捷字幕分组")
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    writeQuickSubtitlePresetPackage(
+                        context = appContext,
+                        groups = quickSubtitleGroups.filter { it.id in groupIds }
+                    )
+                }
+            }
+            result.onSuccess { file ->
+                uiState = uiState.copy(status = "便捷字幕预设已导出：${file.absolutePath}")
+                sharePresetFile(file, "application/x-kigtts-quicktext-preset", "分享便捷字幕预设")
+            }.onFailure { e ->
+                uiState = uiState.copy(status = "便捷字幕预设导出失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    fun importQuickSubtitlePresetPackage(uri: android.net.Uri, openEditorOnSuccess: Boolean = false) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { readQuickSubtitlePresetPackage(appContext, uri) }
+            }
+            result.onSuccess { imported ->
+                if (imported.isEmpty()) {
+                    uiState = uiState.copy(status = "便捷字幕预设包没有可导入分组")
+                    return@onSuccess
+                }
+                val existingTitles = quickSubtitleGroups.map { it.title }.toMutableSet()
+                val remapped = imported.map { group ->
+                    val title = uniqueQuickSubtitleGroupTitle(group.title, existingTitles)
+                    existingTitles += title
+                    group.copy(id = quickSubtitleNextGroupId++, title = title)
+                }
+                quickSubtitleGroups = quickSubtitleGroups + remapped
+                quickSubtitleSelectedGroupId = remapped.first().id
+                saveQuickSubtitleConfig()
+                val message = "便捷字幕预设已安装：${remapped.size} 个分组"
+                uiState = uiState.copy(status = message)
+                if (openEditorOnSuccess) {
+                    requestPresetInstallNavigation(PresetInstallTarget.QuickSubtitle, message)
+                }
+            }.onFailure { e ->
+                uiState = uiState.copy(status = "便捷字幕预设导入失败：${e.message ?: "未知错误"}")
+            }
         }
     }
 
@@ -1392,6 +1520,344 @@ class MainViewModel(
         next[groupIndex] = g.copy(items = items.toList())
         quickSubtitleGroups = next
         saveQuickSubtitleConfig()
+    }
+
+    private fun observeSoundboardPlayback() {
+        viewModelScope.launch {
+            SoundboardManager.playbackState().collectLatest { next ->
+                soundboardPlaybackStates = next
+            }
+        }
+    }
+
+    private fun loadSoundboardConfig() {
+        viewModelScope.launch {
+            val parsed = parseSoundboardConfig(UserPrefs.getSoundboardConfig(appContext))
+            applySoundboardConfig(parsed)
+            SoundboardManager.updateCachedConfig(parsed)
+        }
+    }
+
+    private fun applySoundboardConfig(config: com.lhtstudio.kigtts.app.data.SoundboardConfig) {
+        val groups = config.groups.ifEmpty { defaultSoundboardGroups() }
+        soundboardGroups = groups
+        soundboardSelectedGroupId =
+            groups.firstOrNull { it.id == config.selectedGroupId }?.id ?: groups.first().id
+        soundboardPortraitLayout = config.portraitLayout
+        soundboardLandscapeLayout = config.landscapeLayout
+        soundboardNextGroupId = maxOf(2L, (groups.maxOfOrNull { it.id } ?: 0L) + 1L)
+        soundboardNextItemId = maxOf(
+            1L,
+            groups.asSequence().flatMap { it.items.asSequence() }.maxOfOrNull { it.id }?.plus(1L) ?: 1L
+        )
+    }
+
+    private fun saveSoundboardConfig() {
+        if (soundboardSaving) return
+        soundboardSaving = true
+        val payload = serializeSoundboardConfig(
+            SoundboardConfig(
+                groups = soundboardGroups,
+                selectedGroupId = soundboardSelectedGroupId,
+                portraitLayout = soundboardPortraitLayout,
+                landscapeLayout = soundboardLandscapeLayout
+            )
+        )
+        val cachedConfig = parseSoundboardConfig(payload)
+        SoundboardManager.updateCachedConfig(cachedConfig)
+        viewModelScope.launch {
+            try {
+                UserPrefs.setSoundboardConfig(appContext, payload)
+            } finally {
+                soundboardSaving = false
+            }
+        }
+    }
+
+    private fun currentSoundboardConfig(): SoundboardConfig {
+        return SoundboardConfig(
+            groups = soundboardGroups,
+            selectedGroupId = soundboardSelectedGroupId,
+            portraitLayout = soundboardPortraitLayout,
+            landscapeLayout = soundboardLandscapeLayout
+        )
+    }
+
+    fun exportSoundboardPresetPackage(groupIds: Set<Long>) {
+        if (groupIds.isEmpty()) {
+            uiState = uiState.copy(status = "请先选择要导出的音效板分组")
+            return
+        }
+        val config = currentSoundboardConfig()
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    SoundboardPresetIo.exportPackage(appContext, config, groupIds)
+                }
+            }
+            result.onSuccess { file ->
+                uiState = uiState.copy(status = "音效板预设已导出：${file.absolutePath}")
+                sharePresetFile(file, "application/x-kigtts-soundboard-preset", "分享音效板预设")
+            }.onFailure { e ->
+                uiState = uiState.copy(status = "音效板预设导出失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    fun importSoundboardPresetPackage(uri: android.net.Uri, openEditorOnSuccess: Boolean = false) {
+        val current = currentSoundboardConfig()
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { SoundboardPresetIo.importPackage(appContext, uri, current) }
+            }
+            result.onSuccess { config ->
+                val importedCount = (config.groups.size - soundboardGroups.size).coerceAtLeast(0)
+                applySoundboardConfig(config)
+                SoundboardManager.updateCachedConfig(config)
+                saveSoundboardConfig()
+                val message = if (importedCount > 0) {
+                    "音效板预设已安装：$importedCount 个分组"
+                } else {
+                    "音效板预设已安装"
+                }
+                uiState = uiState.copy(status = message)
+                if (openEditorOnSuccess) {
+                    requestPresetInstallNavigation(PresetInstallTarget.Soundboard, message)
+                }
+            }.onFailure { e ->
+                uiState = uiState.copy(status = "音效板预设导入失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    fun currentSoundboardGroupIndex(): Int {
+        val idx = soundboardGroups.indexOfFirst { it.id == soundboardSelectedGroupId }
+        return if (idx >= 0) idx else 0
+    }
+
+    fun selectSoundboardGroup(index: Int) {
+        val clamped = index.coerceIn(0, soundboardGroups.lastIndex.coerceAtLeast(0))
+        val target = soundboardGroups.getOrNull(clamped) ?: return
+        soundboardSelectedGroupId = target.id
+        saveSoundboardConfig()
+    }
+
+    fun currentSoundboardLayout(landscape: Boolean): SoundboardLayoutMode {
+        return if (landscape) soundboardLandscapeLayout else soundboardPortraitLayout
+    }
+
+    fun updateSoundboardLayout(landscape: Boolean, layout: SoundboardLayoutMode) {
+        if (landscape) soundboardLandscapeLayout = layout else soundboardPortraitLayout = layout
+        saveSoundboardConfig()
+    }
+
+    fun updateSoundboardGroupMeta(index: Int, title: String, icon: String) {
+        if (index !in soundboardGroups.indices) return
+        val next = soundboardGroups.toMutableList()
+        val prev = next[index]
+        next[index] = prev.copy(
+            title = title.trim(),
+            icon = icon.ifBlank { "music_note" }
+        )
+        soundboardGroups = next
+        saveSoundboardConfig()
+    }
+
+    fun addSoundboardGroup() {
+        val newId = soundboardNextGroupId++
+        soundboardGroups = soundboardGroups + SoundboardGroup(
+            id = newId,
+            title = "新分组",
+            icon = "music_note",
+            items = emptyList()
+        )
+        soundboardSelectedGroupId = newId
+        saveSoundboardConfig()
+    }
+
+    fun removeSoundboardGroup(index: Int) {
+        if (soundboardGroups.size <= 1) return
+        if (index !in soundboardGroups.indices) return
+        val removedId = soundboardGroups[index].id
+        val next = soundboardGroups.toMutableList().apply { removeAt(index) }
+        soundboardGroups = next
+        if (soundboardSelectedGroupId == removedId) {
+            soundboardSelectedGroupId = next[index.coerceAtMost(next.lastIndex)].id
+        }
+        saveSoundboardConfig()
+    }
+
+    fun moveSoundboardGroup(from: Int, to: Int) {
+        if (from !in soundboardGroups.indices || to !in soundboardGroups.indices || from == to) return
+        val next = soundboardGroups.toMutableList()
+        val moved = next.removeAt(from)
+        next.add(to, moved)
+        soundboardGroups = next
+        saveSoundboardConfig()
+    }
+
+    fun addSoundboardItem(groupIndex: Int) {
+        if (groupIndex !in soundboardGroups.indices) return
+        val next = soundboardGroups.toMutableList()
+        val group = next[groupIndex]
+        next[groupIndex] = group.copy(
+            items = group.items + SoundboardItem(
+                id = soundboardNextItemId++,
+                title = "新音效"
+            )
+        )
+        soundboardGroups = next
+        saveSoundboardConfig()
+    }
+
+    fun updateSoundboardItem(
+        groupIndex: Int,
+        itemIndex: Int,
+        transform: (SoundboardItem) -> SoundboardItem
+    ) {
+        if (groupIndex !in soundboardGroups.indices) return
+        val group = soundboardGroups[groupIndex]
+        if (itemIndex !in group.items.indices) return
+        val items = group.items.toMutableList()
+        items[itemIndex] = transform(items[itemIndex])
+        val next = soundboardGroups.toMutableList()
+        next[groupIndex] = group.copy(items = items)
+        soundboardGroups = next
+        saveSoundboardConfig()
+    }
+
+    fun setSoundboardItems(groupIndex: Int, items: List<SoundboardItem>) {
+        if (groupIndex !in soundboardGroups.indices) return
+        val next = soundboardGroups.toMutableList()
+        next[groupIndex] = next[groupIndex].copy(items = items)
+        soundboardGroups = next
+        saveSoundboardConfig()
+    }
+
+    fun removeSoundboardItem(groupIndex: Int, itemIndex: Int) {
+        if (groupIndex !in soundboardGroups.indices) return
+        val group = soundboardGroups[groupIndex]
+        if (itemIndex !in group.items.indices) return
+        val items = group.items.toMutableList().apply { removeAt(itemIndex) }
+        val next = soundboardGroups.toMutableList()
+        next[groupIndex] = group.copy(items = items)
+        soundboardGroups = next
+        saveSoundboardConfig()
+    }
+
+    fun isSoundboardItemPlaying(itemId: Long): Boolean {
+        return soundboardPlaybackStates[itemId]?.playing == true
+    }
+
+    fun soundboardItemProgress(itemId: Long): Float {
+        return soundboardPlaybackStates[itemId]?.progress?.coerceIn(0f, 1f) ?: 0f
+    }
+
+    fun playSoundboardItem(item: SoundboardItem) {
+        if (item.audioPath.isBlank()) {
+            uiState = uiState.copy(status = "请先为该音效选择音频文件")
+            return
+        }
+        viewModelScope.launch {
+            val played = SoundboardManager.play(item)
+            if (!played) {
+                uiState = uiState.copy(status = "音效播放失败")
+            }
+        }
+    }
+
+    fun stopSoundboardItem(itemId: Long) {
+        viewModelScope.launch {
+            SoundboardManager.stop(itemId)
+        }
+    }
+
+    fun importSoundboardAudioClip(
+        groupIndex: Int,
+        itemIndex: Int,
+        uri: android.net.Uri,
+        startMs: Long,
+        endMs: Long
+    ) {
+        val item = soundboardGroups.getOrNull(groupIndex)?.items?.getOrNull(itemIndex) ?: return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    SoundboardPresetIo.importAudioClip(
+                        context = appContext,
+                        uri = uri,
+                        startMs = startMs,
+                        endMs = endMs,
+                        titleHint = item.title
+                    )
+                }
+            }
+            result.onSuccess { imported ->
+                updateSoundboardItem(groupIndex, itemIndex) { current ->
+                    current.copy(
+                        audioPath = imported.path,
+                        durationMs = imported.durationMs,
+                        trimStartMs = imported.trimStartMs,
+                        trimEndMs = imported.trimEndMs
+                    )
+                }
+                uiState = uiState.copy(status = "音效已导入")
+            }.onFailure { e ->
+                uiState = uiState.copy(status = "音效导入失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    fun importSoundboardAudioFiles(groupIndex: Int, uris: List<android.net.Uri>) {
+        if (groupIndex !in soundboardGroups.indices || uris.isEmpty()) return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    uris.map { uri ->
+                        val displayName = SoundboardPresetIo.displayName(appContext, uri)
+                        val title = displayName.substringBeforeLast('.').ifBlank { "新音效" }
+                        val imported = SoundboardPresetIo.importAudioClip(
+                            context = appContext,
+                            uri = uri,
+                            startMs = 0L,
+                            endMs = Long.MAX_VALUE,
+                            titleHint = title
+                        )
+                        title to imported
+                    }
+                }
+            }
+            result.onSuccess { importedItems ->
+                val next = soundboardGroups.toMutableList()
+                val group = next.getOrNull(groupIndex) ?: return@onSuccess
+                val newItems = importedItems.map { (title, imported) ->
+                    SoundboardItem(
+                        id = soundboardNextItemId++,
+                        title = title.trim().ifBlank { "新音效" },
+                        audioPath = imported.path,
+                        durationMs = imported.durationMs,
+                        trimStartMs = imported.trimStartMs,
+                        trimEndMs = imported.trimEndMs
+                    )
+                }
+                next[groupIndex] = group.copy(items = group.items + newItems)
+                soundboardGroups = next
+                saveSoundboardConfig()
+                uiState = uiState.copy(status = "已批量导入 ${newItems.size} 个音效")
+            }.onFailure { e ->
+                uiState = uiState.copy(status = "批量导入音效失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    private fun maybeTriggerSoundboardFromText(text: String, fromQuickText: Boolean) {
+        val normalized = text.trim()
+        if (normalized.isEmpty()) return
+        if (!uiState.soundboardKeywordTriggerEnabled) return
+        if (fromQuickText && !uiState.allowQuickTextTriggerSoundboard) return
+        viewModelScope.launch {
+            SoundboardManager.triggerByText(appContext, normalized)
+        }
     }
 
     private fun quickCardDir(): File {
@@ -2168,6 +2634,24 @@ class MainViewModel(
         }
     }
 
+    private fun sharePresetFile(file: File, mimeType: String, chooserTitle: String) {
+        runCatching {
+            val uri = FileProvider.getUriForFile(
+                appContext,
+                appContext.packageName + ".fileprovider",
+                file
+            )
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            appContext.startActivity(Intent.createChooser(intent, chooserTitle))
+        }.onFailure { e ->
+            uiState = uiState.copy(status = "分享失败：${e.message ?: "未知错误"}")
+        }
+    }
+
     fun setMuteWhilePlaying(enabled: Boolean) {
         uiState = uiState.copy(muteWhilePlaying = enabled)
         realtimeHost?.setSuppressWhilePlaying(enabled)
@@ -2325,7 +2809,7 @@ class MainViewModel(
             pushToTalkStreamingText = ""
         )
         realtimeHost?.setPushToTalkStreamingEnabled(false)
-        realtimeHost?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkConfirmInputMode)
+        realtimeHost?.setSuppressAsrAutoSpeak(uiState.ttsDisabled || (enabled && uiState.pushToTalkConfirmInputMode))
         viewModelScope.launch {
             UserPrefs.setPushToTalkMode(appContext, enabled)
         }
@@ -2340,7 +2824,7 @@ class MainViewModel(
         )
         val streamingEnabled = enabled && uiState.pushToTalkMode && uiState.pushToTalkPressed
         realtimeHost?.setPushToTalkStreamingEnabled(streamingEnabled)
-        realtimeHost?.setSuppressAsrAutoSpeak(enabled && uiState.pushToTalkMode)
+        realtimeHost?.setSuppressAsrAutoSpeak(uiState.ttsDisabled || (enabled && uiState.pushToTalkMode))
         viewModelScope.launch {
             UserPrefs.setPushToTalkConfirmInput(appContext, enabled)
         }
@@ -2357,6 +2841,31 @@ class MainViewModel(
         uiState = uiState.copy(floatingOverlayAutoDock = enabled)
         viewModelScope.launch {
             UserPrefs.setFloatingOverlayAutoDock(appContext, enabled)
+        }
+    }
+
+    fun setTtsDisabled(enabled: Boolean) {
+        uiState = uiState.copy(ttsDisabled = enabled)
+        realtimeHost?.setTtsDisabled(enabled)
+        realtimeHost?.setSuppressAsrAutoSpeak(
+            enabled || (uiState.pushToTalkMode && uiState.pushToTalkConfirmInputMode)
+        )
+        viewModelScope.launch {
+            UserPrefs.setTtsDisabled(appContext, enabled)
+        }
+    }
+
+    fun setSoundboardKeywordTriggerEnabled(enabled: Boolean) {
+        uiState = uiState.copy(soundboardKeywordTriggerEnabled = enabled)
+        viewModelScope.launch {
+            UserPrefs.setSoundboardKeywordTriggerEnabled(appContext, enabled)
+        }
+    }
+
+    fun setAllowQuickTextTriggerSoundboard(enabled: Boolean) {
+        uiState = uiState.copy(allowQuickTextTriggerSoundboard = enabled)
+        viewModelScope.launch {
+            UserPrefs.setAllowQuickTextTriggerSoundboard(appContext, enabled)
         }
     }
 
@@ -2437,6 +2946,11 @@ class MainViewModel(
     private fun enqueuePttSpeakAndAppendHistory(text: String) {
         val message = text.trim()
         if (message.isEmpty()) return
+        if (uiState.ttsDisabled) {
+            appendRecognizedHistory(message)
+            uiState = uiState.copy(status = TTS_DISABLED_MESSAGE)
+            return
+        }
         viewModelScope.launch {
             val host = requestRealtimeHost("音频宿主初始化中")
             val queuedId = host?.speakText(message)
@@ -2927,9 +3441,14 @@ class MainViewModel(
         audioTest.clear()
     }
 
-    fun speakText(text: String) {
+    fun speakText(text: String, fromQuickText: Boolean = false) {
         val message = text.trim()
         if (message.isEmpty()) return
+        if (uiState.ttsDisabled) {
+            appendRecognizedHistory(message, fromQuickText = fromQuickText)
+            uiState = uiState.copy(status = TTS_DISABLED_MESSAGE)
+            return
+        }
         if (uiState.voiceDir == null) {
             uiState = uiState.copy(status = "请先选择语音包")
             return
@@ -2940,7 +3459,7 @@ class MainViewModel(
             if (queuedId != null) {
                 // 便捷字幕的快速文本/输入框触发朗读时，也要进入历史记录。
                 // 使用队列ID绑定，避免与 onResult 回调重复插入。
-                appendRecognizedHistory(message, queuedId)
+                appendRecognizedHistory(message, queuedId, fromQuickText = fromQuickText)
                 uiState = uiState.copy(status = "已加入朗读队列")
             }
         }
@@ -2950,8 +3469,11 @@ class MainViewModel(
         val host = requestRealtimeHost("音频宿主初始化中")
         val asr = uiState.asrDir
         val voice = uiState.voiceDir
-        if (asr == null || voice == null) {
-            uiState = uiState.copy(status = "请先导入 ASR 模型和 voicepack")
+        val requireVoice = !uiState.ttsDisabled
+        if (asr == null || (requireVoice && voice == null)) {
+            uiState = uiState.copy(
+                status = if (requireVoice) "请先导入 ASR 模型和 voicepack" else "请先导入 ASR 模型"
+            )
             return
         }
         if (host != null) {
@@ -5224,13 +5746,6 @@ private fun QuickCardDecorativeBackgroundText(
                     .width(520.dp)
                     .padding(start = 12.dp, bottom = 6.dp)
             )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .width(68.dp)
-                    .background(Brush.horizontalGradient(listOf(Color.Transparent, color.copy(alpha = 0.18f))))
-            )
         } else {
             val topPad = 10.dp
             val topPadPx = with(LocalDensity.current) { topPad.toPx() }
@@ -5252,13 +5767,6 @@ private fun QuickCardDecorativeBackgroundText(
                         translationY = textWidthPx.toFloat() + topPadPx,
                         clip = false
                     )
-            )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .fillMaxWidth()
-                    .height(72.dp)
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, color.copy(alpha = 0.18f))))
             )
         }
     }
@@ -5579,17 +6087,6 @@ private fun QuickCardHeroArea(
                                 .width(maxWidth * 1.8f)
                                 .padding(start = 8.dp, bottom = 4.dp)
                         )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .fillMaxHeight()
-                                .width(68.dp)
-                                .background(
-                                    Brush.horizontalGradient(
-                                        colors = listOf(Color.Transparent, theme)
-                                    )
-                                )
-                        )
                     } else {
                         val topPad = 10.dp
                         val topPadPx = with(LocalDensity.current) { topPad.toPx() }
@@ -5610,17 +6107,6 @@ private fun QuickCardHeroArea(
                                     transformOrigin = TransformOrigin(1f, 0f),
                                     translationY = portraitWatermarkWidthPx.toFloat() + topPadPx,
                                     clip = false
-                                )
-                        )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .fillMaxWidth()
-                                .height(72.dp)
-                                .background(
-                                    Brush.verticalGradient(
-                                        colors = listOf(Color.Transparent, theme)
-                                    )
                                 )
                         )
                     }
@@ -6429,10 +6915,20 @@ data class QuickCardTopBarActions(
     val canWebForward: Boolean = false
 )
 
+data class PresetTopBarActions(
+    val onImport: () -> Unit,
+    val onExport: () -> Unit
+)
+
 private object QuickSubtitleRoutes {
     const val Main = "quick_subtitle/main"
     const val Editor = "quick_subtitle/editor"
     const val History = "quick_subtitle/history"
+}
+
+private object SoundboardRoutes {
+    const val Main = "soundboard/main"
+    const val Editor = "soundboard/editor"
 }
 
 private object QuickCardRoutes {
@@ -6458,11 +6954,32 @@ private object SettingsRoutes {
     const val Log = "settings/log"
 }
 
+private val SoundboardAudioFileExtensions = setOf(
+    "m4a",
+    "mp4",
+    "aac",
+    "mp3",
+    "wav",
+    "wave",
+    "flac",
+    "ogg",
+    "oga",
+    "opus",
+    "amr",
+    "awb",
+    "3gp",
+    "3gpp",
+    "webm"
+)
+
+private const val TTS_DISABLED_MESSAGE = "TTS已禁用，如需打开，请打开顶部音频状态菜单将“禁用TTS”选项关闭"
+
 class MainActivity : ComponentActivity() {
     private var lastDecorFitsSystemWindows: Boolean = false
     private var pendingBackgroundReturnFix: Boolean = false
     private var delayedResumeFixRunnable: Runnable? = null
     private var lastHandledExternalVoicePackIntentKey: String? = null
+    private var lastHandledExternalPresetIntentKey: String? = null
     private var realtimeHostBound = false
     private val realtimeHostConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -6640,6 +7157,20 @@ class MainActivity : ComponentActivity() {
                     Intent.ACTION_SEND -> @Suppress("DEPRECATION") (intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri)
                     else -> null
                 } ?: return
+                val presetTarget = presetInstallTargetForIntent(intent, uri)
+                if (presetTarget != null) {
+                    val key = "${intent.action}|$uri|${resolveExternalFileName(uri).orEmpty()}|$presetTarget"
+                    if (lastHandledExternalPresetIntentKey == key) return
+                    lastHandledExternalPresetIntentKey = key
+                    when (presetTarget) {
+                        PresetInstallTarget.QuickSubtitle ->
+                            viewModel.importQuickSubtitlePresetPackage(uri, openEditorOnSuccess = true)
+                        PresetInstallTarget.Soundboard ->
+                            viewModel.importSoundboardPresetPackage(uri, openEditorOnSuccess = true)
+                    }
+                    setIntent(Intent())
+                    return
+                }
                 if (!shouldHandleVoicePackIntent(intent, uri)) return
                 val key = "${intent.action}|$uri|${resolveExternalFileName(uri).orEmpty()}"
                 if (lastHandledExternalVoicePackIntentKey == key) return
@@ -6647,6 +7178,18 @@ class MainActivity : ComponentActivity() {
                 viewModel.importVoice(uri, openVoicePackPageOnSuccess = true)
                 setIntent(Intent())
             }
+        }
+    }
+
+    private fun presetInstallTargetForIntent(intent: Intent, uri: Uri): PresetInstallTarget? {
+        val name = resolveExternalFileName(uri)?.lowercase().orEmpty()
+        val mime = intent.type?.lowercase().orEmpty()
+        return when {
+            name.endsWith(".kigtpk") || mime == "application/x-kigtts-quicktext-preset" ->
+                PresetInstallTarget.QuickSubtitle
+            name.endsWith(".kigspk") || mime == "application/x-kigtts-soundboard-preset" ->
+                PresetInstallTarget.Soundboard
+            else -> null
         }
     }
 
@@ -7418,7 +7961,8 @@ fun AppScaffold(viewModel: MainViewModel) {
     val pageQuickCard = 2
     val pageVoicePack = 3
     val pageDrawing = 4
-    val pageSettings = 5
+    val pageSoundboard = 5
+    val pageSettings = 6
 
     var page by rememberSaveable { mutableStateOf(pageQuickSubtitle) }
     var drawingFullscreen by rememberSaveable { mutableStateOf(false) }
@@ -7426,14 +7970,21 @@ fun AppScaffold(viewModel: MainViewModel) {
     var runningStripCollapsed by rememberSaveable { mutableStateOf(true) }
     var logTopBarActions by remember { mutableStateOf<LogTopBarActions?>(null) }
     var quickCardTopBarActions by remember { mutableStateOf<QuickCardTopBarActions?>(null) }
+    var quickSubtitlePresetExportDialog by remember { mutableStateOf(false) }
+    var soundboardPresetExportDialog by remember { mutableStateOf(false) }
+    var showBuiltinQuickSubtitlePresetPicker by remember { mutableStateOf(false) }
+    var showBuiltinSoundboardPresetPicker by remember { mutableStateOf(false) }
     var quickCardWebMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var quickCardNavReady by remember { mutableStateOf(false) }
     var pendingQuickCardOverlayTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val quickSubtitleNavController = rememberNavController()
+    val soundboardNavController = rememberNavController()
     val quickCardNavController = rememberNavController()
     val settingsNavController = rememberNavController()
     val quickSubtitleBackStackEntry by quickSubtitleNavController.currentBackStackEntryAsState()
     val quickSubtitleRoute = quickSubtitleBackStackEntry?.destination?.route ?: QuickSubtitleRoutes.Main
+    val soundboardBackStackEntry by soundboardNavController.currentBackStackEntryAsState()
+    val soundboardRoute = soundboardBackStackEntry?.destination?.route ?: SoundboardRoutes.Main
     val quickCardBackStackEntry by quickCardNavController.currentBackStackEntryAsState()
     val quickCardRoute = quickCardBackStackEntry?.destination?.route ?: QuickCardRoutes.Main
     val quickCardWebUrl = remember(quickCardBackStackEntry) {
@@ -7530,6 +8081,10 @@ fun AppScaffold(viewModel: MainViewModel) {
         basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.History
     val quickSubtitleSubPageOpen =
         basePage == pageQuickSubtitle && quickSubtitleRoute != QuickSubtitleRoutes.Main
+    val soundboardEditorOpen =
+        basePage == pageSoundboard && soundboardRoute == SoundboardRoutes.Editor
+    val soundboardSubPageOpen =
+        basePage == pageSoundboard && soundboardRoute != SoundboardRoutes.Main
     val quickCardEditorOpen =
         basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Editor
     val quickCardSortOpen =
@@ -7557,12 +8112,14 @@ fun AppScaffold(viewModel: MainViewModel) {
         DrawerItem(pageQuickSubtitle, "便捷字幕", "subtitles"),
         DrawerItem(pageQuickCard, "快捷名片", "id_card"),
         DrawerItem(pageDrawing, "画板", "draw"),
+        DrawerItem(pageSoundboard, "音效板", "library_music"),
         DrawerItem(pageOverlay, "悬浮窗", "open_in_new"),
         DrawerItem(pageVoicePack, "语音包", "record_voice_over"),
         DrawerItem(pageSettings, "设置", "tune")
     )
     val pendingQuickSubtitleLaunchRequest = viewModel.pendingQuickSubtitleLaunchRequest
     val pendingVoicePackInstallRequest = viewModel.pendingVoicePackInstallRequest
+    val pendingPresetInstallRequest = viewModel.pendingPresetInstallRequest
     val drawerSelectedPage = basePage
     LaunchedEffect(drawerItems.size) {
         val validPages = drawerItems.map { it.page }.toSet()
@@ -7573,6 +8130,11 @@ fun AppScaffold(viewModel: MainViewModel) {
     LaunchedEffect(basePage, quickSubtitleRoute) {
         if (basePage != pageQuickSubtitle && quickSubtitleRoute != QuickSubtitleRoutes.Main) {
             quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+        }
+    }
+    LaunchedEffect(basePage, soundboardRoute) {
+        if (basePage != pageSoundboard && soundboardRoute != SoundboardRoutes.Main) {
+            soundboardNavController.popBackStack(SoundboardRoutes.Main, inclusive = false)
         }
     }
     LaunchedEffect(basePage, quickCardRoute) {
@@ -7631,6 +8193,12 @@ fun AppScaffold(viewModel: MainViewModel) {
             OverlayBridge.TARGET_OPEN_DRAWING -> {
                 page = pageDrawing
             }
+            OverlayBridge.TARGET_OPEN_SOUNDBOARD -> {
+                page = pageSoundboard
+                if (soundboardRoute != SoundboardRoutes.Main) {
+                    soundboardNavController.popBackStack(SoundboardRoutes.Main, inclusive = false)
+                }
+            }
             OverlayBridge.TARGET_OPEN_SETTINGS -> {
                 page = pageSettings
                 if (settingsRoute != SettingsRoutes.Main) {
@@ -7660,6 +8228,32 @@ fun AppScaffold(viewModel: MainViewModel) {
         page = pageVoicePack
         toast(context, request.message)
         viewModel.consumeVoicePackInstallRequest(request.requestId)
+        if (!usePermanentDrawer) {
+            drawerState.close()
+        }
+    }
+    LaunchedEffect(pendingPresetInstallRequest?.requestId) {
+        val request = pendingPresetInstallRequest ?: return@LaunchedEffect
+        when (request.target) {
+            PresetInstallTarget.QuickSubtitle -> {
+                page = pageQuickSubtitle
+                if (quickSubtitleRoute != QuickSubtitleRoutes.Editor) {
+                    quickSubtitleNavController.navigate(QuickSubtitleRoutes.Editor) {
+                        launchSingleTop = true
+                    }
+                }
+            }
+            PresetInstallTarget.Soundboard -> {
+                page = pageSoundboard
+                if (soundboardRoute != SoundboardRoutes.Editor) {
+                    soundboardNavController.navigate(SoundboardRoutes.Editor) {
+                        launchSingleTop = true
+                    }
+                }
+            }
+        }
+        toast(context, request.message)
+        viewModel.consumePresetInstallRequest(request.requestId)
         if (!usePermanentDrawer) {
             drawerState.close()
         }
@@ -7731,6 +8325,9 @@ fun AppScaffold(viewModel: MainViewModel) {
         when {
             quickSubtitleSubPageOpen -> {
                 quickSubtitleNavController.popBackStack(QuickSubtitleRoutes.Main, inclusive = false)
+            }
+            soundboardSubPageOpen -> {
+                soundboardNavController.popBackStack(SoundboardRoutes.Main, inclusive = false)
             }
             settingsLogOpen -> {
                 settingsNavController.popBackStack(SettingsRoutes.Main, inclusive = false)
@@ -7811,9 +8408,18 @@ fun AppScaffold(viewModel: MainViewModel) {
     val voicePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.importVoice(uri) else toast(context, "未选择文件")
     }
+    val quickSubtitlePresetPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.importQuickSubtitlePresetPackage(uri) else toast(context, "未选择文件")
+    }
+    val soundboardPresetPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.importSoundboardPresetPackage(uri) else toast(context, "未选择文件")
+    }
     var showBuiltinVoicePicker by remember { mutableStateOf(false) }
 
     val onToggleRun = {
+        if (!state.running && state.ttsDisabled) {
+            toast(context, TTS_DISABLED_MESSAGE)
+        }
         if (state.running) {
             viewModel.stop()
         } else {
@@ -7868,6 +8474,50 @@ fun AppScaffold(viewModel: MainViewModel) {
             onPicked = { uri ->
                 showBuiltinVoicePicker = false
                 viewModel.importVoice(uri)
+            }
+        )
+    }
+    if (showBuiltinQuickSubtitlePresetPicker) {
+        BuiltinFilePickerDialog(
+            title = "选择便捷字幕预设",
+            allowedExtensions = setOf("kigtpk", "zip", "json"),
+            onDismiss = { showBuiltinQuickSubtitlePresetPicker = false },
+            onPicked = { uri ->
+                showBuiltinQuickSubtitlePresetPicker = false
+                viewModel.importQuickSubtitlePresetPackage(uri)
+            }
+        )
+    }
+    if (showBuiltinSoundboardPresetPicker) {
+        BuiltinFilePickerDialog(
+            title = "选择音效板预设",
+            allowedExtensions = setOf("kigspk", "zip", "json"),
+            onDismiss = { showBuiltinSoundboardPresetPicker = false },
+            onPicked = { uri ->
+                showBuiltinSoundboardPresetPicker = false
+                viewModel.importSoundboardPresetPackage(uri)
+            }
+        )
+    }
+    if (quickSubtitlePresetExportDialog) {
+        PresetGroupExportDialog(
+            title = "导出便捷字幕预设",
+            groups = viewModel.quickSubtitleGroups.map { it.id to it.title.ifBlank { "未命名分组" } },
+            onDismiss = { quickSubtitlePresetExportDialog = false },
+            onConfirm = { ids ->
+                quickSubtitlePresetExportDialog = false
+                viewModel.exportQuickSubtitlePresetPackage(ids)
+            }
+        )
+    }
+    if (soundboardPresetExportDialog) {
+        PresetGroupExportDialog(
+            title = "导出音效板预设",
+            groups = viewModel.soundboardGroups.map { it.id to it.title.ifBlank { "未命名分组" } },
+            onDismiss = { soundboardPresetExportDialog = false },
+            onConfirm = { ids ->
+                soundboardPresetExportDialog = false
+                viewModel.exportSoundboardPresetPackage(ids)
             }
         )
     }
@@ -7934,6 +8584,8 @@ fun AppScaffold(viewModel: MainViewModel) {
     val topBar: @Composable ((() -> Unit)) -> Unit = { onNavClick ->
         val currentTitle = if (quickSubtitleEditorOpen) {
             "编辑便捷字幕"
+        } else if (soundboardEditorOpen) {
+            "编辑音效板"
         } else if (quickSubtitleHistoryOpen) {
             "历史记录"
         } else if (quickCardEditorOpen) {
@@ -7955,6 +8607,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                 pageQuickCard -> "快捷名片"
                 pageVoicePack -> "语音包"
                 pageDrawing -> "画板"
+                pageSoundboard -> "音效板"
                 pageSettings -> "设置"
                 else -> "KIGTTS"
             }
@@ -8010,6 +8663,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 expanded = !runningStripCollapsed,
                                 pushToTalkMode = state.pushToTalkMode,
                                 pushToTalkPressed = state.pushToTalkPressed,
+                                ttsDisabled = state.ttsDisabled,
                                 contentColor = topBarContentColor,
                                 onToggle = { runningStripCollapsed = !runningStripCollapsed }
                             )
@@ -8020,8 +8674,9 @@ fun AppScaffold(viewModel: MainViewModel) {
                     AnimatedContent(
                         targetState = when {
                             quickSubtitleSubPageOpen -> 1
-                            settingsLogOpen -> 2
-                            quickCardSubPageOpen -> 3
+                            soundboardSubPageOpen -> 2
+                            settingsLogOpen -> 3
+                            quickCardSubPageOpen -> 4
                             else -> 0
                         },
                         transitionSpec = {
@@ -8036,7 +8691,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                         },
                         label = "topbar_nav_switch"
                     ) { navMode ->
-                        if (navMode == 1 || navMode == 2 || navMode == 3) {
+                        if (navMode == 1 || navMode == 2 || navMode == 3 || navMode == 4) {
                             IconButton(onClick = {
                                 popSecondaryPageSafely()
                             }) {
@@ -8053,6 +8708,10 @@ fun AppScaffold(viewModel: MainViewModel) {
                     val quickCardActions = quickCardTopBarActions
                     val showQuickSubtitleActions =
                         basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Main
+                    val showQuickSubtitleEditorActions =
+                        basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Editor
+                    val showSoundboardEditorActions =
+                        basePage == pageSoundboard && soundboardRoute == SoundboardRoutes.Editor
                     val showQuickCardMainActions =
                         basePage == pageQuickCard &&
                                 quickCardRoute == QuickCardRoutes.Main &&
@@ -8078,6 +8737,16 @@ fun AppScaffold(viewModel: MainViewModel) {
                         targetValue = if (showQuickSubtitleActions) 1f else 0f,
                         animationSpec = tween(130, easing = FastOutSlowInEasing),
                         label = "topbar_quick_subtitle_actions_alpha"
+                    )
+                    val quickSubtitleEditorAlpha by animateFloatAsState(
+                        targetValue = if (showQuickSubtitleEditorActions) 1f else 0f,
+                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                        label = "topbar_quick_subtitle_editor_actions_alpha"
+                    )
+                    val soundboardEditorAlpha by animateFloatAsState(
+                        targetValue = if (showSoundboardEditorActions) 1f else 0f,
+                        animationSpec = tween(130, easing = FastOutSlowInEasing),
+                        label = "topbar_soundboard_editor_actions_alpha"
                     )
                     val drawingAlpha by animateFloatAsState(
                         targetValue = if (showDrawingActions) 1f else 0f,
@@ -8121,6 +8790,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                     )
                     val actionsWidthTarget = when {
                         showSettingsLogActions -> 144.dp
+                        showQuickSubtitleEditorActions || showSoundboardEditorActions -> 96.dp
                         showQuickCardMainActions || showQuickCardEditorActions -> 96.dp
                         showQuickCardSortActions -> 48.dp
                         showQuickCardWebActions -> 48.dp
@@ -8154,6 +8824,66 @@ fun AppScaffold(viewModel: MainViewModel) {
                                         name = if (quickSubtitleFullscreen) "fullscreen_exit" else "fullscreen",
                                         contentDescription = if (quickSubtitleFullscreen) "退出全屏" else "进入全屏"
                                     )
+                                }
+                            }
+                        }
+
+                        key("topbar_quick_subtitle_editor_actions_layer") {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .graphicsLayer { alpha = quickSubtitleEditorAlpha }
+                                    .zIndex(if (showQuickSubtitleEditorActions) 2f else 0f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        if (state.useBuiltinFileManager) {
+                                            showBuiltinQuickSubtitlePresetPicker = true
+                                        } else {
+                                            quickSubtitlePresetPicker.launch("*/*")
+                                        }
+                                    },
+                                    enabled = showQuickSubtitleEditorActions
+                                ) {
+                                    MsIcon("file_upload", contentDescription = "导入便捷字幕预设")
+                                }
+                                IconButton(
+                                    onClick = { quickSubtitlePresetExportDialog = true },
+                                    enabled = showQuickSubtitleEditorActions && viewModel.quickSubtitleGroups.isNotEmpty()
+                                ) {
+                                    MsIcon("file_download", contentDescription = "导出便捷字幕预设")
+                                }
+                            }
+                        }
+
+                        key("topbar_soundboard_editor_actions_layer") {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .graphicsLayer { alpha = soundboardEditorAlpha }
+                                    .zIndex(if (showSoundboardEditorActions) 2f else 0f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        if (state.useBuiltinFileManager) {
+                                            showBuiltinSoundboardPresetPicker = true
+                                        } else {
+                                            soundboardPresetPicker.launch("*/*")
+                                        }
+                                    },
+                                    enabled = showSoundboardEditorActions
+                                ) {
+                                    MsIcon("file_upload", contentDescription = "导入音效板预设")
+                                }
+                                IconButton(
+                                    onClick = { soundboardPresetExportDialog = true },
+                                    enabled = showSoundboardEditorActions && viewModel.soundboardGroups.isNotEmpty()
+                                ) {
+                                    MsIcon("file_download", contentDescription = "导出音效板预设")
                                 }
                             }
                         }
@@ -8471,6 +9201,11 @@ fun AppScaffold(viewModel: MainViewModel) {
                         fullscreen = drawingFullscreen,
                         onToggleFullscreen = { drawingFullscreen = !drawingFullscreen }
                     )
+                    pageSoundboard -> SoundboardNavHost(
+                        navController = soundboardNavController,
+                        viewModel = viewModel,
+                        state = state
+                    )
                     pageSettings -> SettingsNavHost(
                         navController = settingsNavController,
                         viewModel = viewModel,
@@ -8518,13 +9253,14 @@ fun AppScaffold(viewModel: MainViewModel) {
                 RunningStatusTopStrip(
                     viewModel = viewModel,
                     status = state.status,
-                    pushToTalkMode = state.pushToTalkMode,
-                    pushToTalkPressed = state.pushToTalkPressed,
-                    playbackGainPercent = state.playbackGainPercent,
-                    preferredInputType = state.preferredInputType,
-                    preferredOutputType = state.preferredOutputType,
-                    inputDeviceLabel = state.inputDeviceLabel,
-                    outputDeviceLabel = state.outputDeviceLabel,
+                            pushToTalkMode = state.pushToTalkMode,
+                            pushToTalkPressed = state.pushToTalkPressed,
+                            ttsDisabled = state.ttsDisabled,
+                            playbackGainPercent = state.playbackGainPercent,
+                            preferredInputType = state.preferredInputType,
+                            preferredOutputType = state.preferredOutputType,
+                            inputDeviceLabel = state.inputDeviceLabel,
+                            outputDeviceLabel = state.outputDeviceLabel,
                     onToggleCollapsed = { runningStripCollapsed = !runningStripCollapsed },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -9924,6 +10660,1436 @@ private fun QuickSubtitleNavHost(
         }
         composable(QuickSubtitleRoutes.History) {
             RealtimeScreen(viewModel)
+        }
+    }
+}
+
+@Composable
+private fun SoundboardNavHost(
+    navController: NavHostController,
+    viewModel: MainViewModel,
+    state: UiState
+) {
+    NavHost(
+        navController = navController,
+        startDestination = SoundboardRoutes.Main,
+        modifier = Modifier.fillMaxSize(),
+        enterTransition = {
+            if (initialState.destination.route == SoundboardRoutes.Main &&
+                targetState.destination.route == SoundboardRoutes.Editor
+            ) {
+                fadeIn(animationSpec = tween(180)) +
+                        slideInHorizontally(
+                            initialOffsetX = { full -> full / 10 },
+                            animationSpec = tween(180, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        exitTransition = {
+            if (initialState.destination.route == SoundboardRoutes.Main &&
+                targetState.destination.route == SoundboardRoutes.Editor
+            ) {
+                fadeOut(animationSpec = tween(130)) +
+                        slideOutHorizontally(
+                            targetOffsetX = { full -> -full / 14 },
+                            animationSpec = tween(130, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        },
+        popEnterTransition = {
+            if (initialState.destination.route == SoundboardRoutes.Editor &&
+                targetState.destination.route == SoundboardRoutes.Main
+            ) {
+                fadeIn(animationSpec = tween(170)) +
+                        slideInHorizontally(
+                            initialOffsetX = { full -> -full / 12 },
+                            animationSpec = tween(170, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeIn(animationSpec = tween(120))
+            }
+        },
+        popExitTransition = {
+            if (initialState.destination.route == SoundboardRoutes.Editor &&
+                targetState.destination.route == SoundboardRoutes.Main
+            ) {
+                fadeOut(animationSpec = tween(130)) +
+                        slideOutHorizontally(
+                            targetOffsetX = { full -> full / 16 },
+                            animationSpec = tween(130, easing = FastOutSlowInEasing)
+                        )
+            } else {
+                fadeOut(animationSpec = tween(90))
+            }
+        }
+    ) {
+        composable(SoundboardRoutes.Main) {
+            SoundboardScreen(
+                viewModel = viewModel,
+                onOpenEditor = { navController.navigate(SoundboardRoutes.Editor) }
+            )
+        }
+        composable(SoundboardRoutes.Editor) {
+            SoundboardEditorScreen(
+                viewModel = viewModel,
+                state = state,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
+
+@Composable
+private fun PresetGroupExportDialog(
+    title: String,
+    groups: List<Pair<Long, String>>,
+    onDismiss: () -> Unit,
+    onConfirm: (Set<Long>) -> Unit
+) {
+    var selectedIds by remember(groups) { mutableStateOf(groups.map { it.first }.toSet()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("选择需要导出的分组")
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                ) {
+                    items(groups, key = { it.first }) { (id, name) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(UiTokens.Radius))
+                                .clickable {
+                                    selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+                                }
+                                .padding(horizontal = 4.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = id in selectedIds,
+                                onCheckedChange = {
+                                    selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+                                }
+                            )
+                            Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(
+                onClick = { onConfirm(selectedIds) },
+                enabled = selectedIds.isNotEmpty()
+            ) {
+                Text("导出")
+            }
+        },
+        dismissButton = {
+            Md2TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun SoundboardScreen(
+    viewModel: MainViewModel,
+    onOpenEditor: () -> Unit
+) {
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val layoutDirection = LocalLayoutDirection.current
+    val navBarsPadding = WindowInsets.navigationBars.asPaddingValues()
+    val navBarsStartInset = navBarsPadding.calculateStartPadding(layoutDirection)
+    val navBarsEndInset = navBarsPadding.calculateEndPadding(layoutDirection)
+    val navBarsBottomInset = navBarsPadding.calculateBottomPadding()
+    val groups = viewModel.soundboardGroups
+    val selectedGroupIndex = viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
+    val selectedGroup = groups.getOrNull(selectedGroupIndex)
+    val items = selectedGroup?.items ?: emptyList()
+    val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
+    val listContent: @Composable () -> Unit = {
+        if (layoutMode == SoundboardLayoutMode.List) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(items, key = { it.id }) { item ->
+                    SoundboardListItem(
+                        item = item,
+                        playing = viewModel.isSoundboardItemPlaying(item.id),
+                        progress = viewModel.soundboardItemProgress(item.id),
+                        onPlay = { viewModel.playSoundboardItem(item) },
+                        onStop = { viewModel.stopSoundboardItem(item.id) }
+                    )
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(layoutMode.columns),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(items.size, key = { index -> items[index].id }) { index ->
+                    val item = items[index]
+                    SoundboardGridItem(
+                        item = item,
+                        playing = viewModel.isSoundboardItemPlaying(item.id),
+                        progress = viewModel.soundboardItemProgress(item.id),
+                        onPlay = { viewModel.playSoundboardItem(item) },
+                        onStop = { viewModel.stopSoundboardItem(item.id) }
+                    )
+                }
+            }
+        }
+    }
+    val contentCard: @Composable (Modifier) -> Unit = { cardModifier ->
+        Card(
+            modifier = cardModifier,
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            if (items.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "当前分组暂无音效，请进入编辑页添加",
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                listContent()
+            }
+        }
+    }
+    val tabsCard: @Composable (Modifier, Boolean) -> Unit = { tabsModifier, vertical ->
+        Card(
+            modifier = tabsModifier,
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            if (vertical) {
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 2.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        groups.forEachIndexed { index, group ->
+                            val selected = selectedGroupIndex == index
+                            val tabBg =
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(44.dp)
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                    .background(tabBg)
+                                    .clickable { viewModel.selectSoundboardGroup(index) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                MsIcon(
+                                    group.icon,
+                                    contentDescription = group.title.ifBlank { "未命名分组" }
+                                )
+                            }
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            IconButton(onClick = onOpenEditor) {
+                                MsIcon(
+                                    "edit",
+                                    contentDescription = "编辑音效板",
+                                    tint = MaterialTheme.colorScheme.onPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .horizontalScroll(rememberScrollState()),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        groups.forEachIndexed { index, group ->
+                            val selected = selectedGroupIndex == index
+                            val tabBg =
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+                            Row(
+                                modifier = Modifier
+                                    .height(48.dp)
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                    .background(tabBg)
+                                    .clickable { viewModel.selectSoundboardGroup(index) }
+                                    .padding(horizontal = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                val displayTitle = group.title.ifBlank { "未命名分组" }
+                                MsIcon(group.icon, contentDescription = displayTitle)
+                                Text(displayTitle, maxLines = 1)
+                            }
+                            if (index != groups.lastIndex) {
+                                Spacer(Modifier.width(2.dp))
+                            }
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .width(52.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            IconButton(onClick = onOpenEditor) {
+                                MsIcon(
+                                    "edit",
+                                    contentDescription = "编辑音效板",
+                                    tint = MaterialTheme.colorScheme.onPrimary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    CenteredPageBox(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        val pageModifier = Modifier
+            .fillMaxSize()
+            .padding(
+                start = 10.dp + navBarsStartInset,
+                end = 10.dp + navBarsEndInset,
+                top = 12.dp,
+                bottom = 12.dp + navBarsBottomInset
+            )
+        if (isLandscape) {
+            Row(
+                modifier = pageModifier,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                contentCard(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                )
+                tabsCard(
+                    Modifier
+                        .width(54.dp)
+                        .fillMaxHeight(),
+                    true
+                )
+            }
+        } else {
+            Column(
+                modifier = pageModifier
+            ) {
+                contentCard(
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                )
+                Spacer(Modifier.height(8.dp))
+                tabsCard(Modifier.fillMaxWidth(), false)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SoundboardGridItem(
+    item: SoundboardItem,
+    playing: Boolean,
+    progress: Float,
+    onPlay: () -> Unit,
+    onStop: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(118.dp)
+            .clickable { onPlay() },
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.title.ifBlank { "未命名音效" },
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (item.wakeWord.isNotBlank()) {
+                        Text(
+                            text = item.wakeWord,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                IconButton(onClick = { if (playing) onStop() else onPlay() }) {
+                    MsIcon(
+                        if (playing) "stop" else "play_arrow",
+                        contentDescription = if (playing) "停止音效" else "播放音效"
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            LinearProgressIndicator(
+                progress = progress.coerceIn(0f, 1f),
+                modifier = Modifier.fillMaxWidth(),
+                backgroundColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SoundboardListItem(
+    item: SoundboardItem,
+    playing: Boolean,
+    progress: Float,
+    onPlay: () -> Unit,
+    onStop: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onPlay() },
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = item.title.ifBlank { "未命名音效" },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (item.wakeWord.isNotBlank()) {
+                        Text(
+                            text = item.wakeWord,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f)
+                        )
+                    }
+                }
+                IconButton(onClick = { if (playing) onStop() else onPlay() }) {
+                    MsIcon(
+                        if (playing) "stop" else "play_arrow",
+                        contentDescription = if (playing) "停止音效" else "播放音效"
+                    )
+                }
+            }
+            LinearProgressIndicator(
+                progress = progress.coerceIn(0f, 1f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+                backgroundColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+            )
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalFoundationApi::class)
+private fun SoundboardEditorScreen(
+    viewModel: MainViewModel,
+    state: UiState,
+    modifier: Modifier = Modifier
+) {
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val groups = viewModel.soundboardGroups
+    var selectedGroupIndex by remember(groups, viewModel.soundboardSelectedGroupId) {
+        mutableIntStateOf(viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0)))
+    }
+    val selectedGroup = groups.getOrNull(selectedGroupIndex)
+    val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
+    var layoutExpanded by remember { mutableStateOf(false) }
+    val layoutOptions = remember { SoundboardLayoutMode.entries.toList() }
+    val iconChoices = remember {
+        listOf(
+            "music_note",
+            "library_music",
+            "sports_esports",
+            "favorite",
+            "work",
+            "chat"
+        )
+    }
+
+    CenteredPageBox(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        modifier = modifier
+            .fillMaxSize()
+            .imePadding()
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = UiTokens.PageTopBlank, bottom = UiTokens.PageBottomBlank),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item(key = "soundboard_settings_card") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.CardElevation
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("关键词触发音效板", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                            Md2Switch(
+                                checked = state.soundboardKeywordTriggerEnabled,
+                                onCheckedChange = { viewModel.setSoundboardKeywordTriggerEnabled(it) }
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("禁用TTS", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                            Md2Switch(
+                                checked = state.ttsDisabled,
+                                onCheckedChange = { viewModel.setTtsDisabled(it) }
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("布局样式：", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(UiTokens.Radius))
+                                    .clickable { layoutExpanded = true }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(layoutMode.label, modifier = Modifier.weight(1f))
+                                    MsIcon("keyboard_arrow_down", contentDescription = "切换排列方式")
+                                }
+                                Md2AnimatedOptionMenu(
+                                    expanded = layoutExpanded,
+                                    onDismissRequest = { layoutExpanded = false }
+                                ) {
+                                    layoutOptions.forEach { mode ->
+                                        M2DropdownMenuItem(
+                                            onClick = {
+                                                layoutExpanded = false
+                                                viewModel.updateSoundboardLayout(isLandscape, mode)
+                                            }
+                                        ) {
+                                            Text(
+                                                mode.label,
+                                                fontWeight = if (mode == layoutMode) FontWeight.SemiBold else null
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item(key = "soundboard_groups_card") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.CardElevation
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Md2CardTitleText("分组", modifier = Modifier.weight(1f))
+                            Md2TextButton(onClick = { viewModel.addSoundboardGroup() }) {
+                                MsIcon("add", contentDescription = "新增分组")
+                                Spacer(Modifier.width(4.dp))
+                                Text("新增")
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            groups.forEachIndexed { idx, group ->
+                                val selected = idx == selectedGroupIndex
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(UiTokens.Radius))
+                                        .background(
+                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                        )
+                                        .clickable {
+                                            selectedGroupIndex = idx
+                                            viewModel.selectSoundboardGroup(idx)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    val displayTitle = group.title.ifBlank { "未命名分组" }
+                                    MsIcon(group.icon, contentDescription = displayTitle)
+                                    Text(displayTitle)
+                                    Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                        if (selectedGroup != null) {
+                            Md2OutlinedField(
+                                value = selectedGroup.title,
+                                onValueChange = { viewModel.updateSoundboardGroupMeta(selectedGroupIndex, it, selectedGroup.icon) },
+                                label = "分组名称",
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                iconChoices.forEach { icon ->
+                                    val selected = icon == selectedGroup.icon
+                                    Surface(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(CircleShape)
+                                            .clickable {
+                                                viewModel.updateSoundboardGroupMeta(selectedGroupIndex, selectedGroup.title, icon)
+                                            },
+                                        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            MsIcon(icon, contentDescription = icon)
+                                        }
+                                    }
+                                }
+                            }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Md2IconButton(
+                                    icon = "arrow_back",
+                                    contentDescription = "分组左移",
+                                    onClick = {
+                                        if (selectedGroupIndex > 0) {
+                                            viewModel.moveSoundboardGroup(selectedGroupIndex, selectedGroupIndex - 1)
+                                            selectedGroupIndex -= 1
+                                        }
+                                    },
+                                    enabled = selectedGroupIndex > 0
+                                )
+                                Md2IconButton(
+                                    icon = "arrow_forward",
+                                    contentDescription = "分组右移",
+                                    onClick = {
+                                        if (selectedGroupIndex < groups.lastIndex) {
+                                            viewModel.moveSoundboardGroup(selectedGroupIndex, selectedGroupIndex + 1)
+                                            selectedGroupIndex += 1
+                                        }
+                                    },
+                                    enabled = selectedGroupIndex < groups.lastIndex
+                                )
+                                Md2IconButton(
+                                    icon = "delete",
+                                    contentDescription = "删除分组",
+                                    onClick = {
+                                        viewModel.removeSoundboardGroup(selectedGroupIndex)
+                                        selectedGroupIndex = viewModel.currentSoundboardGroupIndex()
+                                    },
+                                    enabled = groups.size > 1
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (groups.isNotEmpty()) {
+                item(key = "soundboard_items_card") {
+                    AnimatedContent(
+                        targetState = selectedGroupIndex.coerceIn(0, groups.lastIndex.coerceAtLeast(0)),
+                        transitionSpec = {
+                            val forward = targetState >= initialState
+                            if (isLandscape) {
+                                ContentTransform(
+                                    targetContentEnter = fadeIn(animationSpec = tween(200)) +
+                                            slideInHorizontally(
+                                                initialOffsetX = { full ->
+                                                    val d = kotlin.math.min(full / 3, 96)
+                                                    if (forward) d else -d
+                                                },
+                                                animationSpec = tween(220, easing = FastOutSlowInEasing)
+                                            ),
+                                    initialContentExit = fadeOut(animationSpec = tween(170)) +
+                                            slideOutHorizontally(
+                                                targetOffsetX = { full ->
+                                                    val d = kotlin.math.min(full / 4, 72)
+                                                    if (forward) -d else d
+                                                },
+                                                animationSpec = tween(180, easing = FastOutSlowInEasing)
+                                            ),
+                                    sizeTransform = null
+                                )
+                            } else {
+                                ContentTransform(
+                                    targetContentEnter = fadeIn(animationSpec = tween(200)) +
+                                            slideInVertically(
+                                                initialOffsetY = { full ->
+                                                    val d = kotlin.math.min(full / 3, 36)
+                                                    if (forward) d else -d
+                                                },
+                                                animationSpec = tween(220, easing = FastOutSlowInEasing)
+                                            ),
+                                    initialContentExit = fadeOut(animationSpec = tween(170)) +
+                                            slideOutVertically(
+                                                targetOffsetY = { full ->
+                                                    val d = kotlin.math.min(full / 4, 28)
+                                                    if (forward) -d else d
+                                                },
+                                                animationSpec = tween(180, easing = FastOutSlowInEasing)
+                                            ),
+                                    sizeTransform = null
+                                )
+                            }
+                        },
+                        label = "soundboard_editor_items_switch"
+                    ) { targetIndex ->
+                        val targetGroup = groups.getOrNull(targetIndex)
+                        if (targetGroup != null) {
+                            SoundboardItemsRecyclerCard(
+                                viewModel = viewModel,
+                                state = viewModel.uiState,
+                                groupIndex = targetIndex,
+                                items = targetGroup.items,
+                                onAdd = { viewModel.addSoundboardItem(targetIndex) },
+                                onItemsChanged = { reordered -> viewModel.setSoundboardItems(targetIndex, reordered) },
+                                onItemChanged = { itemIndex, updated ->
+                                    viewModel.updateSoundboardItem(targetIndex, itemIndex) { updated }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SoundboardItemsRecyclerCard(
+    viewModel: MainViewModel,
+    state: UiState,
+    groupIndex: Int,
+    items: List<SoundboardItem>,
+    onAdd: () -> Unit,
+    onItemsChanged: (List<SoundboardItem>) -> Unit,
+    onItemChanged: (Int, SoundboardItem) -> Unit
+) {
+    val context = LocalContext.current
+    var editTargetIndex by remember(items) { mutableStateOf<Int?>(null) }
+    var editTitle by remember { mutableStateOf("") }
+    var editWakeWord by remember { mutableStateOf("") }
+    var audioTargetIndex by remember { mutableStateOf<Int?>(null) }
+    var clipSourceUri by remember { mutableStateOf<Uri?>(null) }
+    var showBuiltinAudioPicker by remember { mutableStateOf(false) }
+    var showBuiltinBatchAudioPicker by remember { mutableStateOf(false) }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            clipSourceUri = uri
+        } else {
+            audioTargetIndex = null
+            toast(context, "未选择音频")
+        }
+    }
+    val batchAudioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importSoundboardAudioFiles(groupIndex, uris)
+        } else {
+            toast(context, "未选择音频")
+        }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Md2CardTitleText("音效条目", modifier = Modifier.weight(1f))
+                Md2TextButton(onClick = {
+                    if (state.useBuiltinFileManager) {
+                        showBuiltinBatchAudioPicker = true
+                    } else {
+                        batchAudioPicker.launch("audio/*")
+                    }
+                }) {
+                    MsIcon("queue_music", contentDescription = "批量导入")
+                    Spacer(Modifier.width(4.dp))
+                    Text("批量导入")
+                }
+                Md2TextButton(onClick = onAdd) {
+                    MsIcon("add", contentDescription = "新增音效")
+                    Spacer(Modifier.width(4.dp))
+                    Text("新增")
+                }
+            }
+            SoundboardItemsRecyclerList(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 92.dp)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                items = items,
+                onItemsChanged = onItemsChanged,
+                onEditRequested = { index, item ->
+                    editTargetIndex = index
+                    editTitle = item.title
+                    editWakeWord = item.wakeWord
+                },
+                onAudioRequested = { index ->
+                    audioTargetIndex = index
+                    if (state.useBuiltinFileManager) {
+                        showBuiltinAudioPicker = true
+                    } else {
+                        audioPicker.launch("audio/*")
+                    }
+                }
+            )
+        }
+    }
+
+    if (showBuiltinAudioPicker) {
+        BuiltinFilePickerDialog(
+            title = "选择音效音频",
+            allowedExtensions = SoundboardAudioFileExtensions,
+            onDismiss = {
+                showBuiltinAudioPicker = false
+                audioTargetIndex = null
+            },
+            onPicked = { uri ->
+                showBuiltinAudioPicker = false
+                clipSourceUri = uri
+            }
+        )
+    }
+
+    if (showBuiltinBatchAudioPicker) {
+        BuiltinFilePickerDialog(
+            title = "批量导入音效音频",
+            allowedExtensions = SoundboardAudioFileExtensions,
+            multiSelect = true,
+            onDismiss = { showBuiltinBatchAudioPicker = false },
+            onPicked = { uri ->
+                showBuiltinBatchAudioPicker = false
+                viewModel.importSoundboardAudioFiles(groupIndex, listOf(uri))
+            },
+            onPickedMultiple = { uris ->
+                showBuiltinBatchAudioPicker = false
+                viewModel.importSoundboardAudioFiles(groupIndex, uris)
+            }
+        )
+    }
+
+    val clipUri = clipSourceUri
+    val targetIndex = audioTargetIndex
+    if (clipUri != null && targetIndex != null && targetIndex in items.indices) {
+        SoundboardAudioClipDialog(
+            uri = clipUri,
+            title = items[targetIndex].title.ifBlank { "音效" },
+            onDismiss = {
+                clipSourceUri = null
+                audioTargetIndex = null
+            },
+            onImport = { startMs, endMs ->
+                viewModel.importSoundboardAudioClip(groupIndex, targetIndex, clipUri, startMs, endMs)
+                clipSourceUri = null
+                audioTargetIndex = null
+            }
+        )
+    }
+
+    val editingIndex = editTargetIndex
+    if (editingIndex != null && editingIndex in items.indices) {
+        AlertDialog(
+            onDismissRequest = { editTargetIndex = null },
+            title = { Text("编辑音效条目") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editTitle,
+                        onValueChange = { editTitle = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("条目名") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(UiTokens.Radius)
+                    )
+                    OutlinedTextField(
+                        value = editWakeWord,
+                        onValueChange = { editWakeWord = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("唤醒词") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(UiTokens.Radius)
+                    )
+                }
+            },
+            confirmButton = {
+                Md2TextButton(onClick = {
+                    val idx = editTargetIndex
+                    if (idx != null && idx in items.indices) {
+                        onItemChanged(
+                            idx,
+                            items[idx].copy(
+                                title = editTitle.trim(),
+                                wakeWord = editWakeWord.trim()
+                            )
+                        )
+                    }
+                    editTargetIndex = null
+                }) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                Md2TextButton(onClick = { editTargetIndex = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterialApi::class)
+private fun SoundboardAudioClipDialog(
+    uri: Uri,
+    title: String,
+    onDismiss: () -> Unit,
+    onImport: (Long, Long) -> Unit
+) {
+    val context = LocalContext.current
+    val durationMs by produceState(initialValue = 0L, uri) {
+        value = withContext(Dispatchers.IO) { SoundboardPresetIo.readDurationMs(context, uri) }
+    }
+    val durationForUi = durationMs.coerceAtLeast(1000L)
+    var startMs by remember(uri, durationForUi) { mutableLongStateOf(0L) }
+    var endMs by remember(uri, durationForUi) { mutableLongStateOf(durationForUi) }
+    var player by remember(uri) { mutableStateOf<MediaPlayer?>(null) }
+    var playing by remember(uri) { mutableStateOf(false) }
+    var previewMs by remember(uri) { mutableLongStateOf(0L) }
+
+    fun stopPreview() {
+        playing = false
+        runCatching {
+            player?.stop()
+            player?.release()
+        }
+        player = null
+        previewMs = startMs
+    }
+
+    fun startPreview() {
+        stopPreview()
+        runCatching {
+            MediaPlayer().apply {
+                setDataSource(context, uri)
+                prepare()
+                seekTo(startMs.toInt())
+                start()
+                player = this
+                playing = true
+                previewMs = startMs
+            }
+        }.onFailure {
+            stopPreview()
+            toast(context, "音频预览失败")
+        }
+    }
+
+    LaunchedEffect(playing, startMs, endMs) {
+        if (!playing) return@LaunchedEffect
+        while (playing) {
+            val current = runCatching { player?.currentPosition?.toLong() ?: startMs }.getOrDefault(startMs)
+            previewMs = current.coerceIn(startMs, endMs)
+            if (current >= endMs) {
+                stopPreview()
+                break
+            }
+            delay(48L)
+        }
+    }
+    DisposableEffect(uri) {
+        onDispose { stopPreview() }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            stopPreview()
+            onDismiss()
+        },
+        title = { Text("音频剪辑") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                LinearProgressIndicator(
+                    progress = ((previewMs - startMs).toFloat() / (endMs - startMs).coerceAtLeast(1L).toFloat())
+                        .coerceIn(0f, 1f),
+                    modifier = Modifier.fillMaxWidth(),
+                    backgroundColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                )
+                RangeSlider(
+                    value = startMs.toFloat()..endMs.toFloat(),
+                    onValueChange = { range ->
+                        startMs = range.start.toLong().coerceIn(0L, durationForUi)
+                        endMs = range.endInclusive.toLong().coerceIn((startMs + 100L).coerceAtMost(durationForUi), durationForUi)
+                        previewMs = startMs
+                        stopPreview()
+                    },
+                    valueRange = 0f..durationForUi.toFloat()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("起始：${formatDurationMs(startMs)}", style = MaterialTheme.typography.bodySmall)
+                        Text("结束：${formatDurationMs(endMs)}", style = MaterialTheme.typography.bodySmall)
+                        Text("长度：${formatDurationMs(durationMs)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Md2TextButton(onClick = { if (playing) stopPreview() else startPreview() }) {
+                        MsIcon(if (playing) "pause" else "play_arrow", contentDescription = "预览范围")
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (playing) "暂停" else "预览")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(onClick = {
+                stopPreview()
+                onImport(startMs, endMs)
+            }) {
+                Text("导入")
+            }
+        },
+        dismissButton = {
+            Md2TextButton(onClick = {
+                stopPreview()
+                onDismiss()
+            }) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+private fun formatDurationMs(ms: Long): String {
+    val safe = ms.coerceAtLeast(0L)
+    val totalSec = safe / 1000L
+    val min = totalSec / 60L
+    val sec = totalSec % 60L
+    val frac = (safe % 1000L) / 100L
+    return "%d:%02d.%d".format(Locale.US, min, sec, frac)
+}
+
+@Composable
+private fun SoundboardItemsRecyclerList(
+    modifier: Modifier = Modifier,
+    items: List<SoundboardItem>,
+    onItemsChanged: (List<SoundboardItem>) -> Unit,
+    onEditRequested: (Int, SoundboardItem) -> Unit,
+    onAudioRequested: (Int) -> Unit
+) {
+    val parentComposition = rememberCompositionContext()
+    val onItemsChangedState = rememberUpdatedState(onItemsChanged)
+    val onEditRequestedState = rememberUpdatedState(onEditRequested)
+    val onAudioRequestedState = rememberUpdatedState(onAudioRequested)
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            val recycler = RecyclerView(ctx).apply {
+                layoutManager = LinearLayoutManager(ctx)
+                overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+                clipToPadding = false
+                clipChildren = false
+                isNestedScrollingEnabled = false
+                itemAnimator = DefaultItemAnimator().apply {
+                    supportsChangeAnimations = false
+                    addDuration = 120L
+                    removeDuration = 120L
+                    moveDuration = 160L
+                    changeDuration = 0L
+                }
+            }
+            val adapter = SoundboardItemRecyclerAdapter(
+                parentComposition = parentComposition,
+                onItemsChanged = { changed -> onItemsChangedState.value(changed) },
+                onEditRequested = { index, item -> onEditRequestedState.value(index, item) },
+                onAudioRequested = { index -> onAudioRequestedState.value(index) }
+            )
+            recycler.adapter = adapter
+            val touchCallback = object : ItemTouchHelper.Callback() {
+                private var moved = false
+
+                override fun isLongPressDragEnabled(): Boolean = false
+                override fun isItemViewSwipeEnabled(): Boolean = false
+                override fun getMovementFlags(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder
+                ): Int = makeMovementFlags(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0)
+
+                override fun onMove(
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    target: RecyclerView.ViewHolder
+                ): Boolean {
+                    val ok = adapter.move(viewHolder.bindingAdapterPosition, target.bindingAdapterPosition)
+                    moved = moved || ok
+                    return ok
+                }
+
+                override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
+
+                override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    super.clearView(recyclerView, viewHolder)
+                    adapter.isDragging = false
+                    adapter.clearDraggingItem()
+                    if (moved) {
+                        onItemsChangedState.value(adapter.snapshotItems())
+                        moved = false
+                    }
+                }
+
+                override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
+                    super.onSelectedChanged(viewHolder, actionState)
+                    adapter.isDragging = actionState == ItemTouchHelper.ACTION_STATE_DRAG
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
+                        adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
+                    } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        adapter.clearDraggingItem()
+                    }
+                }
+            }
+            val touchHelper = ItemTouchHelper(touchCallback)
+            touchHelper.attachToRecyclerView(recycler)
+            adapter.onStartDrag = { vh -> touchHelper.startDrag(vh) }
+            recycler
+        },
+        update = { recycler ->
+            val adapter = recycler.adapter as? SoundboardItemRecyclerAdapter ?: return@AndroidView
+            adapter.submitFromState(items)
+        }
+    )
+}
+
+private data class SoundboardEditableItem(
+    val id: Long,
+    var item: SoundboardItem
+)
+
+private class SoundboardItemRecyclerAdapter(
+    private val parentComposition: CompositionContext,
+    private val onItemsChanged: (List<SoundboardItem>) -> Unit,
+    private val onEditRequested: (Int, SoundboardItem) -> Unit,
+    private val onAudioRequested: (Int) -> Unit
+) : RecyclerView.Adapter<SoundboardItemRecyclerAdapter.ItemViewHolder>() {
+    private val items = mutableListOf<SoundboardEditableItem>()
+    var isDragging: Boolean = false
+    var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
+    private var draggingItemId: Long? = null
+
+    init {
+        setHasStableIds(true)
+    }
+
+    override fun getItemId(position: Int): Long = items[position].id
+    override fun getItemCount(): Int = items.size
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ItemViewHolder {
+        val composeView = ComposeView(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindowOrReleasedFromPool)
+            setParentCompositionContext(parentComposition)
+        }
+        return ItemViewHolder(composeView)
+    }
+
+    override fun onBindViewHolder(holder: ItemViewHolder, position: Int) {
+        val row = items[position].item
+        holder.bind(
+            item = row,
+            isDragged = draggingItemId == row.id,
+            canDelete = true,
+            onDelete = {
+                val idx = holder.bindingAdapterPosition
+                if (idx in items.indices) {
+                    items.removeAt(idx)
+                    notifyItemRemoved(idx)
+                    onItemsChanged(snapshotItems())
+                }
+            },
+            onEdit = {
+                val idx = holder.bindingAdapterPosition
+                if (idx in items.indices) onEditRequested(idx, items[idx].item)
+            },
+            onAudio = {
+                val idx = holder.bindingAdapterPosition
+                if (idx in items.indices) onAudioRequested(idx)
+            },
+            onStartDrag = {
+                if (holder.bindingAdapterPosition != RecyclerView.NO_POSITION) {
+                    onStartDrag?.invoke(holder)
+                }
+            }
+        )
+    }
+
+    fun submitFromState(newItems: List<SoundboardItem>) {
+        if (isDragging) return
+        items.clear()
+        items.addAll(newItems.map { SoundboardEditableItem(id = it.id, item = it) })
+        notifyDataSetChanged()
+    }
+
+    fun move(from: Int, to: Int): Boolean {
+        if (from !in items.indices || to !in items.indices || from == to) return false
+        val moved = items.removeAt(from)
+        items.add(to, moved)
+        notifyItemMoved(from, to)
+        return true
+    }
+
+    fun snapshotItems(): List<SoundboardItem> = items.map { it.item }
+
+    fun setDraggingPosition(position: Int) {
+        draggingItemId = items.getOrNull(position)?.id
+        notifyDataSetChanged()
+    }
+
+    fun clearDraggingItem() {
+        draggingItemId = null
+        notifyDataSetChanged()
+    }
+
+    class ItemViewHolder(
+        private val composeView: ComposeView
+    ) : RecyclerView.ViewHolder(composeView) {
+        fun bind(
+            item: SoundboardItem,
+            isDragged: Boolean,
+            canDelete: Boolean,
+            onDelete: () -> Unit,
+            onEdit: () -> Unit,
+            onAudio: () -> Unit,
+            onStartDrag: () -> Unit
+        ) {
+            composeView.setContent {
+                SoundboardEditableRow(
+                    item = item,
+                    isDragged = isDragged,
+                    canDelete = canDelete,
+                    onDelete = onDelete,
+                    onEdit = onEdit,
+                    onAudio = onAudio,
+                    onStartDrag = onStartDrag
+                )
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalComposeUiApi::class)
+private fun SoundboardEditableRow(
+    item: SoundboardItem,
+    isDragged: Boolean,
+    canDelete: Boolean,
+    onDelete: () -> Unit,
+    onEdit: () -> Unit,
+    onAudio: () -> Unit,
+    onStartDrag: () -> Unit
+) {
+    val rowElevation by animateDpAsState(
+        targetValue = if (isDragged) 10.dp else 0.dp,
+        animationSpec = tween(
+            durationMillis = if (isDragged) 120 else 160,
+            easing = FastOutSlowInEasing
+        ),
+        label = "soundboard_item_elevation"
+    )
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = rowElevation
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.title.ifBlank { "未命名音效" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontWeight = FontWeight.SemiBold
+                )
+                val subtitle = buildList {
+                    if (item.wakeWord.isNotBlank()) add("唤醒词：${item.wakeWord}")
+                    if (item.audioPath.isNotBlank()) add(File(item.audioPath).name)
+                }.joinToString(" · ").ifBlank { "未选择音频" }
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Md2IconButton(
+                icon = "folder_open",
+                contentDescription = "选择音频",
+                onClick = onAudio
+            )
+            Md2IconButton(
+                icon = "edit",
+                contentDescription = "编辑条目",
+                onClick = onEdit
+            )
+            Md2IconButton(
+                icon = "drag_indicator",
+                contentDescription = "拖动排序",
+                onClick = {},
+                modifier = Modifier.pointerInteropFilter { ev ->
+                    when (ev.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            onStartDrag()
+                            true
+                        }
+                        MotionEvent.ACTION_MOVE,
+                        MotionEvent.ACTION_UP,
+                        MotionEvent.ACTION_CANCEL -> true
+                        else -> false
+                    }
+                }
+            )
+            Md2IconButton(
+                icon = "delete",
+                contentDescription = "删除音效",
+                onClick = onDelete,
+                enabled = canDelete
+            )
         }
     }
 }
@@ -12797,6 +14963,7 @@ private fun RunningStatusTopStrip(
     status: String,
     pushToTalkMode: Boolean,
     pushToTalkPressed: Boolean,
+    ttsDisabled: Boolean,
     playbackGainPercent: Int,
     preferredInputType: Int,
     preferredOutputType: Int,
@@ -12807,7 +14974,11 @@ private fun RunningStatusTopStrip(
 ) {
     val inputLevel = viewModel.realtimeInputLevel
     val playbackProgress = viewModel.realtimePlaybackProgress
-    val micIcon = if (pushToTalkMode && pushToTalkPressed) "settings_voice" else "mic"
+    val micIcon = when {
+        ttsDisabled -> "mic_off"
+        pushToTalkMode && pushToTalkPressed -> "settings_voice"
+        else -> "mic"
+    }
     var inputExpanded by remember { mutableStateOf(false) }
     var outputExpanded by remember { mutableStateOf(false) }
     val inputTypeOptions = remember {
@@ -12997,6 +15168,23 @@ private fun RunningStatusTopStrip(
                     onCheckedChange = { viewModel.setPushToTalkMode(it) }
                 )
             }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    MsIcon("mic_off", contentDescription = "禁用TTS")
+                    Text("禁用TTS", style = MaterialTheme.typography.bodySmall)
+                }
+                Md2Switch(
+                    checked = ttsDisabled,
+                    onCheckedChange = { viewModel.setTtsDisabled(it) }
+                )
+            }
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -13022,10 +15210,15 @@ private fun RunningStripTopBarToggle(
     expanded: Boolean,
     pushToTalkMode: Boolean,
     pushToTalkPressed: Boolean,
+    ttsDisabled: Boolean,
     contentColor: Color,
     onToggle: () -> Unit
 ) {
-    val micIcon = if (pushToTalkMode && pushToTalkPressed) "settings_voice" else "mic"
+    val micIcon = when {
+        ttsDisabled -> "mic_off"
+        pushToTalkMode && pushToTalkPressed -> "settings_voice"
+        else -> "mic"
+    }
     Surface(
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
@@ -14139,6 +16332,12 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                         supportingText = "开启后：实时页 FAB 改为麦克风，按下开始收音，松开停止收音。"
                     )
                     Md2SettingSwitchRow(
+                        title = "允许通过快捷文本触发音效板",
+                        checked = state.allowQuickTextTriggerSoundboard,
+                        onCheckedChange = { viewModel.setAllowQuickTextTriggerSoundboard(it) },
+                        supportingText = "关闭后：便捷字幕的快捷文本与输入框只更新字幕/TTS，不触发音效板关键词。"
+                    )
+                    Md2SettingSwitchRow(
                         title = "按下输入文本确认",
                         checked = state.pushToTalkConfirmInputMode,
                         enabled = state.pushToTalkMode,
@@ -15052,6 +17251,90 @@ fun LogScreen(
 
 private fun toast(context: android.content.Context, msg: String) {
     Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+}
+
+private fun writeQuickSubtitlePresetPackage(context: Context, groups: List<QuickSubtitleGroup>): File {
+    require(groups.isNotEmpty()) { "未选择需要导出的分组" }
+    val shareDir = File(context.cacheDir, "share").apply { mkdirs() }
+    val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    val out = File(shareDir, "quick_subtitle_$ts.kigtpk")
+    val root = JSONObject().apply {
+        put("type", "quick_subtitle")
+        put("version", 1)
+        put(
+            "groups",
+            JSONArray().apply {
+                groups.forEach { group ->
+                    put(
+                        JSONObject().apply {
+                            put("id", group.id)
+                            put("title", group.title)
+                            put("icon", group.icon)
+                            put("items", JSONArray().apply { group.items.forEach { put(it) } })
+                        }
+                    )
+                }
+            }
+        )
+    }
+    ZipOutputStream(out.outputStream()).use { zos ->
+        zos.putNextEntry(ZipEntry("preset.json"))
+        zos.write(root.toString(2).toByteArray(Charsets.UTF_8))
+        zos.closeEntry()
+    }
+    return out
+}
+
+private fun readQuickSubtitlePresetPackage(context: Context, uri: Uri): List<QuickSubtitleGroup> {
+    val json = try {
+        var jsonPayload: String? = null
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            ZipInputStream(input).use { zis ->
+                while (true) {
+                    val entry = zis.nextEntry ?: break
+                    if (!entry.isDirectory && entry.name.replace('\\', '/') == "preset.json") {
+                        jsonPayload = zis.readBytes().toString(Charsets.UTF_8)
+                    }
+                    zis.closeEntry()
+                }
+            }
+        } ?: error("无法打开预设包")
+        jsonPayload ?: error("预设包缺少 preset.json")
+    } catch (_: java.util.zip.ZipException) {
+        context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+            ?: error("无法打开预设包")
+    }
+    val root = JSONObject(json)
+    require(root.optString("type") == "quick_subtitle") { "不是便捷字幕预设包" }
+    val groups = mutableListOf<QuickSubtitleGroup>()
+    val groupArray = root.optJSONArray("groups") ?: JSONArray()
+    for (i in 0 until groupArray.length()) {
+        val obj = groupArray.optJSONObject(i) ?: continue
+        val itemsArray = obj.optJSONArray("items") ?: JSONArray()
+        val items = mutableListOf<String>()
+        for (j in 0 until itemsArray.length()) {
+            val text = itemsArray.optString(j, "").trim()
+            if (text.isNotEmpty()) items += text
+        }
+        groups += QuickSubtitleGroup(
+            id = obj.optLong("id", i + 1L),
+            title = obj.optString("title", "未命名分组").trim().ifBlank { "未命名分组" },
+            icon = obj.optString("icon", "sentiment_neutral").ifBlank { "sentiment_neutral" },
+            items = items.ifEmpty { listOf("请输入常用短句") }
+        )
+    }
+    return groups
+}
+
+private fun uniqueQuickSubtitleGroupTitle(baseTitle: String, existingTitles: Collection<String>): String {
+    val trimmed = baseTitle.trim().ifBlank { "未命名分组" }
+    if (trimmed !in existingTitles) return trimmed
+    var index = 2
+    while (true) {
+        val candidate = "$trimmed ($index)"
+        if (candidate !in existingTitles) return candidate
+        index += 1
+    }
 }
 
 private fun shareLogFile(context: Context, file: File) {

@@ -21,6 +21,7 @@ object OverlayBridge {
     const val TARGET_OPEN_OVERLAY = "open_overlay"
     const val TARGET_OPEN_QUICK_CARD = "open_quick_card"
     const val TARGET_OPEN_DRAWING = "open_drawing"
+    const val TARGET_OPEN_SOUNDBOARD = "open_soundboard"
     const val TARGET_OPEN_SETTINGS = "open_settings"
     const val TARGET_OPEN_QR_SCANNER = "open_qr_scanner"
 
