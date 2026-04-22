@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  Checkbox,
   Chip,
   Collapse,
   Container,
@@ -44,8 +45,44 @@ import {
 } from '@mui/material'
 import Cropper from 'react-easy-crop'
 import type { Area } from 'react-easy-crop'
+import logoBlack from '../../ARTS/LOGOBlack.svg'
+import logoWhite from '../../ARTS/LOGOWhite.svg'
 
-type ProgressMap = Record<string, number>
+type ProgressStage = Exclude<PipelineStage, 'idle' | 'preview'>
+type ProgressMap = Record<ProgressStage, number>
+type PendingRequest = {
+  resolve: (payload: unknown) => void
+  reject: (error: Error) => void
+  timeout: number
+}
+
+type CommonPipelineOptions = {
+  quality: 'A' | 'B'
+  denoise: boolean
+  sample_rate: number
+  batch_size: number
+  asr_model_zip: string | null
+  piper_base_checkpoint: string | null
+  use_espeak: boolean
+  piper_config: string | null
+  device: 'cpu' | 'cuda'
+  voicepack_name: string
+  voicepack_remark: string
+  voicepack_avatar: string | null
+}
+
+type PendingDistillStart = {
+  outputDir: string
+  commonOpts: CommonPipelineOptions
+  distillPayload: DistillOptions
+}
+
+type GsviAttributionFields = {
+  gsvAuthor: string
+  gsvTrainer: string
+  gsvTrainer2: string
+  gsviPacker: string
+}
 
 const TITLEBAR_HEIGHT = 48
 const DRAWER_WIDTH = 240
@@ -58,16 +95,32 @@ const NAV_ICON_SLOT = 36
 const NAV_EXPANDED_PADDING_X = 1.5
 const NAV_COLLAPSED_PADDING_X = (MINI_DRAWER_WIDTH - NAV_ICON_SLOT) / 16
 const DRAWER_EXPANDED_STORAGE_KEY = 'kgtts_drawer_expanded'
-const PIPELINE_STAGES = ['preprocess', 'vad', 'asr', 'train', 'export'] as const
-type PipelineStage = (typeof PIPELINE_STAGES)[number]
+const DISTILL_SETTINGS_STORAGE_KEY = 'kigtts_gsv_distill_settings'
+const DISTILL_MODE_STORAGE_KEY = 'kigtts_training_mode'
+const GSVI_CONFIRM_SKIP_STORAGE_KEY = 'kigtts_gsvi_confirm_skip'
+const GSVI_MODE_INTRO_SKIP_STORAGE_KEY = 'kigtts_gsvi_mode_intro_skip'
+const GSVI_GUIDE_URL = 'https://www.yuque.com/baicaigongchang1145haoyuangong/ib3g1e/gos50nrqrlipryqq'
+const PIPER_PIPELINE_STAGES: ProgressStage[] = ['preprocess', 'vad', 'asr', 'train', 'export']
+const DISTILL_PIPELINE_STAGES: ProgressStage[] = ['collect', 'distill', 'train', 'export']
+const PROGRESS_STAGES: ProgressStage[] = ['collect', 'distill', 'preprocess', 'vad', 'asr', 'train', 'export']
 type AppPage = 'prep' | 'settings' | 'preview' | 'logs'
-const STAGE_LABEL: Record<PipelineStage, string> = {
+const STAGE_LABEL: Record<ProgressStage, string> = {
+  collect: '收集',
+  distill: '蒸馏',
   preprocess: '预处理',
   vad: '切分',
   asr: '识别',
   train: '训练',
   export: '导出',
 }
+const DISTILL_TEXT_LANGS = ['中文', '英语', '日语', '粤语', '韩语', '中英混合', '日英混合', '粤英混合', '韩英混合', '多语种混合', '多语种混合(粤语)']
+const DISTILL_SPLIT_METHODS = ['不切', '凑四句一切', '凑50字一切', '按中文句号。切', '按英文句号.切', '按标点符号切']
+const GSVI_REQUIRED_NAMES = {
+  gsvAuthor: '花儿不哭',
+  gsvTrainer: '红血球AE3803',
+  gsvTrainer2: '白菜工厂1145号员工',
+  gsviPacker: 'AI-Hobbyist',
+} as const
 const NAV_ITEMS: Array<{ key: AppPage; label: string; icon: string }> = [
   { key: 'prep', label: '训练准备', icon: 'folder' },
   { key: 'preview', label: '语音包试听', icon: 'record_voice_over' },
@@ -285,6 +338,102 @@ const getTextContextCapabilities = (target: EditableTarget | null): TextContextM
   }
 }
 
+const emptyProgress = (): ProgressMap => ({
+  collect: 0,
+  distill: 0,
+  preprocess: 0,
+  vad: 0,
+  asr: 0,
+  train: 0,
+  export: 0,
+})
+
+const defaultDistillOptions = (): DistillOptions => ({
+  gsv_root: '',
+  version: '',
+  speaker: '',
+  prompt_lang: '',
+  emotion: '',
+  device: 'cuda',
+  text_lang: '中文',
+  text_split_method: '按标点符号切',
+  speed_factor: 1,
+  temperature: 1,
+  batch_size: 1,
+  seed: -1,
+  top_k: 10,
+  top_p: 1,
+  batch_threshold: 0.75,
+  split_bucket: true,
+  fragment_interval: 0.3,
+  parallel_infer: true,
+  repetition_penalty: 1.35,
+  sample_steps: 16,
+  if_sr: false,
+  text_sources: [],
+})
+
+const defaultGsviAttributionFields = (): GsviAttributionFields => ({
+  gsvAuthor: '',
+  gsvTrainer: '',
+  gsvTrainer2: '',
+  gsviPacker: '',
+})
+
+const normalizeDistillSelection = (catalog: GsvModelCatalog | null, current: DistillOptions): DistillOptions => {
+  if (!catalog) {
+    return {
+      ...current,
+      version: '',
+      speaker: '',
+      prompt_lang: '',
+      emotion: '',
+    }
+  }
+
+  const versionNames = Object.keys(catalog.versions)
+  const version = versionNames.includes(current.version) ? current.version : (versionNames[0] ?? '')
+  const versionNode = version ? catalog.versions[version] : undefined
+  const speakerNames = Object.keys(versionNode?.speakers ?? {})
+  const speaker = speakerNames.includes(current.speaker) ? current.speaker : (speakerNames[0] ?? '')
+  const speakerNode = speaker ? versionNode?.speakers[speaker] : undefined
+  const langNames = Object.keys(speakerNode?.languages ?? {})
+  const promptLang = langNames.includes(current.prompt_lang) ? current.prompt_lang : (langNames[0] ?? '')
+  const emotions = promptLang ? speakerNode?.languages[promptLang]?.emotions ?? [] : []
+  const emotion = emotions.some((item) => item.name === current.emotion) ? current.emotion : (emotions[0]?.name ?? '')
+
+  return {
+    ...current,
+    version,
+    speaker,
+    prompt_lang: promptLang,
+    emotion,
+  }
+}
+
+const isProgressStage = (stage: string): stage is ProgressStage =>
+  PROGRESS_STAGES.includes(stage as ProgressStage)
+
+const getStageLabel = (stage: PipelineStage) => {
+  if (stage === 'idle') return '待命'
+  if (stage === 'preview') return '试听'
+  return STAGE_LABEL[stage]
+}
+
+const mergeDistillSources = (current: DistillTextSource[], incoming: DistillTextSource[]) => {
+  const seen = new Set(current.map((item) => `${item.kind}:${item.path.toLowerCase()}`))
+  const merged = [...current]
+  for (const item of incoming) {
+    const key = `${item.kind}:${item.path.toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(item)
+  }
+  return merged
+}
+
+const isDistillTextFile = (path: string) => /\.(txt|csv|jsonl)$/i.test(path)
+
 type PathFieldProps = {
   label: string
   value: string
@@ -296,8 +445,29 @@ type PathFieldProps = {
   placeholder?: string
 }
 
-const getDataTransfer = (event: ReactDragEvent | DragEvent) => {
-  return (event as any).dataTransfer || (event as any).nativeEvent?.dataTransfer || null
+type FileSystemEntryLike = {
+  isFile: boolean
+  isDirectory: boolean
+  file?: (success: (file: File) => void, error?: () => void) => void
+  createReader?: () => FileSystemDirectoryReaderLike
+}
+
+type FileSystemDirectoryReaderLike = {
+  readEntries: (success: (entries: FileSystemEntryLike[]) => void) => void
+}
+
+type DataTransferItemWithEntry = DataTransferItem & {
+  webkitGetAsEntry?: () => FileSystemEntryLike | null
+}
+
+const getDataTransfer = (event: ReactDragEvent | DragEvent): DataTransfer | null => {
+  if ('dataTransfer' in event && event.dataTransfer) {
+    return event.dataTransfer
+  }
+  if ('nativeEvent' in event) {
+    return event.nativeEvent.dataTransfer
+  }
+  return null
 }
 
 const decodeFileUrl = (value: string) => {
@@ -309,12 +479,25 @@ const decodeFileUrl = (value: string) => {
   }
 }
 
+const getNativeFilePath = (file: File | null | undefined) => {
+  if (!file) return ''
+  const maybePath = (file as File & { path?: string }).path
+  if (typeof maybePath === 'string' && maybePath.trim()) {
+    return maybePath
+  }
+  try {
+    return window.fsBridge?.getPathForFile?.(file) || ''
+  } catch {
+    return ''
+  }
+}
+
 const extractDroppedPaths = (event: ReactDragEvent | DragEvent) => {
   const dt = getDataTransfer(event)
   if (!dt) return []
 
   const fromFiles = Array.from(dt.files || [])
-    .map((file) => (file as File & { path?: string }).path)
+    .map((file) => getNativeFilePath(file))
     .filter(Boolean) as string[]
   if (fromFiles.length) return fromFiles
 
@@ -327,7 +510,7 @@ const extractDroppedPaths = (event: ReactDragEvent | DragEvent) => {
       return null
     })
     .filter(Boolean)
-    .map((file) => (file as File & { path?: string }).path)
+    .map((file) => getNativeFilePath(file as File))
     .filter(Boolean) as string[]
   if (fromItems.length) return fromItems
 
@@ -495,12 +678,16 @@ const fileToDataUrl = (file: File) =>
     reader.readAsDataURL(file)
   })
 
-const readAllDirectoryEntries = (directory: any): Promise<any[]> =>
+const readAllDirectoryEntries = (directory: FileSystemEntryLike): Promise<FileSystemEntryLike[]> =>
   new Promise((resolve) => {
-    const reader = directory.createReader()
-    const entries: any[] = []
+    const reader = directory.createReader?.()
+    const entries: FileSystemEntryLike[] = []
+    if (!reader) {
+      resolve(entries)
+      return
+    }
     const readBatch = () => {
-      reader.readEntries((batch: any[]) => {
+      reader.readEntries((batch) => {
         if (!batch.length) {
           resolve(entries)
           return
@@ -512,11 +699,11 @@ const readAllDirectoryEntries = (directory: any): Promise<any[]> =>
     readBatch()
   })
 
-const getFilesFromEntries = async (entry: any): Promise<File[]> => {
+const getFilesFromEntries = async (entry: FileSystemEntryLike | null): Promise<File[]> => {
   if (!entry) return []
   if (entry.isFile) {
     return new Promise((resolve) => {
-      entry.file((file: File) => resolve([file]), () => resolve([]))
+      entry.file?.((file: File) => resolve([file]), () => resolve([]))
     })
   }
   if (entry.isDirectory) {
@@ -537,7 +724,7 @@ const getFilesFromDataTransfer = async (event: ReactDragEvent | DragEvent): Prom
   const items = Array.from(dt.items || [])
   const entryFiles: File[] = []
   for (const item of items) {
-    const entry = (item as any).webkitGetAsEntry?.()
+    const entry = (item as DataTransferItemWithEntry).webkitGetAsEntry?.() ?? null
     if (entry) {
       const files = await getFilesFromEntries(entry)
       entryFiles.push(...files)
@@ -552,20 +739,48 @@ function App() {
   const defaultsRequested = useRef(false)
   const previewAudioRef = useRef<HTMLAudioElement | null>(null)
   const abortingPipelineRef = useRef(false)
+  const pingRequestIdRef = useRef<string | null>(null)
+  const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map())
+  const pendingDistillStartRef = useRef<PendingDistillStart | null>(null)
   const [connected, setConnected] = useState(false)
   const [status, setStatus] = useState('待命')
   const [logs, setLogs] = useState<string[]>([])
 
   const [outputDir, setOutputDir] = useState('')
+  const [trainingMode, setTrainingMode] = useState<TrainingMode>(() => {
+    try {
+      const value = window.localStorage.getItem(DISTILL_MODE_STORAGE_KEY)
+      return value === 'gsv_distill' ? 'gsv_distill' : 'piper'
+    } catch {
+      return 'piper'
+    }
+  })
+  const [activeRunMode, setActiveRunMode] = useState<TrainingMode | null>(null)
   const [audioFiles, setAudioFiles] = useState<string[]>([])
   const [quality, setQuality] = useState<'A' | 'B'>('A')
   const [denoise, setDenoise] = useState(false)
   const [sampleRate, setSampleRate] = useState('22050')
+  const [trainBatchSize, setTrainBatchSize] = useState('24')
   const [asrModel, setAsrModel] = useState('')
   const [baseCkpt, setBaseCkpt] = useState('')
   const [useEspeak, setUseEspeak] = useState(false)
   const [piperConfig, setPiperConfig] = useState('')
   const [device, setDevice] = useState<'cpu' | 'cuda'>('cpu')
+  const [distillOpts, setDistillOpts] = useState<DistillOptions>(() => {
+    try {
+      const raw = window.localStorage.getItem(DISTILL_SETTINGS_STORAGE_KEY)
+      if (raw) {
+        return { ...defaultDistillOptions(), ...JSON.parse(raw) } as DistillOptions
+      }
+    } catch {
+      // ignore
+    }
+    return defaultDistillOptions()
+  })
+  const [gsvCatalog, setGsvCatalog] = useState<GsvModelCatalog | null>(null)
+  const [gsvRootStatus, setGsvRootStatus] = useState<{ ok: boolean; message: string } | null>(null)
+  const [gsvRootBusy, setGsvRootBusy] = useState(false)
+  const [distillAdvancedOpen, setDistillAdvancedOpen] = useState(false)
   const [voicepackName, setVoicepackName] = useState('未命名')
   const [voicepackRemark, setVoicepackRemark] = useState('')
   const [voicepackAvatar, setVoicepackAvatar] = useState('')
@@ -579,6 +794,13 @@ function App() {
   const [previewDuration, setPreviewDuration] = useState(0)
   const [previewCurrentTime, setPreviewCurrentTime] = useState(0)
   const [trainDonePromptOpen, setTrainDonePromptOpen] = useState(false)
+  const [gsviModeIntroOpen, setGsviModeIntroOpen] = useState(false)
+  const [gsviModeIntroSkipChecked, setGsviModeIntroSkipChecked] = useState(false)
+  const [gsviDisclaimerOpen, setGsviDisclaimerOpen] = useState(false)
+  const [gsviAttributionOpen, setGsviAttributionOpen] = useState(false)
+  const [gsviAttribution, setGsviAttribution] = useState<GsviAttributionFields>(defaultGsviAttributionFields)
+  const [gsviAttributionError, setGsviAttributionError] = useState('')
+  const [gsviSkipPromptChecked, setGsviSkipPromptChecked] = useState(false)
 
   const [avatarDialogOpen, setAvatarDialogOpen] = useState(false)
   const [avatarSource, setAvatarSource] = useState('')
@@ -592,19 +814,15 @@ function App() {
     severity: 'info',
   })
   const [audioDragActive, setAudioDragActive] = useState(false)
+  const [distillSourcesDragActive, setDistillSourcesDragActive] = useState(false)
+  const [distillAddAnchorEl, setDistillAddAnchorEl] = useState<HTMLElement | null>(null)
   const [avatarDragActive, setAvatarDragActive] = useState(false)
 
-  const [progress, setProgress] = useState<ProgressMap>({
-    preprocess: 0,
-    vad: 0,
-    asr: 0,
-    train: 0,
-    export: 0,
-  })
+  const [progress, setProgress] = useState<ProgressMap>(emptyProgress)
   const [pipelineRunning, setPipelineRunning] = useState(false)
   const [pipelineCardCollapsed, setPipelineCardCollapsed] = useState(false)
   const [pipelineCardMinimized, setPipelineCardMinimized] = useState(false)
-  const [currentStage, setCurrentStage] = useState<PipelineStage | 'idle'>('idle')
+  const [currentStage, setCurrentStage] = useState<PipelineStage>('idle')
   const [isMaximized, setIsMaximized] = useState(false)
   const [drawerExpanded, setDrawerExpanded] = useState<boolean>(() => {
     try {
@@ -655,6 +873,8 @@ function App() {
 
   const resolvedThemeMode: 'light' | 'dark' = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode
   const drawerWidth = drawerExpanded ? DRAWER_WIDTH : MINI_DRAWER_WIDTH
+  const displayTrainingMode = activeRunMode ?? trainingMode
+  const activeProgressStages = displayTrainingMode === 'gsv_distill' ? DISTILL_PIPELINE_STAGES : PIPER_PIPELINE_STAGES
   const theme = useMemo(() => buildTheme(resolvedThemeMode), [resolvedThemeMode])
   const cardPaperSx = useMemo(
     () => ({
@@ -675,9 +895,9 @@ function App() {
   }
 
   const overallProgress = useMemo(() => {
-    const total = PIPELINE_STAGES.reduce((acc, stage) => acc + (progress[stage] ?? 0), 0)
-    return total / PIPELINE_STAGES.length
-  }, [progress])
+    const total = activeProgressStages.reduce((acc, stage) => acc + (progress[stage] ?? 0), 0)
+    return activeProgressStages.length ? total / activeProgressStages.length : 0
+  }, [activeProgressStages, progress])
   const previewAudioSrc = useMemo(() => {
     if (!previewAudioPath) return ''
     const base = toFileUrl(previewAudioPath)
@@ -689,6 +909,36 @@ function App() {
     () => getTextContextCapabilities(textContextMenu.target),
     [textContextMenu.target],
   )
+  const catalogVersions = Object.keys(gsvCatalog?.versions ?? {})
+  const catalogSpeakers = Object.keys((distillOpts.version && gsvCatalog?.versions[distillOpts.version]?.speakers) ?? {})
+  const catalogLanguages = Object.keys(
+    (distillOpts.version && distillOpts.speaker && gsvCatalog?.versions[distillOpts.version]?.speakers[distillOpts.speaker]?.languages) ?? {},
+  )
+  const catalogEmotions =
+    distillOpts.version && distillOpts.speaker && distillOpts.prompt_lang
+      ? gsvCatalog?.versions[distillOpts.version]?.speakers[distillOpts.speaker]?.languages[distillOpts.prompt_lang]?.emotions ?? []
+      : []
+  const selectedEmotion = catalogEmotions.find((item) => item.name === distillOpts.emotion) ?? null
+  const gsviFieldMismatch = {
+    gsvAuthor: Boolean(gsviAttributionError) && gsviAttribution.gsvAuthor.trim() !== GSVI_REQUIRED_NAMES.gsvAuthor,
+    gsvTrainer: Boolean(gsviAttributionError) && gsviAttribution.gsvTrainer.trim() !== GSVI_REQUIRED_NAMES.gsvTrainer,
+    gsvTrainer2: Boolean(gsviAttributionError) && gsviAttribution.gsvTrainer2.trim() !== GSVI_REQUIRED_NAMES.gsvTrainer2,
+    gsviPacker: Boolean(gsviAttributionError) && gsviAttribution.gsviPacker.trim() !== GSVI_REQUIRED_NAMES.gsviPacker,
+  }
+  const shouldSkipGsviModeIntro = () => {
+    try {
+      return window.localStorage.getItem(GSVI_MODE_INTRO_SKIP_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  }
+  const shouldSkipGsviPrompt = () => {
+    try {
+      return window.localStorage.getItem(GSVI_CONFIRM_SKIP_STORAGE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  }
 
   const appendLog = (text: string) => {
     setLogs((prev) => [...prev, text].slice(-400))
@@ -696,6 +946,74 @@ function App() {
 
   const showToast = (message: string, severity: ToastState['severity'] = 'info') => {
     setToast({ open: true, message, severity })
+  }
+
+  const persistGsviModeIntroSkipPreference = (checked: boolean) => {
+    try {
+      if (checked) {
+        window.localStorage.setItem(GSVI_MODE_INTRO_SKIP_STORAGE_KEY, 'true')
+      } else {
+        window.localStorage.removeItem(GSVI_MODE_INTRO_SKIP_STORAGE_KEY)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const persistGsviSkipPreference = (checked: boolean) => {
+    try {
+      if (checked) {
+        window.localStorage.setItem(GSVI_CONFIRM_SKIP_STORAGE_KEY, 'true')
+      } else {
+        window.localStorage.removeItem(GSVI_CONFIRM_SKIP_STORAGE_KEY)
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  const resetGsviPromptState = () => {
+    setGsviDisclaimerOpen(false)
+    setGsviAttributionOpen(false)
+    setGsviAttribution(defaultGsviAttributionFields())
+    setGsviAttributionError('')
+    setGsviSkipPromptChecked(false)
+  }
+
+  const cancelPendingDistillStart = (showFeedback = false) => {
+    pendingDistillStartRef.current = null
+    resetGsviPromptState()
+    if (showFeedback) {
+      setStatus('已取消 GPT-SoVITS 蒸馏启动')
+      showToast('已取消 GPT-SoVITS 蒸馏启动', 'info')
+    }
+  }
+
+  const openGsviGuide = async () => {
+    try {
+      const result = await window.paths?.openExternal?.(GSVI_GUIDE_URL)
+      if (result?.ok) return
+      window.open(GSVI_GUIDE_URL, '_blank', 'noopener,noreferrer')
+    } catch {
+      window.open(GSVI_GUIDE_URL, '_blank', 'noopener,noreferrer')
+    }
+  }
+
+  const closeGsviModeIntro = () => {
+    persistGsviModeIntroSkipPreference(gsviModeIntroSkipChecked)
+    setGsviModeIntroSkipChecked(false)
+    setGsviModeIntroOpen(false)
+  }
+
+  const handleTrainingModeChange = (nextMode: TrainingMode) => {
+    setTrainingMode(nextMode)
+    if (nextMode !== 'gsv_distill' || trainingMode === 'gsv_distill') {
+      return
+    }
+    if (!shouldSkipGsviModeIntro()) {
+      setGsviModeIntroSkipChecked(false)
+      setGsviModeIntroOpen(true)
+    }
   }
 
   const closeToast = () => {
@@ -857,13 +1175,40 @@ function App() {
     return id
   }
 
+  const rejectPendingRequests = (message: string) => {
+    for (const [id, pending] of pendingRequestsRef.current.entries()) {
+      window.clearTimeout(pending.timeout)
+      pending.reject(new Error(message))
+      pendingRequestsRef.current.delete(id)
+    }
+  }
+
+  const requestBackend = <T = BackendResponsePayload>(
+    type: string,
+    payload?: Record<string, unknown>,
+    timeoutMs = 20000,
+  ) =>
+    new Promise<T>((resolve, reject) => {
+      const id = send(type, payload)
+      const timeout = window.setTimeout(() => {
+        pendingRequestsRef.current.delete(id)
+        reject(new Error(`${type} 请求超时`))
+      }, timeoutMs)
+      pendingRequestsRef.current.set(id, {
+        resolve: (response) => resolve(response as T),
+        reject,
+        timeout,
+      })
+    })
+
   const requestBackendRestart = () => {
+    rejectPendingRequests('后端已重启，请重试')
     window.backend?.restart?.()
     setConnected(false)
     appendLog('[SYS] 已请求后端重启')
     showToast('已请求后端重启', 'info')
     setTimeout(() => {
-      send('ping')
+      pingRequestIdRef.current = send('ping')
     }, 1200)
   }
 
@@ -871,9 +1216,11 @@ function App() {
     if (!pipelineRunning) {
       return
     }
+    rejectPendingRequests('训练已中止')
     abortingPipelineRef.current = true
     setPipelineRunning(false)
     setPipelineCardMinimized(false)
+    setActiveRunMode(null)
     setCurrentStage('idle')
     setStatus('中止训练中...')
     appendLog('[SYS] 已请求中止训练，正在重启后端...')
@@ -881,7 +1228,7 @@ function App() {
     window.backend?.restart?.()
     setConnected(false)
     setTimeout(() => {
-      send('ping')
+      pingRequestIdRef.current = send('ping')
     }, 1200)
   }
 
@@ -891,17 +1238,27 @@ function App() {
       return
     }
     const offBackendEvent = window.backend.onEvent((evt) => {
-      if (evt.type === 'response' && evt.payload?.ok) {
-        setConnected(true)
-        if (abortingPipelineRef.current) {
-          abortingPipelineRef.current = false
-          setStatus('训练已中止')
+      if (evt.type === 'response') {
+        const pending = pendingRequestsRef.current.get(evt.id)
+        if (pending) {
+          window.clearTimeout(pending.timeout)
+          pendingRequestsRef.current.delete(evt.id)
+          pending.resolve(evt.payload)
         }
-        showToast('后端已连接', 'success')
-        if (!defaultsRequested.current) {
-          defaultsRequested.current = true
-          send('get_defaults')
+        if (evt.id === pingRequestIdRef.current && evt.payload?.ok) {
+          pingRequestIdRef.current = null
+          setConnected(true)
+          if (abortingPipelineRef.current) {
+            abortingPipelineRef.current = false
+            setStatus('训练已中止')
+          }
+          showToast('后端已连接', 'success')
+          if (!defaultsRequested.current) {
+            defaultsRequested.current = true
+            send('get_defaults')
+          }
         }
+        return
       }
       if (evt.type === 'defaults') {
         const defaults = (evt.payload || {}) as Record<string, string>
@@ -925,12 +1282,12 @@ function App() {
         }
       }
       if (evt.type === 'progress') {
-        setProgress((prev) => ({
-          ...prev,
-          [evt.stage]: evt.value ?? 0,
-        }))
-        if (PIPELINE_STAGES.includes(evt.stage as PipelineStage)) {
-          const stage = evt.stage as PipelineStage
+        if (isProgressStage(evt.stage)) {
+          setProgress((prev) => ({
+            ...prev,
+            [evt.stage]: evt.value ?? 0,
+          }))
+          const stage = evt.stage
           const msg = String(evt.message ?? '')
           setCurrentStage(stage)
           if (stage === 'asr') {
@@ -942,10 +1299,11 @@ function App() {
           } else if (msg) {
             setStatus(msg)
           } else {
-            setStatus(`${STAGE_LABEL[stage]}中...`)
+            setStatus(`${getStageLabel(stage)}中...`)
           }
         }
         if (evt.stage === 'preview' && evt.message) {
+          setCurrentStage('preview')
           setStatus(evt.message)
         }
         if (evt.message) {
@@ -955,6 +1313,16 @@ function App() {
       }
       if (evt.type === 'error') {
         const errMsg = String(evt.message ?? '')
+        const pending = pendingRequestsRef.current.get(evt.id)
+        if (pending) {
+          window.clearTimeout(pending.timeout)
+          pendingRequestsRef.current.delete(evt.id)
+          pending.reject(new Error(errMsg || '请求失败'))
+          if (evt.traceback) {
+            appendLog(evt.traceback)
+          }
+          return
+        }
         const backendFatal =
           errMsg.includes('Backend exited') ||
           errMsg.includes('Backend parse error') ||
@@ -964,6 +1332,7 @@ function App() {
           setStatus('训练已中止')
           setPipelineRunning(false)
           setPipelineCardMinimized(false)
+          setActiveRunMode(null)
           setCurrentStage('idle')
           appendLog('[SYS] 训练已中止')
           showToast('训练已中止', 'info')
@@ -972,6 +1341,7 @@ function App() {
         setStatus('任务出错')
         setPipelineRunning(false)
         setPipelineCardMinimized(false)
+        setActiveRunMode(null)
         setCurrentStage('idle')
         setPreviewBusy(false)
         if (backendFatal) {
@@ -1002,6 +1372,7 @@ function App() {
         setStatus('任务完成')
         setPipelineRunning(false)
         setPipelineCardMinimized(false)
+        setActiveRunMode(null)
         setCurrentStage('idle')
         setTrainDonePromptOpen(true)
         const exportedVoicepack = String(evt.payload?.voicepack_path ?? '')
@@ -1015,8 +1386,9 @@ function App() {
         appendLog(evt.message ?? '')
       }
     })
-    send('ping')
+    pingRequestIdRef.current = send('ping')
     return () => {
+      rejectPendingRequests('界面已卸载')
       if (typeof offBackendEvent === 'function') {
         offBackendEvent()
       }
@@ -1065,6 +1437,91 @@ function App() {
   }, [drawerExpanded])
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(DISTILL_MODE_STORAGE_KEY, trainingMode)
+    } catch {
+      // ignore
+    }
+  }, [trainingMode])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DISTILL_SETTINGS_STORAGE_KEY, JSON.stringify(distillOpts))
+    } catch {
+      // ignore
+    }
+  }, [distillOpts])
+
+  useEffect(() => {
+    setDistillOpts((prev) => {
+      const next = normalizeDistillSelection(gsvCatalog, prev)
+      if (
+        next.version === prev.version &&
+        next.speaker === prev.speaker &&
+        next.prompt_lang === prev.prompt_lang &&
+        next.emotion === prev.emotion
+      ) {
+        return prev
+      }
+      return next
+    })
+  }, [gsvCatalog])
+
+  useEffect(() => {
+    const root = distillOpts.gsv_root.trim()
+    if (!root) {
+      setGsvRootBusy(false)
+      setGsvRootStatus(null)
+      setGsvCatalog(null)
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      setGsvRootBusy(true)
+      try {
+        const validation = await requestBackend<BackendResponsePayload>('validate_gsv_root', { gsv_root: root })
+        if (cancelled) return
+        const ok = Boolean(validation.ok)
+        const normalizedRoot = String(validation.root || root)
+        setGsvRootStatus({
+          ok,
+          message: String(validation.message || (ok ? '校验通过' : '校验失败')),
+        })
+        if (!ok) {
+          setGsvCatalog(null)
+          return
+        }
+        if (normalizedRoot !== distillOpts.gsv_root) {
+          setDistillOpts((prev) => ({ ...prev, gsv_root: normalizedRoot }))
+        }
+        const catalog = await requestBackend<GsvModelCatalog>('scan_gsv_models', { gsv_root: normalizedRoot }, 30000)
+        if (cancelled) return
+        setGsvCatalog(catalog)
+        const versionCount = Object.keys(catalog.versions || {}).length
+        setGsvRootStatus({
+          ok: true,
+          message: versionCount > 0 ? `校验通过，已扫描 ${versionCount} 个版本` : '校验通过，但未发现可用说话人模型',
+        })
+      } catch (error) {
+        if (cancelled) return
+        setGsvCatalog(null)
+        setGsvRootStatus({
+          ok: false,
+          message: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        if (!cancelled) {
+          setGsvRootBusy(false)
+        }
+      }
+    }, 360)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [distillOpts.gsv_root])
+
+  useEffect(() => {
     if (page === displayPage) return
     setPageTransitionPhase('out')
     let inTimer: number | undefined
@@ -1093,9 +1550,8 @@ function App() {
       return () => media.removeEventListener('change', onChange)
     }
     const legacyListener = (event: MediaQueryListEvent) => setSystemDark(event.matches)
-    media.addListener(legacyListener as unknown as (this: MediaQueryList, ev: MediaQueryListEvent) => any)
-    return () =>
-      media.removeListener(legacyListener as unknown as (this: MediaQueryList, ev: MediaQueryListEvent) => any)
+    media.addListener(legacyListener)
+    return () => media.removeListener(legacyListener)
   }, [])
 
   useEffect(() => {
@@ -1197,16 +1653,127 @@ function App() {
       showToast(result?.message || '清除工作缓存失败', 'error')
       return
     }
-    setProgress({
-      preprocess: 0,
-      vad: 0,
-      asr: 0,
-      train: 0,
-      export: 0,
-    })
+    setProgress(emptyProgress())
     setStatus('工作缓存已清理')
     appendLog(`[SYS] 已清理工作缓存: ${result.path ?? `${outputDir}\\work`}`)
     showToast('工作缓存已清理', 'success')
+  }
+
+  const pickGsvRoot = async () => {
+    const dirs = await window.dialogs?.openFiles({
+      title: '选择 GPT-SoVITS 根目录',
+      properties: ['openDirectory'],
+      filters: [{ name: 'All', extensions: ['*'] }],
+    })
+    if (dirs && dirs[0]) {
+      setDistillOpts((prev) => ({ ...prev, gsv_root: dirs[0] }))
+    }
+  }
+
+  const handleGsvRootDrop = async (path: string) => {
+    if (!path) return
+    const looksLikeFile = /\.[^\\/]+$/.test(path)
+    if (looksLikeFile && window.paths?.dirname) {
+      const dir = await window.paths.dirname(path)
+      setDistillOpts((prev) => ({ ...prev, gsv_root: dir || path }))
+      return
+    }
+    setDistillOpts((prev) => ({ ...prev, gsv_root: path }))
+  }
+
+  const addDistillSources = (items: DistillTextSource[]) => {
+    if (!items.length) return
+    setDistillOpts((prev) => ({
+      ...prev,
+      text_sources: mergeDistillSources(prev.text_sources, items),
+    }))
+  }
+
+  const mapDistillSourcePaths = (paths: string[]): DistillTextSource[] =>
+    paths.reduce<DistillTextSource[]>((acc, path) => {
+      if (isDistillTextFile(path)) {
+        acc.push({ kind: 'text_file', path })
+      } else if (!/\.[^\\/]+$/.test(path)) {
+        acc.push({ kind: 'project_dir', path })
+      }
+      return acc
+    }, [])
+
+  const pickDistillTextFiles = async () => {
+    const files = await window.dialogs?.openFiles({
+      title: '添加蒸馏文本来源',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: 'Text Corpus', extensions: ['txt', 'csv', 'jsonl'] },
+        { name: 'All', extensions: ['*'] },
+      ],
+    })
+    if (files?.length) {
+      addDistillSources(files.map((path) => ({ kind: 'text_file', path })))
+    }
+  }
+
+  const pickDistillProjectDirs = async () => {
+    const dirs = await window.dialogs?.openFiles({
+      title: '添加旧训练项目目录',
+      properties: ['openDirectory', 'multiSelections'],
+      filters: [{ name: 'All', extensions: ['*'] }],
+    })
+    if (dirs?.length) {
+      addDistillSources(dirs.map((path) => ({ kind: 'project_dir', path })))
+    }
+  }
+
+  const removeDistillSource = (target: DistillTextSource) => {
+    setDistillOpts((prev) => ({
+      ...prev,
+      text_sources: prev.text_sources.filter((item) => !(item.kind === target.kind && item.path === target.path)),
+    }))
+  }
+
+  const clearDistillSources = () => {
+    setDistillOpts((prev) => ({ ...prev, text_sources: [] }))
+    showToast('已清空文本来源', 'info')
+  }
+
+  const handleDistillSourcesDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setDistillSourcesDragActive(false)
+    const itemsFromPaths = mapDistillSourcePaths(extractDroppedPaths(event))
+    if (itemsFromPaths.length) {
+      addDistillSources(itemsFromPaths)
+      return
+    }
+
+    getFilesFromDataTransfer(event).then((files) => {
+      if (!files.length) {
+        showToast('未检测到可用的文本文件和项目目录', 'warning')
+        return
+      }
+      const filePaths = files
+        .map((file) => getNativeFilePath(file))
+        .filter(Boolean) as string[]
+      const resolvedFromPaths = mapDistillSourcePaths(filePaths)
+      if (resolvedFromPaths.length) {
+        addDistillSources(resolvedFromPaths)
+        return
+      }
+      const dt = getDataTransfer(event)
+      const types = dt ? Array.from(dt.types || []) : []
+      const items = dt ? Array.from(dt.items || []) : []
+      const fileSummary = files.slice(0, 3).map((file: File) => {
+        const anyFile = file as File & { path?: string; webkitRelativePath?: string }
+        return `${file.name}|path=${getNativeFilePath(file) || (anyFile.path ?? '')}|rel=${anyFile.webkitRelativePath ?? ''}`
+      })
+      const uri = dt ? dt.getData('text/uri-list') : ''
+      const textPlain = dt ? dt.getData('text/plain') : ''
+      appendLog(
+        `[DROP] 文本来源拖入未提供原始路径 types=${types.join(',')} files=${files.length} items=${items.length} ` +
+          `names=${fileSummary.join(';')} uri=${uri.slice(0, 120)} text=${textPlain.slice(0, 120)}`
+      )
+      showToast('当前拖入来源未提供原始文件路径，请从资源管理器直接拖入或使用添加按钮', 'warning')
+    })
   }
 
   const pickAsrModel = async () => {
@@ -1271,7 +1838,7 @@ function App() {
         const items = dt ? Array.from(dt.items || []) : []
         const fileSummary = files.slice(0, 3).map((file: File) => {
           const anyFile = file as File & { path?: string; webkitRelativePath?: string }
-          return `${file.name}|path=${anyFile.path ?? ''}|rel=${anyFile.webkitRelativePath ?? ''}`
+          return `${file.name}|path=${getNativeFilePath(file) || (anyFile.path ?? '')}|rel=${anyFile.webkitRelativePath ?? ''}`
         })
         const uri = dt ? dt.getData('text/uri-list') : ''
         const textPlain = dt ? dt.getData('text/plain') : ''
@@ -1438,7 +2005,7 @@ function App() {
     const now = new Date()
     const pad2 = (value: number) => String(value).padStart(2, '0')
     const defaultName =
-      `kgtts-trainer-log-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-` +
+      `kigtts-trainer-log-${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-` +
       `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}.txt`
     const defaultPath = outputDir ? `${outputDir}\\${defaultName}` : defaultName
     const target = await window.dialogs.saveFile({
@@ -1476,6 +2043,67 @@ function App() {
     showToast(result?.message || '打开语音包目录失败', 'error')
   }
 
+  const beginPipelineRun = (mode: TrainingMode, stage: PipelineStage, nextStatus: string, toastMessage: string) => {
+    abortingPipelineRef.current = false
+    setProgress(emptyProgress())
+    setPipelineRunning(true)
+    setPipelineCardCollapsed(false)
+    setPipelineCardMinimized(false)
+    setTrainDonePromptOpen(false)
+    setActiveRunMode(mode)
+    setCurrentStage(stage)
+    setStatus(nextStatus)
+    showToast(toastMessage, 'info')
+  }
+
+  const launchDistillPipeline = (outputDir: string, commonOpts: CommonPipelineOptions, distillPayload: DistillOptions) => {
+    beginPipelineRun('gsv_distill', 'collect', '蒸馏任务启动中...', 'GPT-SoVITS 蒸馏任务已启动')
+    send('start_distill_pipeline', {
+      output_dir: outputDir,
+      opts: commonOpts,
+      distill: distillPayload,
+    })
+  }
+
+  const openGsviConfirmationFlow = (pending: PendingDistillStart) => {
+    pendingDistillStartRef.current = pending
+    setGsviAttribution(defaultGsviAttributionFields())
+    setGsviAttributionError('')
+    setGsviSkipPromptChecked(false)
+    setGsviAttributionOpen(false)
+    setGsviDisclaimerOpen(true)
+  }
+
+  const confirmGsviDisclaimer = () => {
+    setGsviDisclaimerOpen(false)
+    setGsviAttributionOpen(true)
+    setGsviAttributionError('')
+  }
+
+  const submitGsviAttribution = () => {
+    const trimmed = {
+      gsvAuthor: gsviAttribution.gsvAuthor.trim(),
+      gsvTrainer: gsviAttribution.gsvTrainer.trim(),
+      gsvTrainer2: gsviAttribution.gsvTrainer2.trim(),
+      gsviPacker: gsviAttribution.gsviPacker.trim(),
+    }
+    const mismatch = Object.entries(GSVI_REQUIRED_NAMES).find(([key, expected]) => trimmed[key as keyof GsviAttributionFields] !== expected)
+    if (mismatch) {
+      setGsviAttributionError('请输入并完整确认所有署名字段后再继续。')
+      return
+    }
+    const pending = pendingDistillStartRef.current
+    if (!pending) {
+      cancelPendingDistillStart()
+      showToast('蒸馏启动上下文已失效，请重新点击开始训练。', 'warning')
+      return
+    }
+    persistGsviSkipPreference(gsviSkipPromptChecked)
+    resetGsviPromptState()
+    pendingDistillStartRef.current = null
+    launchDistillPipeline(pending.outputDir, pending.commonOpts, pending.distillPayload)
+  }
+
   const startPipeline = async () => {
     if (!connected) {
       setStatus('后端未连接')
@@ -1499,50 +2127,123 @@ function App() {
       appendLog(`[SYS] 输出目录为空，已自动创建: ${created.path}`)
       showToast('已自动创建默认输出目录', 'info')
     }
+    const parsedSampleRate = Number(sampleRate)
+    const sampleRateValue =
+      Number.isFinite(parsedSampleRate) && parsedSampleRate > 0 ? parsedSampleRate : 22050
+    const parsedTrainBatchSize = Number(trainBatchSize)
+    const trainBatchSizeValue =
+      Number.isFinite(parsedTrainBatchSize) && parsedTrainBatchSize > 0 ? Math.max(1, Math.floor(parsedTrainBatchSize)) : 24
+
+    const commonOpts = {
+      quality,
+      denoise,
+      sample_rate: sampleRateValue,
+      batch_size: trainBatchSizeValue,
+      asr_model_zip: asrModel || null,
+      piper_base_checkpoint: baseCkpt || null,
+      use_espeak: useEspeak,
+      piper_config: piperConfig || null,
+      device,
+      voicepack_name: voicepackName,
+      voicepack_remark: voicepackRemark,
+      voicepack_avatar: voicepackAvatar || null,
+    }
+
+    if (trainingMode === 'gsv_distill') {
+      if (!distillOpts.gsv_root.trim()) {
+        setStatus('请先选择 GPT-SoVITS 根目录')
+        showToast('请先选择 GPT-SoVITS 根目录', 'warning')
+        return
+      }
+      if (!gsvRootStatus?.ok) {
+        setStatus('GPT-SoVITS 根目录校验失败')
+        showToast(gsvRootStatus?.message || 'GPT-SoVITS 根目录校验失败', 'error')
+        return
+      }
+      if (!distillOpts.version || !distillOpts.speaker || !distillOpts.prompt_lang || !distillOpts.emotion) {
+        setStatus('请先完成 GPT-SoVITS 模型选择')
+        showToast('请先完成 GPT-SoVITS 模型选择', 'warning')
+        return
+      }
+      if (!distillOpts.text_sources.length) {
+        setStatus('请先添加蒸馏文本来源')
+        showToast('请先添加蒸馏文本来源', 'warning')
+        return
+      }
+      const distillPayload: DistillOptions = {
+        ...distillOpts,
+        gsv_root: distillOpts.gsv_root.trim(),
+        device: distillOpts.device === 'cpu' ? 'cpu' : 'cuda',
+        batch_size: Math.max(1, Number(distillOpts.batch_size) || 1),
+        seed: Number.isFinite(Number(distillOpts.seed)) ? Math.trunc(Number(distillOpts.seed)) : -1,
+        top_k: Math.max(1, Number(distillOpts.top_k) || 10),
+        top_p: Math.max(0, Number(distillOpts.top_p) || 1),
+        batch_threshold: Math.max(0, Number(distillOpts.batch_threshold) || 0.75),
+        fragment_interval: Math.max(0, Number(distillOpts.fragment_interval) || 0.3),
+        repetition_penalty: Math.max(0, Number(distillOpts.repetition_penalty) || 1.35),
+        sample_steps: Math.max(1, Number(distillOpts.sample_steps) || 16),
+        speed_factor: Math.max(0.1, Number(distillOpts.speed_factor) || 1),
+        temperature: Math.max(0, Number(distillOpts.temperature) || 1),
+      }
+      const pendingStart = {
+        outputDir: effectiveOutputDir,
+        commonOpts,
+        distillPayload,
+      }
+      if (shouldSkipGsviPrompt()) {
+        launchDistillPipeline(pendingStart.outputDir, pendingStart.commonOpts, pendingStart.distillPayload)
+        return
+      }
+      openGsviConfirmationFlow(pendingStart)
+      return
+    }
+
     if (!audioFiles.length) {
       setStatus('请先添加音频文件')
       showToast('请先添加音频文件', 'warning')
       return
     }
-    const parsedSampleRate = Number(sampleRate)
-    const sampleRateValue =
-      Number.isFinite(parsedSampleRate) && parsedSampleRate > 0 ? parsedSampleRate : 22050
-    abortingPipelineRef.current = false
-    setProgress({
-      preprocess: 0,
-      vad: 0,
-      asr: 0,
-      train: 0,
-      export: 0,
-    })
-    setPipelineRunning(true)
-    setPipelineCardCollapsed(false)
-    setPipelineCardMinimized(false)
-    setTrainDonePromptOpen(false)
-    setCurrentStage('preprocess')
-    setStatus('任务启动中...')
-    showToast('任务已启动', 'info')
+
+    beginPipelineRun('piper', 'preprocess', '任务启动中...', '任务已启动')
     send('start_pipeline', {
       input_audio: audioFiles,
       output_dir: effectiveOutputDir,
-      opts: {
-        quality,
-        denoise,
-        sample_rate: sampleRateValue,
-        asr_model_zip: asrModel || null,
-        piper_base_checkpoint: baseCkpt || null,
-        use_espeak: useEspeak,
-        piper_config: piperConfig || null,
-        device,
-        voicepack_name: voicepackName,
-        voicepack_remark: voicepackRemark,
-        voicepack_avatar: voicepackAvatar || null,
-      },
+      opts: commonOpts,
     })
   }
 
   const prepContent = (
     <Stack spacing={2}>
+      <Paper sx={cardPaperSx}>
+        <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+          训练模式
+        </Typography>
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={2}
+          alignItems={{ xs: 'stretch', md: 'center' }}
+          justifyContent="space-between"
+        >
+          <FormControl size="small" sx={{ minWidth: { xs: '100%', md: 280 } }}>
+            <InputLabel>模式</InputLabel>
+            <Select
+              value={trainingMode}
+              label="模式"
+              onChange={(event) => handleTrainingModeChange(event.target.value as TrainingMode)}
+              disabled={pipelineRunning}
+            >
+              <MenuItem value="piper">Piper 标准</MenuItem>
+              <MenuItem value="gsv_distill">GPT-SoVITS 蒸馏</MenuItem>
+            </Select>
+          </FormControl>
+          <Typography variant="body2" sx={{ opacity: 0.78 }}>
+            {trainingMode === 'piper'
+              ? '标准模式会重新做裁剪、VAD 和 ASR。'
+              : '蒸馏模式会直接从 GPT-SoVITS 说话人模型生成语料，再继续训练并导出 KIGTTS 语音包。'}
+          </Typography>
+        </Stack>
+      </Paper>
+
       <Paper sx={cardPaperSx}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Typography variant="subtitle1" fontWeight={600}>
@@ -1583,65 +2284,525 @@ function App() {
         </Stack>
       </Paper>
 
-      <Paper sx={cardPaperSx}>
-        <Stack direction="row" alignItems="center" justifyContent="space-between">
-          <Typography variant="subtitle1" fontWeight={600}>
-            音频导入
-          </Typography>
-          <Stack direction="row" spacing={1}>
-            <Tooltip title="添加音频" arrow>
-              <IconButton size="small" onClick={pickAudioFiles}>
-                <MsIcon name="add" size={20} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="清空音频" arrow>
-              <IconButton size="small" onClick={clearAudioFiles}>
-                <MsIcon name="delete" size={20} />
-              </IconButton>
-            </Tooltip>
+      {trainingMode === 'piper' ? (
+        <Paper sx={cardPaperSx}>
+          <Stack direction="row" alignItems="center" justifyContent="space-between">
+            <Typography variant="subtitle1" fontWeight={600}>
+              音频导入
+            </Typography>
+            <Stack direction="row" spacing={1}>
+              <Tooltip title="添加音频" arrow>
+                <IconButton size="small" onClick={pickAudioFiles}>
+                  <MsIcon name="add" size={20} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="清空音频" arrow>
+                <IconButton size="small" onClick={clearAudioFiles}>
+                  <MsIcon name="delete" size={20} />
+                </IconButton>
+              </Tooltip>
+            </Stack>
           </Stack>
-        </Stack>
-        <Box
-          sx={{
-            mt: 1,
-            border: '1px dashed',
-            borderColor: audioDragActive ? 'primary.main' : 'transparent',
-            borderRadius: 1,
-            p: 1,
-            transition: 'border-color 0.15s ease',
-          }}
-          onDragOver={(event) => {
-            event.preventDefault()
-            if (event.dataTransfer) {
-              event.dataTransfer.dropEffect = 'copy'
-            }
-            setAudioDragActive(true)
-          }}
-          onDragLeave={() => setAudioDragActive(false)}
-          onDrop={handleAudioDrop}
-        >
-          <List dense sx={{ maxHeight: 240, overflow: 'auto' }}>
-            {audioFiles.length === 0 && (
-              <ListItem>
-                <ListItemText primary="暂无音频文件" secondary="点击添加或拖拽导入" />
-              </ListItem>
-            )}
-            {audioFiles.map((file, index) => (
-              <ListItem
-                key={`${file}-${index}`}
-                divider
-                secondaryAction={
-                  <IconButton edge="end" size="small" onClick={() => removeAudioFile(index)}>
-                    <MsIcon name="close" size={18} />
-                  </IconButton>
-                }
+          <Box
+            sx={{
+              mt: 1,
+              border: '1px dashed',
+              borderColor: audioDragActive ? 'primary.main' : 'transparent',
+              borderRadius: 1,
+              p: 1,
+              transition: 'border-color 0.15s ease',
+            }}
+            onDragOver={(event) => {
+              event.preventDefault()
+              if (event.dataTransfer) {
+                event.dataTransfer.dropEffect = 'copy'
+              }
+              setAudioDragActive(true)
+            }}
+            onDragLeave={() => setAudioDragActive(false)}
+            onDrop={handleAudioDrop}
+          >
+            <List dense sx={{ maxHeight: 240, overflow: 'auto' }}>
+              {audioFiles.length === 0 && (
+                <ListItem>
+                  <ListItemText primary="暂无音频文件" secondary="点击添加或拖拽导入" />
+                </ListItem>
+              )}
+              {audioFiles.map((file, index) => (
+                <ListItem
+                  key={`${file}-${index}`}
+                  divider
+                  secondaryAction={
+                    <IconButton edge="end" size="small" onClick={() => removeAudioFile(index)}>
+                      <MsIcon name="close" size={18} />
+                    </IconButton>
+                  }
+                >
+                  <ListItemText primary={file} />
+                </ListItem>
+              ))}
+            </List>
+          </Box>
+        </Paper>
+      ) : (
+        <>
+          <Paper sx={cardPaperSx}>
+            <Stack spacing={1.25}>
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={1.5}
+                alignItems={{ xs: 'flex-start', md: 'center' }}
+                justifyContent="space-between"
               >
-                <ListItemText primary={file} />
-              </ListItem>
-            ))}
-          </List>
-        </Box>
-      </Paper>
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="subtitle1" fontWeight={600}>
+                    GSVI 整合包获取索引
+                  </Typography>
+                  <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.78 }}>
+                    GSVI 是 GPT-SoVITS 推理特化整合包。蒸馏模式需要先准备兼容的整合包根目录，索引页里有整合包获取入口、模型资源和相关说明。
+                  </Typography>
+                </Box>
+                <Button
+                  variant="outlined"
+                  startIcon={<MsIcon name="open_in_new" size={18} />}
+                  onClick={() => {
+                    void openGsviGuide()
+                  }}
+                >
+                  打开索引页
+                </Button>
+              </Stack>
+              <Typography
+                variant="caption"
+                sx={{
+                  display: 'block',
+                  wordBreak: 'break-all',
+                  opacity: 0.7,
+                  cursor: 'pointer',
+                  '&:hover': { color: 'primary.main', opacity: 1 },
+                }}
+                onClick={() => {
+                  void openGsviGuide()
+                }}
+              >
+                {GSVI_GUIDE_URL}
+              </Typography>
+            </Stack>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+              GPT-SoVITS 根目录
+            </Typography>
+            <Stack spacing={1}>
+              <PathField
+                label="GPT-SoVITS 根目录"
+                value={distillOpts.gsv_root}
+                onChange={(value) => setDistillOpts((prev) => ({ ...prev, gsv_root: value }))}
+                onPick={pickGsvRoot}
+                onDropPath={handleGsvRootDrop}
+                helperText="例如 D:\\GPT-SoVITS-1007-cu124"
+                placeholder="选择包含 runtime、models、GPT_SoVITS 的整合包目录"
+              />
+              {gsvRootBusy && (
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <CircularProgress size={16} />
+                  <Typography variant="caption" sx={{ opacity: 0.75 }}>
+                    正在校验并扫描模型...
+                  </Typography>
+                </Stack>
+              )}
+              {gsvRootStatus && (
+                <Alert severity={gsvRootStatus.ok ? 'success' : 'error'}>
+                  {gsvRootStatus.message}
+                </Alert>
+              )}
+            </Stack>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+              模型选择
+            </Typography>
+            <Box
+              sx={{
+                display: 'grid',
+                gap: 2,
+                gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+              }}
+            >
+              <FormControl fullWidth size="small" disabled={!catalogVersions.length}>
+                <InputLabel>版本</InputLabel>
+                <Select
+                  value={distillOpts.version}
+                  label="版本"
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, version: event.target.value, speaker: '', prompt_lang: '', emotion: '' }))}
+                >
+                  {catalogVersions.map((version) => (
+                    <MenuItem key={version} value={version}>
+                      {version}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth size="small" disabled={!catalogSpeakers.length}>
+                <InputLabel>说话人</InputLabel>
+                <Select
+                  value={distillOpts.speaker}
+                  label="说话人"
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, speaker: event.target.value, prompt_lang: '', emotion: '' }))}
+                >
+                  {catalogSpeakers.map((speaker) => (
+                    <MenuItem key={speaker} value={speaker}>
+                      {speaker}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth size="small" disabled={!catalogLanguages.length}>
+                <InputLabel>参考语言</InputLabel>
+                <Select
+                  value={distillOpts.prompt_lang}
+                  label="参考语言"
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, prompt_lang: event.target.value, emotion: '' }))}
+                >
+                  {catalogLanguages.map((lang) => (
+                    <MenuItem key={lang} value={lang}>
+                      {lang}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth size="small" disabled={!catalogEmotions.length}>
+                <InputLabel>情感</InputLabel>
+                <Select
+                  value={distillOpts.emotion}
+                  label="情感"
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, emotion: event.target.value }))}
+                >
+                  {catalogEmotions.map((emotion) => (
+                    <MenuItem key={`${emotion.name}-${emotion.ref_audio_path}`} value={emotion.name}>
+                      {emotion.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Box>
+            <Box sx={{ mt: 1.5 }}>
+              {selectedEmotion ? (
+                <Alert severity="info">
+                  <Box sx={{ wordBreak: 'break-all' }}>
+                    <Typography variant="body2" fontWeight={600}>
+                      参考文本
+                    </Typography>
+                    <Typography variant="body2" sx={{ mt: 0.25 }}>
+                      {selectedEmotion.prompt_text}
+                    </Typography>
+                    <Typography variant="caption" sx={{ display: 'block', mt: 0.75, opacity: 0.72 }}>
+                      {selectedEmotion.ref_audio_path}
+                    </Typography>
+                  </Box>
+                </Alert>
+              ) : (
+                <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                  选择版本、说话人、参考语言和情感后，这里会显示整合包里的参考文本与音频路径。
+                </Typography>
+              )}
+            </Box>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle1" fontWeight={600}>
+                文本来源
+              </Typography>
+              <Stack direction="row" spacing={1}>
+                <Tooltip title="添加文本来源" arrow>
+                  <IconButton size="small" onClick={(event) => setDistillAddAnchorEl(event.currentTarget)}>
+                    <MsIcon name="add" size={20} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="清空文本来源" arrow>
+                  <IconButton size="small" onClick={clearDistillSources}>
+                    <MsIcon name="delete" size={20} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Stack>
+            <Box
+              sx={{
+                mt: 1,
+                border: '1px dashed',
+                borderColor: distillSourcesDragActive ? 'primary.main' : 'transparent',
+                borderRadius: 1,
+                p: 1,
+                transition: 'border-color 0.15s ease',
+              }}
+              onDragOver={(event) => {
+                event.preventDefault()
+                if (event.dataTransfer) {
+                  event.dataTransfer.dropEffect = 'copy'
+                }
+                setDistillSourcesDragActive(true)
+              }}
+              onDragLeave={() => setDistillSourcesDragActive(false)}
+              onDrop={handleDistillSourcesDrop}
+            >
+              <List dense sx={{ maxHeight: 240, overflow: 'auto' }}>
+                {distillOpts.text_sources.length === 0 && (
+                  <ListItem>
+                    <ListItemText primary="暂无文本来源" secondary="点击添加或拖拽导入文本文件、旧训练项目目录" />
+                  </ListItem>
+                )}
+                {distillOpts.text_sources.map((item) => (
+                  <ListItem
+                    key={`${item.kind}:${item.path}`}
+                    divider
+                    secondaryAction={
+                      <IconButton edge="end" size="small" onClick={() => removeDistillSource(item)}>
+                        <MsIcon name="close" size={18} />
+                      </IconButton>
+                    }
+                  >
+                    <ListItemIcon sx={{ minWidth: 28 }}>
+                      <MsIcon name={item.kind === 'project_dir' ? 'folder' : 'article'} size={18} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={item.path}
+                      secondary={item.kind === 'project_dir' ? '旧训练项目目录' : '文本语料文件'}
+                    />
+                  </ListItem>
+                ))}
+              </List>
+            </Box>
+            <Popover
+              open={Boolean(distillAddAnchorEl)}
+              anchorEl={distillAddAnchorEl}
+              onClose={() => setDistillAddAnchorEl(null)}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+              transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+            >
+              <List dense sx={{ py: 0.5, minWidth: 180 }}>
+                <ListItemButton
+                  onClick={() => {
+                    setDistillAddAnchorEl(null)
+                    void pickDistillTextFiles()
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <MsIcon name="article" size={18} />
+                  </ListItemIcon>
+                  <ListItemText primary="添加语料文件" secondary=".txt / .csv / .jsonl" />
+                </ListItemButton>
+                <ListItemButton
+                  onClick={() => {
+                    setDistillAddAnchorEl(null)
+                    void pickDistillProjectDirs()
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <MsIcon name="folder" size={18} />
+                  </ListItemIcon>
+                  <ListItemText primary="添加旧项目" secondary="读取 work/metadata.csv" />
+                </ListItemButton>
+              </List>
+            </Popover>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle1" fontWeight={600}>
+                推理参数
+              </Typography>
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<MsIcon name={distillAdvancedOpen ? 'expand_less' : 'expand_more'} size={18} />}
+                onClick={() => setDistillAdvancedOpen((prev) => !prev)}
+              >
+                {distillAdvancedOpen ? '收起高级参数' : '展开高级参数'}
+              </Button>
+            </Stack>
+            <Box
+              sx={{
+                mt: 1,
+                display: 'grid',
+                gap: 2,
+                gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+              }}
+            >
+              <FormControl fullWidth size="small">
+                <InputLabel>推理设备</InputLabel>
+                <Select
+                  value={distillOpts.device}
+                  label="推理设备"
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, device: event.target.value as 'cpu' | 'cuda' }))}
+                >
+                  <MenuItem value="cuda">GPU/CUDA</MenuItem>
+                  <MenuItem value="cpu">CPU</MenuItem>
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth size="small">
+                <InputLabel>合成文本语言</InputLabel>
+                <Select
+                  value={distillOpts.text_lang}
+                  label="合成文本语言"
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, text_lang: event.target.value }))}
+                >
+                  {DISTILL_TEXT_LANGS.map((lang) => (
+                    <MenuItem key={lang} value={lang}>
+                      {lang}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <FormControl fullWidth size="small">
+                <InputLabel>切句方式</InputLabel>
+                <Select
+                  value={distillOpts.text_split_method}
+                  label="切句方式"
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, text_split_method: event.target.value }))}
+                >
+                  {DISTILL_SPLIT_METHODS.map((method) => (
+                    <MenuItem key={method} value={method}>
+                      {method}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <TextField
+                label="语速"
+                type="number"
+                value={distillOpts.speed_factor}
+                onChange={(event) => setDistillOpts((prev) => ({ ...prev, speed_factor: Number(event.target.value) }))}
+                size="small"
+                inputProps={{ step: 0.05, min: 0.1 }}
+              />
+
+              <TextField
+                label="Temperature"
+                type="number"
+                value={distillOpts.temperature}
+                onChange={(event) => setDistillOpts((prev) => ({ ...prev, temperature: Number(event.target.value) }))}
+                size="small"
+                inputProps={{ step: 0.05, min: 0 }}
+              />
+
+              <TextField
+                label="蒸馏 batch size"
+                type="number"
+                value={distillOpts.batch_size}
+                onChange={(event) => setDistillOpts((prev) => ({ ...prev, batch_size: Math.max(1, Number(event.target.value) || 1) }))}
+                size="small"
+                inputProps={{ step: 1, min: 1 }}
+              />
+
+              <TextField
+                label="随机种子"
+                type="number"
+                value={distillOpts.seed}
+                onChange={(event) => setDistillOpts((prev) => ({ ...prev, seed: Math.trunc(Number(event.target.value) || -1) }))}
+                size="small"
+                inputProps={{ step: 1 }}
+                helperText="-1 表示每条文本随机种子"
+              />
+            </Box>
+
+            <Collapse in={distillAdvancedOpen} timeout={220}>
+              <Box
+                sx={{
+                  mt: 2,
+                  display: 'grid',
+                  gap: 2,
+                  gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+                }}
+              >
+                <TextField
+                  label="top_k"
+                  type="number"
+                  value={distillOpts.top_k}
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, top_k: Math.max(1, Number(event.target.value) || 1) }))}
+                  size="small"
+                  inputProps={{ step: 1, min: 1 }}
+                />
+                <TextField
+                  label="top_p"
+                  type="number"
+                  value={distillOpts.top_p}
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, top_p: Number(event.target.value) }))}
+                  size="small"
+                  inputProps={{ step: 0.05, min: 0, max: 1 }}
+                />
+                <TextField
+                  label="batch_threshold"
+                  type="number"
+                  value={distillOpts.batch_threshold}
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, batch_threshold: Number(event.target.value) }))}
+                  size="small"
+                  inputProps={{ step: 0.05, min: 0 }}
+                />
+                <TextField
+                  label="fragment_interval"
+                  type="number"
+                  value={distillOpts.fragment_interval}
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, fragment_interval: Number(event.target.value) }))}
+                  size="small"
+                  inputProps={{ step: 0.05, min: 0 }}
+                />
+                <TextField
+                  label="repetition_penalty"
+                  type="number"
+                  value={distillOpts.repetition_penalty}
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, repetition_penalty: Number(event.target.value) }))}
+                  size="small"
+                  inputProps={{ step: 0.05, min: 0 }}
+                />
+                <TextField
+                  label="sample_steps"
+                  type="number"
+                  value={distillOpts.sample_steps}
+                  onChange={(event) => setDistillOpts((prev) => ({ ...prev, sample_steps: Math.max(1, Number(event.target.value) || 1) }))}
+                  size="small"
+                  inputProps={{ step: 1, min: 1 }}
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={distillOpts.split_bucket}
+                      onChange={(event) => setDistillOpts((prev) => ({ ...prev, split_bucket: event.target.checked }))}
+                    />
+                  }
+                  label="split_bucket"
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={distillOpts.parallel_infer}
+                      onChange={(event) => setDistillOpts((prev) => ({ ...prev, parallel_infer: event.target.checked }))}
+                    />
+                  }
+                  label="parallel_infer"
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={distillOpts.if_sr}
+                      onChange={(event) => setDistillOpts((prev) => ({ ...prev, if_sr: event.target.checked }))}
+                    />
+                  }
+                  label="if_sr"
+                />
+              </Box>
+            </Collapse>
+          </Paper>
+        </>
+      )}
 
       <Paper sx={cardPaperSx}>
         <Typography variant="subtitle1" fontWeight={600} gutterBottom>
@@ -1803,6 +2964,23 @@ function App() {
               ) : undefined,
             }}
           />
+          <TextField
+            label="训练 batch_size"
+            value={trainBatchSize}
+            onChange={(e) => setTrainBatchSize(e.target.value)}
+            fullWidth
+            size="small"
+            helperText="显存不足时会自动降级重试"
+            InputProps={{
+              endAdornment: trainBatchSize ? (
+                <InputAdornment position="end">
+                  <IconButton size="small" onClick={() => setTrainBatchSize('')}>
+                    <MsIcon name="close" size={18} />
+                  </IconButton>
+                </InputAdornment>
+              ) : undefined,
+            }}
+          />
           <Box sx={{ gridColumn: '1 / -1' }}>
             <FormControlLabel
               control={<Switch checked={denoise} onChange={(e) => setDenoise(e.target.checked)} />}
@@ -1838,8 +3016,8 @@ function App() {
             onDropFiles={saveDroppedFileSingle}
           />
           <FormControl fullWidth size="small">
-            <InputLabel>训练设备</InputLabel>
-            <Select value={device} label="训练设备" onChange={(e) => setDevice(e.target.value as 'cpu' | 'cuda')}>
+            <InputLabel>Piper 训练设备</InputLabel>
+            <Select value={device} label="Piper 训练设备" onChange={(e) => setDevice(e.target.value as 'cpu' | 'cuda')}>
               <MenuItem value="cpu">CPU</MenuItem>
               <MenuItem value="cuda">GPU/CUDA</MenuItem>
             </Select>
@@ -1852,15 +3030,15 @@ function App() {
           <Typography variant="subtitle1" fontWeight={600}>
             进度
           </Typography>
-          {['preprocess', 'vad', 'asr', 'train', 'export'].map((key) => (
-            <Box key={key}>
+          {activeProgressStages.map((stage) => (
+            <Box key={stage}>
               <Stack direction="row" justifyContent="space-between">
-                <Typography variant="caption" sx={{ textTransform: 'uppercase', opacity: 0.7 }}>
-                  {key}
+                <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                  {STAGE_LABEL[stage]}
                 </Typography>
-                <Typography variant="caption">{Math.round((progress[key] ?? 0) * 100)}%</Typography>
+                <Typography variant="caption">{Math.round((progress[stage] ?? 0) * 100)}%</Typography>
               </Stack>
-              <LinearProgress variant="determinate" value={(progress[key] ?? 0) * 100} sx={{ height: 8, borderRadius: 6 }} />
+              <LinearProgress variant="determinate" value={(progress[stage] ?? 0) * 100} sx={{ height: 8, borderRadius: 6 }} />
             </Box>
           ))}
         </Stack>
@@ -2146,9 +3324,20 @@ function App() {
               </IconButton>
             </Tooltip>
           </Box>
-          <Typography variant="h6" sx={{ fontWeight: 500, flexGrow: 1, fontSize: 16 }}>
-            KGTTS Trainer
-          </Typography>
+          <Box sx={{ flexGrow: 1, display: 'flex', alignItems: 'center' }}>
+            <Box
+              component="img"
+              src={resolvedThemeMode === 'dark' ? logoWhite : logoBlack}
+              alt="KIGTTS"
+              sx={{
+                display: 'block',
+                height: 22,
+                width: 'auto',
+                maxWidth: { xs: 156, md: 188 },
+                objectFit: 'contain',
+              }}
+            />
+          </Box>
           <Box sx={{ display: 'flex', gap: 1, WebkitAppRegion: 'no-drag', alignItems: 'center' }}>
             <Chip label={status} variant="outlined" size="small" />
             <Tooltip title="切换亮/暗主题" arrow>
@@ -2427,7 +3616,7 @@ function App() {
                             当前工作状态
                           </Typography>
                           <Typography variant="body2" fontWeight={600}>
-                            {currentStage === 'idle' ? status : `${STAGE_LABEL[currentStage]} · ${status}`}
+                            {currentStage === 'idle' ? status : `${getStageLabel(currentStage)} · ${status}`}
                           </Typography>
                         </Box>
                         <Stack direction="row" spacing={1} alignItems="center">
@@ -2457,10 +3646,10 @@ function App() {
                         sx={{
                           display: 'grid',
                           gap: 1,
-                          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+                          gridTemplateColumns: `repeat(${activeProgressStages.length}, minmax(0, 1fr))`,
                         }}
                       >
-                        {PIPELINE_STAGES.map((stage) => (
+                        {activeProgressStages.map((stage) => (
                           <Box key={stage}>
                             <Collapse in={!pipelineCardCollapsed} timeout={180}>
                               <Stack direction="row" justifyContent="space-between">
@@ -2694,6 +3883,235 @@ function App() {
             </IconButton>
           </Stack>
         </Popover>
+
+        <Dialog
+          open={gsviModeIntroOpen}
+          onClose={(_event, reason) => {
+            if (reason === 'backdropClick' || reason === 'escapeKeyDown') return
+            closeGsviModeIntro()
+          }}
+          maxWidth="md"
+          fullWidth
+          disableEscapeKeyDown
+        >
+          <DialogTitle>GPT-SoVITS 蒸馏模式说明</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" sx={{ opacity: 0.85 }}>
+                该模式会调用你本机上的 GSVI / GPT-SoVITS 整合包生成蒸馏语料，然后继续在训练器里完成 Piper 训练与 KIGTTS 语音包导出。
+                它不会替你训练或导出 GPT-SoVITS 模型本体。
+              </Typography>
+
+              <Box>
+                <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                  获取索引
+                </Typography>
+                <Typography variant="body2" sx={{ opacity: 0.82 }}>
+                  使用前请先准备兼容的 GSVI / GPT-SoVITS 整合包。索引页中包含整合包获取入口、模型资源和相关说明。
+                </Typography>
+                <Button
+                  variant="text"
+                  size="small"
+                  sx={{ mt: 0.75, px: 0, justifyContent: 'flex-start' }}
+                  startIcon={<MsIcon name="open_in_new" size={18} />}
+                  onClick={() => {
+                    void openGsviGuide()
+                  }}
+                >
+                  {GSVI_GUIDE_URL}
+                </Button>
+              </Box>
+
+              <Alert severity="info">
+                了解完索引页和使用说明后，再继续配置根目录、模型与文本来源即可。若你已经熟悉这一流程，可以勾选下方选项，后续切换到该模式时不再提醒。
+              </Alert>
+
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={gsviModeIntroSkipChecked}
+                    onChange={(event) => setGsviModeIntroSkipChecked(event.target.checked)}
+                  />
+                }
+                label="下次切换到该模式时不再提醒"
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <Button
+              variant="outlined"
+              onClick={() => {
+                void openGsviGuide()
+              }}
+            >
+              打开索引页
+            </Button>
+            <Button variant="contained" onClick={closeGsviModeIntro}>
+              我知道了
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={gsviDisclaimerOpen}
+          onClose={(_event, reason) => {
+            if (reason === 'backdropClick' || reason === 'escapeKeyDown') return
+            cancelPendingDistillStart(true)
+          }}
+          maxWidth="md"
+          fullWidth
+          disableEscapeKeyDown
+        >
+          <DialogTitle>GSVI / GPT-SoVITS 蒸馏模式使用声明</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" sx={{ opacity: 0.85 }}>
+                当前模式会调用你本机上的 GSVI / GPT-SoVITS 整合包作为教师模型生成蒸馏语料，然后继续在本训练器里完成 Piper 训练和语音包导出。
+                它不会替你导出 GPT-SoVITS 模型，也不会替你处理作品发布时的署名与使用责任。
+              </Typography>
+
+              <Box>
+                <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                  获取索引
+                </Typography>
+                <Typography variant="body2" sx={{ opacity: 0.82 }}>
+                  如果你还没有准备好兼容的整合包，可以先查看 GSVI 获取索引页。页面内包含整合包入口、模型资源和相关说明。
+                </Typography>
+                <Button
+                  variant="text"
+                  size="small"
+                  sx={{ mt: 0.75, px: 0, justifyContent: 'flex-start' }}
+                  startIcon={<MsIcon name="open_in_new" size={18} />}
+                  onClick={() => {
+                    void openGsviGuide()
+                  }}
+                >
+                  {GSVI_GUIDE_URL}
+                </Button>
+              </Box>
+
+              <Box>
+                <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                  署名提醒
+                </Typography>
+                <Typography variant="body2" sx={{ opacity: 0.82 }}>
+                  如果你后续公开发布基于该蒸馏流程生成的音频、作品或演示内容，需要根据相关项目与模型要求完整署名贡献者。下一步会要求你手动输入关键署名信息进行确认。
+                </Typography>
+              </Box>
+
+              <Alert severity="warning">
+                <Typography variant="body2">
+                  你需要自行确认外部整合包、模型文件和生成内容的来源、授权范围与用途合规性。训练器作者无法控制你导入的模型、文本和导出的声音内容。
+                </Typography>
+              </Alert>
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <Button variant="outlined" onClick={() => cancelPendingDistillStart(true)}>
+              取消
+            </Button>
+            <Button variant="contained" onClick={confirmGsviDisclaimer}>
+              继续确认
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={gsviAttributionOpen}
+          onClose={(_event, reason) => {
+            if (reason === 'backdropClick' || reason === 'escapeKeyDown') return
+            cancelPendingDistillStart(true)
+          }}
+          maxWidth="sm"
+          fullWidth
+          disableEscapeKeyDown
+        >
+          <DialogTitle>开始蒸馏前确认署名</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" sx={{ opacity: 0.82 }}>
+                请输入下列名字，确认你知道在对外发布相关内容时需要完整注明这些贡献者。训练器不会自动把这些内容写进作品简介。
+              </Typography>
+
+              <TextField
+                label="GPT-SoVITS 开发者"
+                value={gsviAttribution.gsvAuthor}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setGsviAttribution((prev) => ({ ...prev, gsvAuthor: value }))
+                  if (gsviAttributionError) setGsviAttributionError('')
+                }}
+                placeholder={`请输入：${GSVI_REQUIRED_NAMES.gsvAuthor}`}
+                size="small"
+                fullWidth
+                error={gsviFieldMismatch.gsvAuthor}
+                helperText={gsviFieldMismatch.gsvAuthor ? `需输入：${GSVI_REQUIRED_NAMES.gsvAuthor}` : undefined}
+              />
+              <TextField
+                label="模型训练者"
+                value={gsviAttribution.gsvTrainer}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setGsviAttribution((prev) => ({ ...prev, gsvTrainer: value }))
+                  if (gsviAttributionError) setGsviAttributionError('')
+                }}
+                placeholder={`请输入：${GSVI_REQUIRED_NAMES.gsvTrainer}`}
+                size="small"
+                fullWidth
+                error={gsviFieldMismatch.gsvTrainer}
+                helperText={gsviFieldMismatch.gsvTrainer ? `需输入：${GSVI_REQUIRED_NAMES.gsvTrainer}` : undefined}
+              />
+              <TextField
+                label="模型训练者补充"
+                value={gsviAttribution.gsvTrainer2}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setGsviAttribution((prev) => ({ ...prev, gsvTrainer2: value }))
+                  if (gsviAttributionError) setGsviAttributionError('')
+                }}
+                placeholder={`请输入：${GSVI_REQUIRED_NAMES.gsvTrainer2}`}
+                size="small"
+                fullWidth
+                error={gsviFieldMismatch.gsvTrainer2}
+                helperText={gsviFieldMismatch.gsvTrainer2 ? `需输入：${GSVI_REQUIRED_NAMES.gsvTrainer2}` : undefined}
+              />
+              <TextField
+                label="GSVI 推理特化包适配 / 整理"
+                value={gsviAttribution.gsviPacker}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setGsviAttribution((prev) => ({ ...prev, gsviPacker: value }))
+                  if (gsviAttributionError) setGsviAttributionError('')
+                }}
+                placeholder={`请输入：${GSVI_REQUIRED_NAMES.gsviPacker}`}
+                size="small"
+                fullWidth
+                error={gsviFieldMismatch.gsviPacker}
+                helperText={gsviFieldMismatch.gsviPacker ? `需输入：${GSVI_REQUIRED_NAMES.gsviPacker}` : undefined}
+              />
+
+              {gsviAttributionError && <Alert severity="error">{gsviAttributionError}</Alert>}
+
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={gsviSkipPromptChecked}
+                    onChange={(event) => setGsviSkipPromptChecked(event.target.checked)}
+                  />
+                }
+                label="我已确认，下次不再提示"
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <Button variant="outlined" onClick={() => cancelPendingDistillStart(true)}>
+              取消
+            </Button>
+            <Button variant="contained" onClick={submitGsviAttribution}>
+              我保证完整注明
+            </Button>
+          </DialogActions>
+        </Dialog>
 
         <Dialog open={avatarDialogOpen} onClose={() => setAvatarDialogOpen(false)} maxWidth="sm" fullWidth>
           <DialogTitle>裁剪头像</DialogTitle>

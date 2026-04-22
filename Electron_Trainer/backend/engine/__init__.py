@@ -1,2 +1,2 @@
-from .config import TrainingOptions, ProjectPaths, PipelineResult  # noqa: F401
-from .pipeline import run_pipeline  # noqa: F401
+from .config import DistillOptions, DistillTextSource, PipelineResult, ProjectPaths, TrainingOptions  # noqa: F401
+from .pipeline import run_distill_pipeline, run_pipeline  # noqa: F401

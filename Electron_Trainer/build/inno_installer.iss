@@ -1,5 +1,5 @@
 #ifndef MyAppName
-  #define MyAppName "KGTTS Trainer"
+  #define MyAppName "KIGTTS Trainer"
 #endif
 
 #ifndef MyAppVersion
@@ -7,11 +7,11 @@
 #endif
 
 #ifndef MyAppPublisher
-  #define MyAppPublisher "KGTTS"
+  #define MyAppPublisher "KIGTTS"
 #endif
 
 #ifndef MyAppExeName
-  #define MyAppExeName "KGTTS Trainer.exe"
+  #define MyAppExeName "KIGTTS Trainer.exe"
 #endif
 
 #ifndef SourceDir
@@ -35,6 +35,7 @@ ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 OutputDir={#OutputDir}
 OutputBaseFilename={#MyAppName} Setup {#MyAppVersion}
+SetupIconFile=icons\kigtts.ico
 UninstallDisplayIcon={app}\\{#MyAppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes

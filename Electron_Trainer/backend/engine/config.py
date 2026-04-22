@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Callable, Dict, Any
+from typing import Callable, List, Optional
 
 
 ProgressCallback = Callable[[str, float, str], None]
@@ -37,6 +37,38 @@ class TrainingOptions:
     voicepack_name: str = "未命名"
     voicepack_remark: str = ""
     voicepack_avatar: Optional[Path] = None
+
+
+@dataclass
+class DistillTextSource:
+    kind: str
+    path: Path
+
+
+@dataclass
+class DistillOptions:
+    gsv_root: Path
+    version: str
+    speaker: str
+    prompt_lang: str
+    emotion: str
+    device: str = "cuda"
+    text_lang: str = "中文"
+    text_split_method: str = "按标点符号切"
+    speed_factor: float = 1.0
+    temperature: float = 1.0
+    batch_size: int = 1
+    seed: int = -1
+    top_k: int = 10
+    top_p: float = 1.0
+    batch_threshold: float = 0.75
+    split_bucket: bool = True
+    fragment_interval: float = 0.3
+    parallel_infer: bool = True
+    repetition_penalty: float = 1.35
+    sample_steps: int = 16
+    if_sr: bool = False
+    text_sources: List[DistillTextSource] = field(default_factory=list)
 
 
 @dataclass

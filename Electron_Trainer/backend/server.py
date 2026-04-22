@@ -9,7 +9,8 @@ from typing import Any, Dict, Optional
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from engine import ProjectPaths, TrainingOptions, run_pipeline  # type: ignore
+from engine import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, run_distill_pipeline, run_pipeline  # type: ignore
+from engine.gsv_distill import scan_gsv_models, validate_gsv_root  # type: ignore
 from engine.voice_preview import synthesize_voicepack  # type: ignore
 
 
@@ -65,6 +66,47 @@ def _build_opts(payload: Dict[str, Any]) -> TrainingOptions:
             opts.phonemizer_dict = candidate
 
     return opts
+
+
+def _build_distill_opts(payload: Dict[str, Any]) -> DistillOptions:
+    gsv_root = _path_or_none(payload.get("gsv_root"))
+    if gsv_root is None:
+        raise RuntimeError("缺少 GPT-SoVITS 根目录")
+
+    text_sources = []
+    for item in payload.get("text_sources") or []:
+        if not isinstance(item, dict):
+            continue
+        source_path = _path_or_none(item.get("path"))
+        kind = str(item.get("kind") or "").strip()
+        if not source_path or not kind:
+            continue
+        text_sources.append(DistillTextSource(kind=kind, path=source_path))
+
+    return DistillOptions(
+        gsv_root=gsv_root,
+        version=str(payload.get("version") or "").strip(),
+        speaker=str(payload.get("speaker") or "").strip(),
+        prompt_lang=str(payload.get("prompt_lang") or "").strip(),
+        emotion=str(payload.get("emotion") or "").strip(),
+        device=str(payload.get("device") or "cuda").strip().lower() or "cuda",
+        text_lang=str(payload.get("text_lang") or "中文").strip() or "中文",
+        text_split_method=str(payload.get("text_split_method") or "按标点符号切").strip() or "按标点符号切",
+        speed_factor=float(payload.get("speed_factor") or 1.0),
+        temperature=float(payload.get("temperature") or 1.0),
+        batch_size=max(1, int(payload.get("batch_size") or 1)),
+        seed=int(payload.get("seed") or -1),
+        top_k=int(payload.get("top_k") or 10),
+        top_p=float(payload.get("top_p") or 1.0),
+        batch_threshold=float(payload.get("batch_threshold") or 0.75),
+        split_bucket=bool(payload.get("split_bucket", True)),
+        fragment_interval=float(payload.get("fragment_interval") or 0.3),
+        parallel_infer=bool(payload.get("parallel_infer", True)),
+        repetition_penalty=float(payload.get("repetition_penalty") or 1.35),
+        sample_steps=int(payload.get("sample_steps") or 16),
+        if_sr=bool(payload.get("if_sr", False)),
+        text_sources=text_sources,
+    )
 
 
 def _pick_first(paths: list[Path]) -> Optional[Path]:
@@ -177,6 +219,68 @@ def _handle_start(req_id: str, payload: Dict[str, Any]) -> None:
     _send({"type": "response", "id": req_id, "payload": {"started": True}})
 
 
+def _handle_start_distill(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    output_dir = payload.get("output_dir")
+    if not output_dir:
+        _send({"type": "error", "id": req_id, "message": "缺少输出目录"})
+        return
+
+    try:
+        opts = _build_opts(payload.get("opts") or {})
+        distill_opts = _build_distill_opts(payload.get("distill") or {})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc)})
+        return
+
+    paths = ProjectPaths(project_root=Path(output_dir))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send(
+            {
+                "type": "progress",
+                "id": req_id,
+                "stage": stage,
+                "value": value,
+                "message": message,
+            }
+        )
+
+    def run() -> None:
+        _set_active(True)
+        try:
+            result = run_distill_pipeline(paths, opts, distill_opts, progress)
+            _send(
+                {
+                    "type": "done",
+                    "id": req_id,
+                    "payload": {
+                        "manifest_path": str(result.manifest_path),
+                        "voicepack_path": str(result.voicepack_path),
+                        "preview_path": str(result.preview_path) if result.preview_path else None,
+                        "training_log": str(result.training_log) if result.training_log else None,
+                    },
+                }
+            )
+        except Exception as exc:
+            _send(
+                {
+                    "type": "error",
+                    "id": req_id,
+                    "message": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            )
+        finally:
+            _set_active(False)
+
+    threading.Thread(target=run, daemon=True).start()
+    _send({"type": "response", "id": req_id, "payload": {"started": True}})
+
+
 def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
         _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
@@ -241,11 +345,33 @@ def _handle_request(req: Dict[str, Any]) -> None:
     if msg_type == "start_pipeline":
         _handle_start(req_id, payload)
         return
+    if msg_type == "start_distill_pipeline":
+        _handle_start_distill(req_id, payload)
+        return
     if msg_type == "preview_voicepack":
         _handle_preview(req_id, payload)
         return
     if msg_type == "get_defaults":
         _send({"type": "defaults", "id": req_id, "payload": _find_default_paths()})
+        return
+    if msg_type == "validate_gsv_root":
+        root = _path_or_none(payload.get("gsv_root"))
+        if root is None:
+            _send({"type": "response", "id": req_id, "payload": {"ok": False, "message": "缺少 GPT-SoVITS 根目录"}})
+            return
+        _send({"type": "response", "id": req_id, "payload": validate_gsv_root(root)})
+        return
+    if msg_type == "scan_gsv_models":
+        root = _path_or_none(payload.get("gsv_root"))
+        if root is None:
+            _send({"type": "error", "id": req_id, "message": "缺少 GPT-SoVITS 根目录"})
+            return
+        try:
+            catalog = scan_gsv_models(root)
+        except Exception as exc:
+            _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+            return
+        _send({"type": "response", "id": req_id, "payload": catalog})
         return
 
     _send({"type": "error", "id": req_id, "message": f"未知命令: {msg_type}"})

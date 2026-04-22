@@ -16,7 +16,10 @@
   },
   "build": {
     "appId": "com.kgtts.trainer",
-    "productName": "KGTTS Trainer",
+    "productName": "KIGTTS Trainer",
+    "win": {
+      "icon": "icons/kigtts.ico"
+    },
     "asar": true,
     "asarUnpack": [
       "backend/**"

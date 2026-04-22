@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, clipboard } = require('electron');
+const { contextBridge, ipcRenderer, clipboard, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('backend', {
   send: (msg) => ipcRenderer.send('backend:send', msg),
@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld('backend', {
 });
 
 contextBridge.exposeInMainWorld('dialogs', {
-  openFiles: () => ipcRenderer.invoke('dialog:openFiles'),
+  openFiles: (opts) => ipcRenderer.invoke('dialog:openFiles', opts),
   openDir: () => ipcRenderer.invoke('dialog:openDir'),
   openFile: (opts) => ipcRenderer.invoke('dialog:openFile', opts),
   saveFile: (opts) => ipcRenderer.invoke('dialog:saveFile', opts),
@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('windowControls', {
 contextBridge.exposeInMainWorld('paths', {
   dirname: (filePath) => ipcRenderer.invoke('path:dirname', filePath),
   openInExplorer: (targetPath) => ipcRenderer.invoke('path:openInExplorer', targetPath),
+  openExternal: (targetUrl) => ipcRenderer.invoke('path:openExternal', targetUrl),
 });
 
 contextBridge.exposeInMainWorld('project', {
@@ -47,6 +48,13 @@ contextBridge.exposeInMainWorld('fsBridge', {
   saveDroppedFile: (name, data) => ipcRenderer.invoke('fs:saveDroppedFile', { name, data }),
   copyFile: (src, dst) => ipcRenderer.invoke('fs:copyFile', { src, dst }),
   writeTextFile: (filePath, text) => ipcRenderer.invoke('fs:writeTextFile', { path: filePath, text }),
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file) || '';
+    } catch {
+      return '';
+    }
+  },
 });
 
 contextBridge.exposeInMainWorld('clipboardBridge', {
