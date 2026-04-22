@@ -5237,7 +5237,7 @@ class FloatingOverlayService : Service() {
                     }
                 }
             } else {
-                addOverlayQuickCardDecorText(this, card, onThemeColor, landscape)
+                addOverlayQuickCardDecorText(this, card, onThemeColor, landscape, cardHeightPx)
             }
 
             val foreground = if (imagePath.isNotBlank()) Color.WHITE else onThemeColor
@@ -5253,7 +5253,8 @@ class FloatingOverlayService : Service() {
         container: FrameLayout,
         card: QuickCard,
         onThemeColor: Int,
-        landscape: Boolean
+        landscape: Boolean,
+        cardHeightPx: Int
     ) {
         val watermarkText = card.title.trim()
         if (watermarkText.isEmpty()) return
@@ -5282,6 +5283,7 @@ class FloatingOverlayService : Service() {
                 }
             )
         } else {
+            val maxWatermarkWidth = (cardHeightPx - dp(24)).coerceAtLeast(dp(120))
             val watermark = TextView(this).apply {
                 setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 88f)
@@ -5289,7 +5291,8 @@ class FloatingOverlayService : Service() {
                 maxLines = 1
                 ellipsize = null
                 isSingleLine = true
-                setHorizontallyScrolling(true)
+                setHorizontallyScrolling(false)
+                maxWidth = maxWatermarkWidth
                 includeFontPadding = false
                 text = watermarkText
             }
@@ -5512,7 +5515,6 @@ class FloatingOverlayService : Service() {
             populateOverlayQuickCardHero(
                 container = hero,
                 card = card,
-                themeColor = themeColor,
                 onThemeColor = onThemeColor,
                 landscape = true
             )
@@ -5593,7 +5595,6 @@ class FloatingOverlayService : Service() {
             populateOverlayQuickCardHero(
                 container = hero,
                 card = card,
-                themeColor = themeColor,
                 onThemeColor = onThemeColor,
                 landscape = true
             )
@@ -5657,7 +5658,6 @@ class FloatingOverlayService : Service() {
     private fun populateOverlayQuickCardHero(
         container: FrameLayout,
         card: QuickCard,
-        themeColor: Int,
         onThemeColor: Int,
         landscape: Boolean
     ) {
@@ -5879,15 +5879,6 @@ class FloatingOverlayService : Service() {
                                 rightMargin = dp(48)
                             }
                         )
-                        container.addView(
-                            View(this).apply {
-                                background = GradientDrawable(
-                                    GradientDrawable.Orientation.LEFT_RIGHT,
-                                    intArrayOf(Color.TRANSPARENT, themeColor)
-                                )
-                            },
-                            FrameLayout.LayoutParams(dp(68), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END)
-                        )
                     } else {
                         val watermark = TextView(this).apply {
                             setTextColor(ColorUtils.setAlphaComponent(onThemeColor, 56))
@@ -5914,19 +5905,6 @@ class FloatingOverlayService : Service() {
                             watermark.rotation = 90f
                             watermark.translationY = watermark.measuredWidth.toFloat() + dp(10).toFloat()
                         }
-                        container.addView(
-                            View(this).apply {
-                                background = GradientDrawable(
-                                    GradientDrawable.Orientation.TOP_BOTTOM,
-                                    intArrayOf(Color.TRANSPARENT, themeColor)
-                                )
-                            },
-                            FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                dp(72),
-                                Gravity.BOTTOM
-                            )
-                        )
                     }
                 }
                 if (watermarkText.isNotEmpty() || noteText.isNotEmpty()) {
