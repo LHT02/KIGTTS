@@ -9,6 +9,8 @@ object OverlayBridge {
     const val ACTION_OPEN_QUICK_SUBTITLE = "com.lhtstudio.kigtts.app.action.OPEN_QUICK_SUBTITLE"
     const val ACTION_REQUEST_RECORD_AUDIO_PERMISSION =
         "com.lhtstudio.kigtts.app.action.REQUEST_RECORD_AUDIO_PERMISSION"
+    const val ACTION_SHOW_ACCESSIBILITY_GUIDE =
+        "com.lhtstudio.kigtts.app.action.SHOW_ACCESSIBILITY_GUIDE"
     const val EXTRA_REQUEST_ID = "overlay_request_id"
     const val EXTRA_TARGET = "overlay_target"
     const val EXTRA_TEXT = "overlay_text"
@@ -62,6 +64,17 @@ object OverlayBridge {
                     Intent.FLAG_ACTIVITY_SINGLE_TOP
             )
             putExtra(EXTRA_START_REALTIME_ON_GRANT, startRealtimeOnGrant)
+        }
+    }
+
+    fun buildOpenAccessibilityGuideIntent(context: Context): Intent {
+        return Intent(context, MainActivity::class.java).apply {
+            action = ACTION_SHOW_ACCESSIBILITY_GUIDE
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
         }
     }
 }

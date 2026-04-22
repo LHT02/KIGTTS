@@ -7151,7 +7151,6 @@ class FloatingOverlayService : Service() {
         val seen = linkedSetOf<String>()
         if (
             shortcut.packageName == QqScannerSupport.QQ_PACKAGE_NAME &&
-            VolumeHotkeyAccessibilityService.isEnabled(this) &&
             seen.add(externalShortcutDedupKey(shortcut.packageName, qqAccessibilityScannerShortcutId))
         ) {
             targets += ExternalShortcutMenuTarget(
@@ -7419,6 +7418,14 @@ class FloatingOverlayService : Service() {
     ) {
         val shortcutId = target.shortcutId
         if (shortcutId == qqAccessibilityScannerShortcutId) {
+            if (!VolumeHotkeyAccessibilityService.isEnabled(this)) {
+                runCatching {
+                    startActivity(OverlayBridge.buildOpenAccessibilityGuideIntent(this))
+                }.onFailure {
+                    AppLogger.e("FloatingOverlayService.openAccessibilityGuide failed", it)
+                }
+                return
+            }
             if (VolumeHotkeyAccessibilityService.requestOpenQqScanner(this)) {
                 Toast.makeText(this, "正在打开QQ扫一扫", Toast.LENGTH_SHORT).show()
             } else if (QqScannerSupport.launchQq(this)) {

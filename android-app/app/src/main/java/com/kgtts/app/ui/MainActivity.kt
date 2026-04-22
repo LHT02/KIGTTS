@@ -625,6 +625,10 @@ data class ExternalRecordAudioPermissionRequest(
     val startRealtimeOnGrant: Boolean = false
 )
 
+data class ExternalAccessibilityExplainRequest(
+    val requestId: Long
+)
+
 data class ExternalVoicePackInstallRequest(
     val requestId: Long,
     val message: String
@@ -849,6 +853,8 @@ class MainViewModel(
     var pendingPresetInstallRequest by mutableStateOf<ExternalPresetInstallRequest?>(null)
         private set
     var pendingRecordAudioPermissionRequest by mutableStateOf<ExternalRecordAudioPermissionRequest?>(null)
+        private set
+    var pendingAccessibilityExplainRequest by mutableStateOf<ExternalAccessibilityExplainRequest?>(null)
         private set
 
     private var realtimeHost: RealtimeHostService? = null
@@ -1464,6 +1470,17 @@ class MainViewModel(
     fun consumeRecordAudioPermissionRequest(requestId: Long) {
         if (pendingRecordAudioPermissionRequest?.requestId == requestId) {
             pendingRecordAudioPermissionRequest = null
+        }
+    }
+
+    fun requestAccessibilityExplainDialog() {
+        pendingAccessibilityExplainRequest =
+            ExternalAccessibilityExplainRequest(requestId = SystemClock.uptimeMillis())
+    }
+
+    fun consumeAccessibilityExplainRequest(requestId: Long) {
+        if (pendingAccessibilityExplainRequest?.requestId == requestId) {
+            pendingAccessibilityExplainRequest = null
         }
     }
 
@@ -7491,6 +7508,11 @@ class MainActivity : ComponentActivity() {
                 viewModel.requestRecordAudioPermission(startRealtimeOnGrant)
             }
 
+            OverlayBridge.ACTION_SHOW_ACCESSIBILITY_GUIDE -> {
+                viewModel.requestAccessibilityExplainDialog()
+                setIntent(Intent())
+            }
+
             Intent.ACTION_VIEW,
             Intent.ACTION_SEND -> {
                 val uri = when (intent.action) {
@@ -8491,6 +8513,12 @@ fun AppScaffold(viewModel: MainViewModel) {
     LaunchedEffect(basePage, quickCardWebOpen) {
         if (basePage != pageQuickCard || !quickCardWebOpen) {
             quickCardWebMenuExpanded = false
+        }
+    }
+    val pendingAccessibilityExplainRequest = viewModel.pendingAccessibilityExplainRequest
+    LaunchedEffect(pendingAccessibilityExplainRequest?.requestId) {
+        if (pendingAccessibilityExplainRequest != null) {
+            page = pageOverlay
         }
     }
     LaunchedEffect(basePage, quickCardNavReady, pendingQuickCardOverlayTarget, quickCardRoute) {
@@ -15167,6 +15195,12 @@ fun FloatingOverlayScreen(
                 VolumeHotkeyService.syncWithSettings(context)
             }
         }
+    val pendingAccessibilityExplainRequest = viewModel.pendingAccessibilityExplainRequest
+    LaunchedEffect(pendingAccessibilityExplainRequest?.requestId) {
+        val request = pendingAccessibilityExplainRequest ?: return@LaunchedEffect
+        accessibilityExplainDialogOpen = true
+        viewModel.consumeAccessibilityExplainRequest(request.requestId)
+    }
 
     LaunchedEffect(Unit) {
         overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
@@ -15328,21 +15362,6 @@ fun FloatingOverlayScreen(
         }
 
         Md2StaggeredFloatIn(index = 1) {
-            Md2SettingsCard(title = "启动器快捷方式补全") {
-                Md2SettingSwitchRow(
-                    title = "使用内嵌列表补全第三方快捷方式",
-                    checked = state.floatingOverlayHardcodedShortcutSupplement,
-                    onCheckedChange = { viewModel.setFloatingOverlayHardcodedShortcutSupplement(it) },
-                    supportingText = "默认关闭。开启后，悬浮窗启动器里第三方应用的长按菜单会用内置国内常用应用列表补齐缺失项；微信“扫一扫”始终保留。"
-                )
-                Text(
-                    "运行时能正常查询到的系统快捷方式不受影响；该开关只控制写死列表的额外增补。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-
-        Md2StaggeredFloatIn(index = 2) {
             Md2SettingsCard(title = "音量热键") {
                 Text(
                     "序列监听由独立服务处理，不挂在现有悬浮窗服务上。开启无障碍稳定监听后，会优先直接读取音量键事件；未授权时会自动回退到系统音量变化判定。",
