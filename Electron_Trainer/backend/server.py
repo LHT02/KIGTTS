@@ -11,6 +11,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from engine import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, run_distill_pipeline, run_pipeline  # type: ignore
 from engine.gsv_distill import scan_gsv_models, validate_gsv_root  # type: ignore
+from engine.runtime_manager import describe_piper_cuda_runtime, install_piper_cuda_runtime  # type: ignore
 from engine.voice_preview import synthesize_voicepack  # type: ignore
 
 
@@ -334,6 +335,43 @@ def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
     _send({"type": "response", "id": req_id, "payload": {"started": True}})
 
 
+def _handle_get_piper_cuda_runtime(req_id: str) -> None:
+    try:
+        payload = describe_piper_cuda_runtime()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_install_piper_cuda_runtime(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    force = bool(payload.get("force", False))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send(
+            {
+                "type": "progress",
+                "id": req_id,
+                "stage": stage,
+                "value": value,
+                "message": message,
+            }
+        )
+
+    _set_active(True)
+    try:
+        result = install_piper_cuda_runtime(progress=progress, force=force)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
 def _handle_request(req: Dict[str, Any]) -> None:
     req_id = str(req.get("id") or "")
     msg_type = req.get("type")
@@ -372,6 +410,12 @@ def _handle_request(req: Dict[str, Any]) -> None:
             _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
             return
         _send({"type": "response", "id": req_id, "payload": catalog})
+        return
+    if msg_type == "get_piper_cuda_runtime_status":
+        _handle_get_piper_cuda_runtime(req_id)
+        return
+    if msg_type == "install_piper_cuda_runtime":
+        _handle_install_piper_cuda_runtime(req_id, payload)
         return
 
     _send({"type": "error", "id": req_id, "message": f"未知命令: {msg_type}"})

@@ -5,6 +5,7 @@ declare global {
 
   type PipelineStage =
     | 'idle'
+    | 'runtime'
     | 'collect'
     | 'distill'
     | 'preprocess'
@@ -76,6 +77,33 @@ declare global {
     sample_steps: number
     if_sr: boolean
     text_sources: DistillTextSource[]
+  }
+
+  type PiperCudaRuntimeStatus = {
+    ok: boolean
+    available: boolean
+    status: 'missing' | 'ready' | 'error'
+    message: string
+    runtime_root: string
+    env_path: string
+    python_path: string
+    micromamba_path: string
+    bundled_micromamba_path?: string
+    requirements_path?: string
+    piper_train_wheel?: string
+    local_wheel_dirs?: string[]
+    source?: string
+    installed_with?: string
+    torch_version?: string
+    torch_cuda_version?: string | null
+    torchaudio_version?: string
+    pytorch_lightning_version?: string
+    piper_train_path?: string
+    cuda_available?: boolean
+    nvidia_smi_path?: string
+    driver_version?: string
+    gpu_name?: string
+    gpu_memory?: string
   }
 
   type BackendResponsePayload = {

@@ -86,6 +86,8 @@ function startBackend() {
     PYTHONIOENCODING: 'utf-8',
     KGTTS_RESOURCES: resolveResources(),
     KGTTS_BASE_DIR: resolveBaseDir(),
+    KGTTS_APP_DIR: isDev ? path.join(__dirname, '..') : process.resourcesPath,
+    KGTTS_USER_DATA: app.getPath('userData'),
   };
 
   if (!fs.existsSync(pythonPath)) {

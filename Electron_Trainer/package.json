@@ -70,6 +70,21 @@
         "filter": [
           "**/*.ckpt"
         ]
+      },
+      {
+        "from": "build/micromamba",
+        "to": "micromamba"
+      },
+      {
+        "from": "../pc_trainer/piper_wheels/piper_train-1.0.0-py3-none-any.whl",
+        "to": "runtime_assets/piper_train-1.0.0-py3-none-any.whl"
+      },
+      {
+        "from": "../pc_trainer/piper_wheels",
+        "to": "runtime_assets/piper_wheels",
+        "filter": [
+          "**/*.whl"
+        ]
       }
     ]
   },

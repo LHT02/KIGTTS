@@ -48,7 +48,7 @@ import type { Area } from 'react-easy-crop'
 import logoBlack from '../../ARTS/LOGOBlack.svg'
 import logoWhite from '../../ARTS/LOGOWhite.svg'
 
-type ProgressStage = Exclude<PipelineStage, 'idle' | 'preview'>
+type ProgressStage = Exclude<PipelineStage, 'idle' | 'preview' | 'runtime'>
 type ProgressMap = Record<ProgressStage, number>
 type PendingRequest = {
   resolve: (payload: unknown) => void
@@ -416,6 +416,7 @@ const isProgressStage = (stage: string): stage is ProgressStage =>
 
 const getStageLabel = (stage: PipelineStage) => {
   if (stage === 'idle') return '待命'
+  if (stage === 'runtime') return '运行时'
   if (stage === 'preview') return '试听'
   return STAGE_LABEL[stage]
 }
@@ -433,6 +434,22 @@ const mergeDistillSources = (current: DistillTextSource[], incoming: DistillText
 }
 
 const isDistillTextFile = (path: string) => /\.(txt|csv|jsonl)$/i.test(path)
+
+const getCudaRuntimeChipColor = (status: PiperCudaRuntimeStatus | null): 'default' | 'success' | 'warning' | 'error' => {
+  if (!status) return 'default'
+  if (status.status === 'error') return 'error'
+  if (!status.available) return 'warning'
+  if (status.cuda_available === false) return 'warning'
+  return 'success'
+}
+
+const getCudaRuntimeChipLabel = (status: PiperCudaRuntimeStatus | null) => {
+  if (!status) return '未检测'
+  if (status.status === 'error') return '运行时异常'
+  if (!status.available) return '未安装'
+  if (status.cuda_available === false) return '已安装 / CUDA 不可用'
+  return '已就绪'
+}
 
 type PathFieldProps = {
   label: string
@@ -766,6 +783,9 @@ function App() {
   const [useEspeak, setUseEspeak] = useState(false)
   const [piperConfig, setPiperConfig] = useState('')
   const [device, setDevice] = useState<'cpu' | 'cuda'>('cpu')
+  const [cudaRuntimeStatus, setCudaRuntimeStatus] = useState<PiperCudaRuntimeStatus | null>(null)
+  const [cudaRuntimeBusy, setCudaRuntimeBusy] = useState(false)
+  const [cudaRuntimeProgressMessage, setCudaRuntimeProgressMessage] = useState('')
   const [distillOpts, setDistillOpts] = useState<DistillOptions>(() => {
     try {
       const raw = window.localStorage.getItem(DISTILL_SETTINGS_STORAGE_KEY)
@@ -1201,6 +1221,68 @@ function App() {
       })
     })
 
+  const refreshCudaRuntimeStatus = async (silent = false) => {
+    try {
+      if (!silent) {
+        setCudaRuntimeBusy(true)
+      }
+      const status = await requestBackend<PiperCudaRuntimeStatus>('get_piper_cuda_runtime_status', {}, 30000)
+      setCudaRuntimeStatus(status)
+      if (!silent) {
+        appendLog(`[runtime] ${status.message}`)
+      }
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取 Piper CUDA 运行时状态失败'
+      if (!silent) {
+        showToast(message, 'error')
+      }
+      throw error
+    } finally {
+      if (!silent) {
+        setCudaRuntimeBusy(false)
+        setCudaRuntimeProgressMessage('')
+      }
+    }
+  }
+
+  const installCudaRuntime = async (force = false) => {
+    try {
+      setCudaRuntimeBusy(true)
+      setCudaRuntimeProgressMessage(force ? '正在重建 Piper CUDA 运行时...' : '正在安装 Piper CUDA 运行时...')
+      const status = await requestBackend<PiperCudaRuntimeStatus>(
+        'install_piper_cuda_runtime',
+        { force },
+        60 * 60 * 1000,
+      )
+      setCudaRuntimeStatus(status)
+      setCudaRuntimeProgressMessage(status.message)
+      appendLog(`[runtime] ${status.message}`)
+      showToast(status.message, status.cuda_available === false ? 'warning' : 'success')
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '安装 Piper CUDA 运行时失败'
+      setCudaRuntimeProgressMessage(message)
+      appendLog(`[runtime] ${message}`)
+      showToast(message, 'error')
+      throw error
+    } finally {
+      setCudaRuntimeBusy(false)
+    }
+  }
+
+  const openCudaRuntimeDirectory = async () => {
+    const target = cudaRuntimeStatus?.env_path || cudaRuntimeStatus?.runtime_root || ''
+    if (!target || !window.paths?.openInExplorer) {
+      showToast('当前没有可打开的运行时目录', 'warning')
+      return
+    }
+    const result = await window.paths.openInExplorer(target)
+    if (!result?.ok) {
+      showToast(result?.message || '打开运行时目录失败', 'error')
+    }
+  }
+
   const requestBackendRestart = () => {
     rejectPendingRequests('后端已重启，请重试')
     window.backend?.restart?.()
@@ -1257,6 +1339,7 @@ function App() {
             defaultsRequested.current = true
             send('get_defaults')
           }
+          void refreshCudaRuntimeStatus(true).catch(() => undefined)
         }
         return
       }
@@ -1282,6 +1365,13 @@ function App() {
         }
       }
       if (evt.type === 'progress') {
+        if (evt.stage === 'runtime') {
+          const msg = String(evt.message ?? '')
+          if (msg) {
+            setCudaRuntimeProgressMessage(msg)
+            setStatus(msg)
+          }
+        }
         if (isProgressStage(evt.stage)) {
           setProgress((prev) => ({
             ...prev,
@@ -2133,6 +2223,19 @@ function App() {
     const parsedTrainBatchSize = Number(trainBatchSize)
     const trainBatchSizeValue =
       Number.isFinite(parsedTrainBatchSize) && parsedTrainBatchSize > 0 ? Math.max(1, Math.floor(parsedTrainBatchSize)) : 24
+
+    if (device === 'cuda') {
+      if (!cudaRuntimeStatus?.available) {
+        setStatus('请先安装 Piper CUDA 运行时')
+        showToast('当前未安装 Piper CUDA 运行时，请先在训练设置里完成配置', 'warning')
+        return
+      }
+      if (cudaRuntimeStatus.cuda_available === false) {
+        setStatus('当前机器未检测到可用 CUDA')
+        showToast('Piper CUDA 运行时已安装，但当前机器未检测到可用 CUDA', 'warning')
+        return
+      }
+    }
 
     const commonOpts = {
       quality,
@@ -3023,6 +3126,107 @@ function App() {
             </Select>
           </FormControl>
         </Box>
+      </Paper>
+
+      <Paper sx={cardPaperSx}>
+        <Stack spacing={1.5}>
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            spacing={1.5}
+            alignItems={{ xs: 'flex-start', md: 'center' }}
+            justifyContent="space-between"
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                <Typography variant="subtitle1" fontWeight={600}>
+                  Piper CUDA 运行时
+                </Typography>
+                <Chip
+                  size="small"
+                  color={getCudaRuntimeChipColor(cudaRuntimeStatus)}
+                  label={getCudaRuntimeChipLabel(cudaRuntimeStatus)}
+                />
+              </Stack>
+              <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.78 }}>
+                使用内置 micromamba 在线创建 `piper_env_cuda`。创建时会优先使用南科大镜像的 conda / PyPI 源，国内镜像不可用时自动回退官方源。
+              </Typography>
+            </Box>
+            <Stack direction="row" spacing={1}>
+              <Button
+                variant="outlined"
+                startIcon={<MsIcon name="refresh" size={18} />}
+                onClick={() => {
+                  void refreshCudaRuntimeStatus()
+                }}
+                disabled={cudaRuntimeBusy || pipelineRunning}
+              >
+                刷新状态
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<MsIcon name={cudaRuntimeStatus?.available ? 'build' : 'download'} size={18} />}
+                onClick={() => {
+                  void installCudaRuntime(Boolean(cudaRuntimeStatus?.available))
+                }}
+                disabled={cudaRuntimeBusy || pipelineRunning}
+              >
+                {cudaRuntimeStatus?.available ? '重建运行时' : '安装运行时'}
+              </Button>
+            </Stack>
+          </Stack>
+
+          {(cudaRuntimeBusy || cudaRuntimeProgressMessage) && (
+            <Stack spacing={0.75}>
+              {cudaRuntimeBusy && <LinearProgress />}
+              <Typography variant="caption" sx={{ opacity: 0.78 }}>
+                {cudaRuntimeProgressMessage || '正在处理 Piper CUDA 运行时...'}
+              </Typography>
+            </Stack>
+          )}
+
+          {cudaRuntimeStatus && (
+            <Alert severity={cudaRuntimeStatus.status === 'error' ? 'error' : cudaRuntimeStatus.cuda_available === false ? 'warning' : cudaRuntimeStatus.available ? 'success' : 'info'}>
+              <Stack spacing={0.5}>
+                <Typography variant="body2">{cudaRuntimeStatus.message}</Typography>
+                <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                  运行时目录：{cudaRuntimeStatus.env_path}
+                </Typography>
+                <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                  micromamba：{cudaRuntimeStatus.micromamba_path || cudaRuntimeStatus.bundled_micromamba_path || '未找到'}
+                </Typography>
+                {cudaRuntimeStatus.driver_version && (
+                  <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                    NVIDIA 驱动：{cudaRuntimeStatus.driver_version}
+                    {cudaRuntimeStatus.gpu_name ? ` / ${cudaRuntimeStatus.gpu_name}` : ''}
+                    {cudaRuntimeStatus.gpu_memory ? ` / ${cudaRuntimeStatus.gpu_memory}` : ''}
+                  </Typography>
+                )}
+                {cudaRuntimeStatus.torch_version && (
+                  <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                    Torch：{cudaRuntimeStatus.torch_version}
+                    {cudaRuntimeStatus.torch_cuda_version ? ` / CUDA Runtime ${cudaRuntimeStatus.torch_cuda_version}` : ''}
+                  </Typography>
+                )}
+              </Stack>
+            </Alert>
+          )}
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+            <Button
+              variant="outlined"
+              startIcon={<MsIcon name="folder_open" size={18} />}
+              onClick={() => {
+                void openCudaRuntimeDirectory()
+              }}
+              disabled={cudaRuntimeBusy || !cudaRuntimeStatus}
+            >
+              打开运行时目录
+            </Button>
+            <Typography variant="caption" sx={{ alignSelf: 'center', opacity: 0.72 }}>
+              建议仅在 NVIDIA 驱动正常、系统已能识别 GPU 的机器上安装。
+            </Typography>
+          </Stack>
+        </Stack>
       </Paper>
 
       <Paper sx={cardPaperSx}>

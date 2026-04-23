@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from .config import SegmentMetadata, TrainingOptions, ProgressCallback
+from .runtime_manager import resolve_cuda_python
 from .utils import find_executable
 
 
@@ -41,7 +42,11 @@ def _resources_dir() -> Path:
     return base
 
 
-def _find_piper_python() -> Optional[Path]:
+def _find_piper_python(*, prefer_cuda: bool = False) -> Optional[Path]:
+    if prefer_cuda:
+        cuda_python = resolve_cuda_python()
+        if cuda_python and cuda_python.exists():
+            return cuda_python
     base = _base_dir()
     candidates = [
         base / "piper_env" / "python.exe",
@@ -59,7 +64,15 @@ def _piper_env(piper_python: Path) -> dict:
     piper_root = piper_python.parent
     env["PYTHONHOME"] = str(piper_root)
     env["PYTHONPATH"] = ""
-    env["PATH"] = f"{piper_root};{piper_root / 'Scripts'};{env.get('PATH', '')}"
+    path_entries = [
+        str(piper_root),
+        str(piper_root / "Scripts"),
+        str(piper_root / "Library" / "bin"),
+        str(piper_root / "Library" / "usr" / "bin"),
+        str(piper_root / "Library" / "mingw-w64" / "bin"),
+        env.get("PATH", ""),
+    ]
+    env["PATH"] = os.pathsep.join(entry for entry in path_entries if entry)
     return env
 
 
@@ -386,7 +399,8 @@ def run_piper_training(
 ) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
     log_path = work_dir / "training.log"
-    piper_python = _find_piper_python()
+    prefer_cuda = opts.device.lower() in {"cuda", "gpu"}
+    piper_python = _find_piper_python(prefer_cuda=prefer_cuda)
     if piper_python:
         prep_script = _resources_dir() / "tools" / "piper_prep.py"
         if not prep_script.exists():
@@ -1125,7 +1139,8 @@ def export_onnx(
                     return 124
                 time.sleep(0.2)
 
-    piper_python = _find_piper_python()
+    prefer_cuda = opts.device.lower() in {"cuda", "gpu"}
+    piper_python = _find_piper_python(prefer_cuda=prefer_cuda)
     if piper_python:
         env = _piper_env(piper_python)
         cmd = [
