@@ -578,6 +578,7 @@ data class UiState(
     val volumeHotkeyDownUpEnabled: Boolean = false,
     val volumeHotkeyWindowMs: Int = UserPrefs.VOLUME_HOTKEY_DEFAULT_WINDOW_MS,
     val volumeHotkeyAccessibilityEnabled: Boolean = false,
+    val volumeHotkeyEnableWarningDismissed: Boolean = false,
     val volumeHotkeyUpDownAction: VolumeHotkeyActionSpec =
         VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown),
     val volumeHotkeyDownUpAction: VolumeHotkeyActionSpec =
@@ -1176,6 +1177,7 @@ class MainViewModel(
             volumeHotkeyDownUpEnabled = settings.volumeHotkeyDownUpEnabled,
             volumeHotkeyWindowMs = settings.volumeHotkeyWindowMs,
             volumeHotkeyAccessibilityEnabled = settings.volumeHotkeyAccessibilityEnabled,
+            volumeHotkeyEnableWarningDismissed = settings.volumeHotkeyEnableWarningDismissed,
             volumeHotkeyUpDownAction = settings.volumeHotkeyUpDownAction,
             volumeHotkeyDownUpAction = settings.volumeHotkeyDownUpAction,
             ttsDisabled = settings.ttsDisabled,
@@ -3064,6 +3066,13 @@ class MainViewModel(
         uiState = uiState.copy(volumeHotkeyAccessibilityEnabled = enabled)
         viewModelScope.launch {
             UserPrefs.setVolumeHotkeyAccessibilityEnabled(appContext, enabled)
+        }
+    }
+
+    fun setVolumeHotkeyEnableWarningDismissed(dismissed: Boolean) {
+        uiState = uiState.copy(volumeHotkeyEnableWarningDismissed = dismissed)
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyEnableWarningDismissed(appContext, dismissed)
         }
     }
 
@@ -15170,6 +15179,8 @@ fun FloatingOverlayScreen(
     var externalShortcutChoices by remember { mutableStateOf<List<ExternalShortcutChoice>>(emptyList()) }
     var externalShortcutLoading by remember { mutableStateOf(false) }
     var accessibilityExplainDialogOpen by remember { mutableStateOf(false) }
+    var pendingVolumeHotkeyEnableSequence by remember { mutableStateOf<VolumeHotkeySequence?>(null) }
+    var dismissVolumeHotkeyEnableWarning by remember { mutableStateOf(false) }
     val overlayPermissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             val granted = FloatingOverlayService.canDrawOverlays(context)
@@ -15266,6 +15277,30 @@ fun FloatingOverlayScreen(
         accessibilitySettingsLauncher.launch(
             VolumeHotkeyAccessibilityService.buildSettingsIntent()
         )
+    }
+
+    fun requestVolumeHotkeyEnabled(sequence: VolumeHotkeySequence, enabled: Boolean) {
+        if (!enabled) {
+            viewModel.setVolumeHotkeyEnabled(sequence, false)
+            return
+        }
+        if (accessibilityPermissionGranted.value) {
+            viewModel.setVolumeHotkeyAccessibilityEnabled(true)
+            viewModel.setVolumeHotkeyEnabled(sequence, true)
+            return
+        }
+        if (state.volumeHotkeyEnableWarningDismissed) {
+            viewModel.setVolumeHotkeyEnabled(sequence, true)
+            return
+        }
+        dismissVolumeHotkeyEnableWarning = false
+        pendingVolumeHotkeyEnableSequence = sequence
+    }
+
+    fun persistVolumeHotkeyEnableWarningChoiceIfNeeded() {
+        if (dismissVolumeHotkeyEnableWarning) {
+            viewModel.setVolumeHotkeyEnableWarningDismissed(true)
+        }
     }
 
     CenteredPageColumn(
@@ -15460,7 +15495,7 @@ fun FloatingOverlayScreen(
                     actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyUpDownAction),
                     supportingText = "先按音量加，再在设定时间内按音量减。",
                     onEnabledChange = {
-                        viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.UpDown, it)
+                        requestVolumeHotkeyEnabled(VolumeHotkeySequence.UpDown, it)
                     },
                     onPickAction = { hotkeyActionPickerSequence = VolumeHotkeySequence.UpDown }
                 )
@@ -15474,7 +15509,7 @@ fun FloatingOverlayScreen(
                     actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyDownUpAction),
                     supportingText = "先按音量减，再在设定时间内按音量加。",
                     onEnabledChange = {
-                        viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.DownUp, it)
+                        requestVolumeHotkeyEnabled(VolumeHotkeySequence.DownUp, it)
                     },
                     onPickAction = { hotkeyActionPickerSequence = VolumeHotkeySequence.DownUp }
                 )
@@ -15482,6 +15517,67 @@ fun FloatingOverlayScreen(
         }
 
         Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+
+    pendingVolumeHotkeyEnableSequence?.let { sequence ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingVolumeHotkeyEnableSequence = null
+                dismissVolumeHotkeyEnableWarning = false
+            },
+            title = { Text("建议开启无障碍稳定监听") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("部分系统由于设计原因，首次点按音量键时只会弹出音量调整控件，并不会真正调整音量。")
+                    Text("未开启无障碍稳定监听时，KIGTTS 只能通过系统音量数值变化判断按键序列，可能需要多按几次音量键才能触发。")
+                    Text("开启无障碍稳定监听后，可以直接读取音量键事件，触发会更稳定。")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = dismissVolumeHotkeyEnableWarning,
+                            onCheckedChange = { dismissVolumeHotkeyEnableWarning = it }
+                        )
+                        Text("下次开启不再提示")
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            pendingVolumeHotkeyEnableSequence = null
+                            dismissVolumeHotkeyEnableWarning = false
+                        }
+                    ) {
+                        Text("取消")
+                    }
+                    TextButton(
+                        onClick = {
+                            persistVolumeHotkeyEnableWarningChoiceIfNeeded()
+                            viewModel.setVolumeHotkeyEnabled(sequence, true)
+                            pendingVolumeHotkeyEnableSequence = null
+                            dismissVolumeHotkeyEnableWarning = false
+                        }
+                    ) {
+                        Text("开启热键")
+                    }
+                    TextButton(
+                        onClick = {
+                            persistVolumeHotkeyEnableWarningChoiceIfNeeded()
+                            viewModel.setVolumeHotkeyEnabled(sequence, true)
+                            pendingVolumeHotkeyEnableSequence = null
+                            dismissVolumeHotkeyEnableWarning = false
+                            accessibilityExplainDialogOpen = true
+                        }
+                    ) {
+                        Text("开启无障碍")
+                    }
+                }
+            }
+        )
     }
 
     hotkeyActionPickerSequence?.let { sequence ->

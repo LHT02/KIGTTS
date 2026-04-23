@@ -84,6 +84,8 @@ object UserPrefs {
     private val KEY_VOLUME_HOTKEY_WINDOW_MS = intPreferencesKey("volume_hotkey_window_ms")
     private val KEY_VOLUME_HOTKEY_ACCESSIBILITY_ENABLED =
         booleanPreferencesKey("volume_hotkey_accessibility_enabled")
+    private val KEY_VOLUME_HOTKEY_ENABLE_WARNING_DISMISSED =
+        booleanPreferencesKey("volume_hotkey_enable_warning_dismissed")
     private val KEY_FLOATING_OVERLAY_SHORTCUTS = stringPreferencesKey("floating_overlay_shortcuts")
     private val KEY_FLOATING_OVERLAY_LAYOUT = stringPreferencesKey("floating_overlay_layout")
     private val KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE = floatPreferencesKey("floating_overlay_quick_subtitle_font_size")
@@ -144,6 +146,7 @@ object UserPrefs {
         val volumeHotkeyDownUpEnabled: Boolean = false,
         val volumeHotkeyWindowMs: Int = VOLUME_HOTKEY_DEFAULT_WINDOW_MS,
         val volumeHotkeyAccessibilityEnabled: Boolean = false,
+        val volumeHotkeyEnableWarningDismissed: Boolean = false,
         val volumeHotkeyUpDownAction: VolumeHotkeyActionSpec =
             VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown),
         val volumeHotkeyDownUpAction: VolumeHotkeyActionSpec =
@@ -285,6 +288,8 @@ object UserPrefs {
                 .coerceIn(VOLUME_HOTKEY_MIN_WINDOW_MS, VOLUME_HOTKEY_MAX_WINDOW_MS),
             volumeHotkeyAccessibilityEnabled =
                 this[KEY_VOLUME_HOTKEY_ACCESSIBILITY_ENABLED] ?: false,
+            volumeHotkeyEnableWarningDismissed =
+                this[KEY_VOLUME_HOTKEY_ENABLE_WARNING_DISMISSED] ?: false,
             volumeHotkeyUpDownAction = VolumeHotkeyActions.decode(
                 this[KEY_VOLUME_HOTKEY_UP_DOWN_ACTION],
                 fallback = VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown)
@@ -563,6 +568,12 @@ object UserPrefs {
     suspend fun setVolumeHotkeyAccessibilityEnabled(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_VOLUME_HOTKEY_ACCESSIBILITY_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setVolumeHotkeyEnableWarningDismissed(context: Context, dismissed: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_VOLUME_HOTKEY_ENABLE_WARNING_DISMISSED] = dismissed
         }
     }
 
