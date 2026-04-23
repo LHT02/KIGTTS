@@ -15,7 +15,7 @@
     "preview": "vite preview"
   },
   "build": {
-    "appId": "com.kgtts.trainer",
+    "appId": "com.kigtts.trainer",
     "productName": "KIGTTS Trainer",
     "win": {
       "icon": "icons/kigtts.ico"
@@ -74,6 +74,13 @@
       {
         "from": "build/micromamba",
         "to": "micromamba"
+      },
+      {
+        "from": "build/icons",
+        "to": "build/icons",
+        "filter": [
+          "**/*.ico"
+        ]
       },
       {
         "from": "../pc_trainer/piper_wheels/piper_train-1.0.0-py3-none-any.whl",

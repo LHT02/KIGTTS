@@ -244,6 +244,7 @@ def _run_helper(
     request_path: Path,
     log_path: Path,
     progress: Optional[ProgressCallback] = None,
+    progress_stage: str = "distill",
 ) -> Dict[str, Any]:
     helper_script = Path(__file__).resolve().parents[1] / "tools" / "gsv_distill_helper.py"
     runtime_python = str(validation["runtime_python"])
@@ -289,7 +290,7 @@ def _run_helper(
                 except json.JSONDecodeError:
                     continue
                 if event.get("type") == "progress" and progress:
-                    progress("distill", float(event.get("value") or 0.0), str(event.get("message") or "蒸馏中"))
+                    progress(progress_stage, float(event.get("value") or 0.0), str(event.get("message") or "蒸馏中"))
                 elif event.get("type") == "done":
                     result["generated"] = int(event.get("generated") or 0)
                 elif event.get("type") == "error":
@@ -375,3 +376,95 @@ def build_distill_corpus(
             log_file.write(retry_message + "\n")
         if progress:
             progress("distill", 0.0, retry_message)
+
+
+def generate_distill_entries(
+    paths: ProjectPaths,
+    distill: DistillOptions,
+    entries: list[tuple[Path, str]],
+    progress: Optional[ProgressCallback] = None,
+) -> int:
+    if not entries:
+        return 0
+    validation = validate_gsv_root(distill.gsv_root)
+    if not validation["ok"]:
+        raise RuntimeError(str(validation["message"]))
+    catalog = scan_gsv_models(distill.gsv_root)
+    _ensure_selection(catalog, distill)
+
+    distill_dir = paths.work_dir / "distill_corpus"
+    distill_dir.mkdir(parents=True, exist_ok=True)
+    request_path = distill_dir / "resume_request.json"
+    log_path = paths.work_dir / "distill_resume.log"
+    texts = [text for _path, text in entries]
+    output_paths = [str(audio_path) for audio_path, _text in entries]
+    payload = _helper_request_payload(
+        validation,
+        distill,
+        texts,
+        paths,
+        device="cuda" if str(distill.device).lower() in {"cuda", "gpu"} else "cpu",
+        batch_size=max(1, int(distill.batch_size)),
+        parallel_infer=bool(distill.parallel_infer),
+    )
+    payload["output_paths"] = output_paths
+    payload["metadata_path"] = str(distill_dir / "resume_metadata.csv")
+    request_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if progress:
+        progress("distill", 0.0, f"旧项目缺失 {len(entries)} 条 GPT-SoVITS 音频，开始补生成...")
+    result = _run_helper(validation, request_path, log_path, progress)
+    if result["code"] != 0:
+        raise RuntimeError(str(result.get("message") or f"GPT-SoVITS 补生成失败，详见 {log_path}"))
+    if progress:
+        progress("distill", 1.0, f"GPT-SoVITS 缺失音频补生成完成，共 {result['generated']} 条")
+    return int(result.get("generated") or 0)
+
+
+def synthesize_gsv_preview(
+    preview_root: Path,
+    distill: DistillOptions,
+    text: str,
+    progress: Optional[ProgressCallback] = None,
+) -> Path:
+    text = text.strip()
+    if not text:
+        raise RuntimeError("缺少试听文本")
+
+    validation = validate_gsv_root(distill.gsv_root)
+    if not validation["ok"]:
+        raise RuntimeError(str(validation["message"]))
+    catalog = scan_gsv_models(distill.gsv_root)
+    _ensure_selection(catalog, distill)
+
+    paths = ProjectPaths(project_root=preview_root)
+    preview_dir = paths.work_dir / "gsv_preview"
+    wav_dir = preview_dir / "wavs"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    request_path = preview_dir / "request.json"
+    log_path = preview_dir / "preview.log"
+    if log_path.exists():
+        log_path.unlink()
+
+    payload = _helper_request_payload(
+        validation,
+        distill,
+        [text],
+        paths,
+        device="cuda" if str(distill.device).lower() in {"cuda", "gpu"} else "cpu",
+        batch_size=max(1, int(distill.batch_size)),
+        parallel_infer=bool(distill.parallel_infer),
+    )
+    payload["wav_dir"] = str(wav_dir)
+    payload["metadata_path"] = str(preview_dir / "metadata.csv")
+    request_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if progress:
+        progress("preview", 0.0, "启动 GPT-SoVITS 试听合成...")
+    result = _run_helper(validation, request_path, log_path, progress, progress_stage="preview")
+    if result["code"] != 0:
+        raise RuntimeError(str(result.get("message") or f"GPT-SoVITS 试听失败，详见 {log_path}"))
+    audio_path = wav_dir / "00001.wav"
+    if not audio_path.exists():
+        raise RuntimeError(f"GPT-SoVITS 试听未生成音频: {audio_path}")
+    if progress:
+        progress("preview", 1.0, "GPT-SoVITS 试听生成完成")
+    return audio_path

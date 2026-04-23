@@ -13,6 +13,10 @@ const pendingBackendEvents = [];
 const isDev = !app.isPackaged;
 const isMac = process.platform === 'darwin';
 
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.kigtts.trainer');
+}
+
 function resolveWindowIcon() {
   if (process.platform !== 'win32' && process.platform !== 'linux') {
     return undefined;

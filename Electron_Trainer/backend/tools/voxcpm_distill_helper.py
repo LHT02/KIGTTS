@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -37,7 +38,7 @@ def _detect_device(requested: str, allow_cpu_fallback: bool) -> str:
 
 def _build_text(text: str, voice_description: str) -> str:
     text = text.strip()
-    voice_description = voice_description.strip()
+    voice_description = re.sub(r"[()（）]", "", voice_description.strip()).strip()
     if not voice_description:
         return text
     return f"({voice_description}){text}"
@@ -66,11 +67,14 @@ def main() -> int:
     texts = [str(item).strip() for item in req.get("texts") or [] if str(item).strip()]
     wav_dir = Path(req["wav_dir"])
     metadata_path = Path(req["metadata_path"])
+    output_paths = [str(item).strip() for item in req.get("output_paths") or [] if str(item).strip()]
     model_dir = Path(req["model_dir"])
     denoiser_dir = Path(req["denoiser_dir"])
     denoise = bool(req.get("denoise", True))
     reference_audio = str(req.get("reference_audio") or "").strip() or None
     voice_description = str(req.get("voice_description") or "").strip()
+    voice_mode = str(req.get("voice_mode") or "description").strip().lower()
+    prompt_text = str(req.get("prompt_text") or "").strip()
     requested_device = str(req.get("device") or "cuda").lower()
     if requested_device == "cpu":
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -90,6 +94,10 @@ def main() -> int:
             raise RuntimeError(f"VoxCPM2 denoiser 目录不存在: {denoiser_dir}")
         if reference_audio and not Path(reference_audio).exists():
             raise RuntimeError(f"参考音频不存在: {reference_audio}")
+        if voice_mode == "high_fidelity" and not reference_audio:
+            raise RuntimeError("高保真克隆需要参考音频")
+        if voice_mode == "high_fidelity" and not prompt_text:
+            raise RuntimeError("高保真克隆需要参考音频转写文本")
 
         device = _detect_device(str(req.get("device") or "cuda"), bool(req.get("allow_cpu_fallback", True)))
         optimize = device.startswith("cuda")
@@ -101,7 +109,7 @@ def main() -> int:
             optimize=optimize,
         )
 
-        sample_rate = 16000
+        sample_rate = int(getattr(getattr(model, "tts_model", None), "sample_rate", 48000) or 48000)
         wav_dir.mkdir(parents=True, exist_ok=True)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         generated = 0
@@ -109,21 +117,26 @@ def main() -> int:
             for index, text in enumerate(texts, start=1):
                 value = (index - 1) / max(1, len(texts))
                 _emit({"type": "progress", "value": value, "message": f"VoxCPM2 合成 {index}/{len(texts)}"})
-                wav = model.generate(
-                    text=_build_text(text, voice_description),
-                    reference_wav_path=reference_audio,
-                    cfg_value=float(req.get("cfg_value", 2.0)),
-                    inference_timesteps=max(1, int(req.get("inference_timesteps", 10))),
-                    min_len=max(1, int(req.get("min_len", 2))),
-                    max_len=max(1, int(req.get("max_len", 4096))),
-                    normalize=bool(req.get("normalize", False)),
-                    denoise=denoise,
-                    retry_badcase=bool(req.get("retry_badcase", True)),
-                    retry_badcase_max_times=max(0, int(req.get("retry_badcase_max_times", 3))),
-                    retry_badcase_ratio_threshold=float(req.get("retry_badcase_ratio_threshold", 6.0)),
-                )
+                generate_kwargs = {
+                    "text": _build_text(text, "" if voice_mode == "high_fidelity" else voice_description),
+                    "reference_wav_path": reference_audio,
+                    "cfg_value": float(req.get("cfg_value", 2.0)),
+                    "inference_timesteps": max(1, int(req.get("inference_timesteps", 10))),
+                    "min_len": max(1, int(req.get("min_len", 2))),
+                    "max_len": max(1, int(req.get("max_len", 4096))),
+                    "normalize": bool(req.get("normalize", False)),
+                    "denoise": denoise,
+                    "retry_badcase": bool(req.get("retry_badcase", True)),
+                    "retry_badcase_max_times": max(0, int(req.get("retry_badcase_max_times", 3))),
+                    "retry_badcase_ratio_threshold": float(req.get("retry_badcase_ratio_threshold", 6.0)),
+                }
+                if voice_mode == "high_fidelity":
+                    generate_kwargs["prompt_wav_path"] = reference_audio
+                    generate_kwargs["prompt_text"] = prompt_text
+                wav = model.generate(**generate_kwargs)
                 wav = _normalize_wav(wav)
-                wav_path = wav_dir / f"{index:05d}.wav"
+                wav_path = Path(output_paths[index - 1]).resolve() if index <= len(output_paths) else wav_dir / f"{index:05d}.wav"
+                wav_path.parent.mkdir(parents=True, exist_ok=True)
                 sf.write(str(wav_path), wav, sample_rate)
                 metadata.write(f"{wav_path}|{text}\n")
                 generated += 1

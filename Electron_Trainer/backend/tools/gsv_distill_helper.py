@@ -67,6 +67,7 @@ def main() -> int:
     metadata_path = Path(payload["metadata_path"]).resolve()
     config_path = str(payload.get("config_path") or (gsv_root / "GPT_SoVITS" / "configs" / "tts_infer.yaml"))
     texts = [str(item).strip() for item in payload.get("texts") or [] if str(item).strip()]
+    output_paths = [str(item).strip() for item in payload.get("output_paths") or [] if str(item).strip()]
     if not texts:
         raise RuntimeError("没有可用于蒸馏的文本")
 
@@ -131,7 +132,8 @@ def main() -> int:
                 int(payload.get("sample_steps", 16)),
                 bool(payload.get("if_sr", False)),
             )
-            wav_path = wav_dir / f"{index:05d}.wav"
+            wav_path = Path(output_paths[index - 1]).resolve() if index <= len(output_paths) else wav_dir / f"{index:05d}.wav"
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
             wav_path.write_bytes(audio)
             metadata_lines.append(f"{wav_path.as_posix()}|{text}")
             _emit(

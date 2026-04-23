@@ -1,7 +1,7 @@
 export {}
 
 declare global {
-  type TrainingMode = 'piper' | 'gsv_distill' | 'voxcpm_distill'
+  type TrainingMode = 'piper' | 'gsv_distill' | 'voxcpm_distill' | 'resume_project'
 
   type PipelineStage =
     | 'idle'
@@ -31,6 +31,8 @@ declare global {
     kind: 'text_file' | 'project_dir'
     path: string
   }
+
+  type VoxCpmVoiceMode = 'description' | 'controlled_clone' | 'high_fidelity'
 
   type GsvEmotion = {
     name: string
@@ -83,8 +85,10 @@ declare global {
   type VoxCpmDistillOptions = {
     device: 'cpu' | 'cuda'
     allow_cpu_fallback: boolean
+    voice_mode: VoxCpmVoiceMode
     voice_description: string
     reference_audio: string
+    prompt_text: string
     cfg_value: number
     inference_timesteps: number
     min_len: number
@@ -111,6 +115,10 @@ declare global {
     piper_train_wheel?: string
     local_wheel_dirs?: string[]
     source?: string
+    conda_source?: string
+    torch_source?: string
+    pip_toolchain_source?: string
+    pip_dependency_source?: string
     installed_with?: string
     torch_version?: string
     torch_cuda_version?: string | null
@@ -135,6 +143,10 @@ declare global {
     micromamba_path: string
     bundled_micromamba_path?: string
     source?: string
+    conda_source?: string
+    torch_source?: string
+    pip_toolchain_source?: string
+    pip_dependency_source?: string
     installed_with?: string
     torch_version?: string
     torch_cuda_version?: string | null
@@ -157,6 +169,28 @@ declare global {
     denoiser_model_dir: string
     main_repo: string
     denoiser_repo: string
+  }
+
+  type TrainingProjectStatus = {
+    ok: boolean
+    message: string
+    mode?: TrainingMode | string
+    project_dir?: string
+    metadata_count?: number
+    existing_count?: number
+    missing_count?: number
+    metadata_inconsistent?: boolean
+    metadata_error?: string
+    expected_text_count?: number
+    input_audio_count?: number
+    input_audio_available_count?: number
+    input_audio_missing_count?: number
+    direct_train_ready?: boolean
+    needs_material_rebuild?: boolean
+    can_rebuild_material?: boolean
+    material_status?: string
+    config_summary?: string
+    config_path?: string
   }
 
   type BackendResponsePayload = {

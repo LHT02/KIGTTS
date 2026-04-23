@@ -37,6 +37,17 @@ if (-not $SkipBuild) {
 }
 
 $sourceDir = Resolve-Path "$ProjectRoot\\dist\\win-unpacked"
+$piperPython = Join-Path $sourceDir "resources\\piper_env\\python.exe"
+if (-not (Test-Path $piperPython)) {
+    throw "Packaged piper_env python.exe not found: $piperPython"
+}
+
+Write-Host "== validate packaged piper_env =="
+& $piperPython -c "import encodings, site, sys; print(sys.executable)"
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged piper_env is incomplete or invalid"
+}
+
 $outputDir = "$ProjectRoot\\dist\\inno"
 if (-not (Test-Path $outputDir)) {
     New-Item -Path $outputDir -ItemType Directory | Out-Null
