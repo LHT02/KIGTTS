@@ -96,17 +96,20 @@ const NAV_EXPANDED_PADDING_X = 1.5
 const NAV_COLLAPSED_PADDING_X = (MINI_DRAWER_WIDTH - NAV_ICON_SLOT) / 16
 const DRAWER_EXPANDED_STORAGE_KEY = 'kgtts_drawer_expanded'
 const DISTILL_SETTINGS_STORAGE_KEY = 'kigtts_gsv_distill_settings'
+const VOXCPM_SETTINGS_STORAGE_KEY = 'kigtts_voxcpm_distill_settings'
 const DISTILL_MODE_STORAGE_KEY = 'kigtts_training_mode'
 const GSVI_CONFIRM_SKIP_STORAGE_KEY = 'kigtts_gsvi_confirm_skip'
 const GSVI_MODE_INTRO_SKIP_STORAGE_KEY = 'kigtts_gsvi_mode_intro_skip'
 const GSVI_GUIDE_URL = 'https://www.yuque.com/baicaigongchang1145haoyuangong/ib3g1e/gos50nrqrlipryqq'
 const PIPER_PIPELINE_STAGES: ProgressStage[] = ['preprocess', 'vad', 'asr', 'train', 'export']
 const DISTILL_PIPELINE_STAGES: ProgressStage[] = ['collect', 'distill', 'train', 'export']
-const PROGRESS_STAGES: ProgressStage[] = ['collect', 'distill', 'preprocess', 'vad', 'asr', 'train', 'export']
+const VOXCPM_PIPELINE_STAGES: ProgressStage[] = ['collect', 'synth', 'train', 'export']
+const PROGRESS_STAGES: ProgressStage[] = ['collect', 'distill', 'synth', 'preprocess', 'vad', 'asr', 'train', 'export']
 type AppPage = 'prep' | 'settings' | 'preview' | 'logs'
 const STAGE_LABEL: Record<ProgressStage, string> = {
   collect: '收集',
   distill: '蒸馏',
+  synth: '合成',
   preprocess: '预处理',
   vad: '切分',
   asr: '识别',
@@ -341,6 +344,7 @@ const getTextContextCapabilities = (target: EditableTarget | null): TextContextM
 const emptyProgress = (): ProgressMap => ({
   collect: 0,
   distill: 0,
+  synth: 0,
   preprocess: 0,
   vad: 0,
   asr: 0,
@@ -370,6 +374,23 @@ const defaultDistillOptions = (): DistillOptions => ({
   repetition_penalty: 1.35,
   sample_steps: 16,
   if_sr: false,
+  text_sources: [],
+})
+
+const defaultVoxcpmOptions = (): VoxCpmDistillOptions => ({
+  device: 'cuda',
+  allow_cpu_fallback: true,
+  voice_description: '',
+  reference_audio: '',
+  cfg_value: 2,
+  inference_timesteps: 10,
+  min_len: 2,
+  max_len: 4096,
+  normalize: false,
+  denoise: true,
+  retry_badcase: true,
+  retry_badcase_max_times: 3,
+  retry_badcase_ratio_threshold: 6,
   text_sources: [],
 })
 
@@ -448,6 +469,38 @@ const getCudaRuntimeChipLabel = (status: PiperCudaRuntimeStatus | null) => {
   if (status.status === 'error') return '运行时异常'
   if (!status.available) return '未安装'
   if (status.cuda_available === false) return '已安装 / CUDA 不可用'
+  return '已就绪'
+}
+
+const getRuntimeChipColor = (
+  status: PiperCudaRuntimeStatus | VoxCpmRuntimeStatus | null,
+): 'default' | 'success' | 'warning' | 'error' => {
+  if (!status) return 'default'
+  if (status.status === 'error') return 'error'
+  if (!status.available) return 'warning'
+  if (status.cuda_available === false) return 'warning'
+  return 'success'
+}
+
+const getRuntimeChipLabel = (status: PiperCudaRuntimeStatus | VoxCpmRuntimeStatus | null) => {
+  if (!status) return '未检测'
+  if (status.status === 'error') return '运行时异常'
+  if (!status.available) return '未安装'
+  if (status.cuda_available === false) return '已安装 / CUDA 不可用'
+  return '已就绪'
+}
+
+const getVoxcpmModelChipColor = (status: VoxCpmModelStatus | null): 'default' | 'success' | 'warning' | 'error' => {
+  if (!status) return 'default'
+  if (!status.main_available) return 'warning'
+  if (!status.denoiser_available) return 'warning'
+  return 'success'
+}
+
+const getVoxcpmModelChipLabel = (status: VoxCpmModelStatus | null) => {
+  if (!status) return '未检测'
+  if (!status.main_available) return '未下载'
+  if (!status.denoiser_available) return '主模型已就绪 / denoiser 未下载'
   return '已就绪'
 }
 
@@ -767,7 +820,8 @@ function App() {
   const [trainingMode, setTrainingMode] = useState<TrainingMode>(() => {
     try {
       const value = window.localStorage.getItem(DISTILL_MODE_STORAGE_KEY)
-      return value === 'gsv_distill' ? 'gsv_distill' : 'piper'
+      if (value === 'gsv_distill' || value === 'voxcpm_distill') return value
+      return 'piper'
     } catch {
       return 'piper'
     }
@@ -786,6 +840,12 @@ function App() {
   const [cudaRuntimeStatus, setCudaRuntimeStatus] = useState<PiperCudaRuntimeStatus | null>(null)
   const [cudaRuntimeBusy, setCudaRuntimeBusy] = useState(false)
   const [cudaRuntimeProgressMessage, setCudaRuntimeProgressMessage] = useState('')
+  const [voxcpmRuntimeStatus, setVoxcpmRuntimeStatus] = useState<VoxCpmRuntimeStatus | null>(null)
+  const [voxcpmRuntimeBusy, setVoxcpmRuntimeBusy] = useState(false)
+  const [voxcpmRuntimeProgressMessage, setVoxcpmRuntimeProgressMessage] = useState('')
+  const [voxcpmModelStatus, setVoxcpmModelStatus] = useState<VoxCpmModelStatus | null>(null)
+  const [voxcpmModelBusy, setVoxcpmModelBusy] = useState(false)
+  const [voxcpmModelProgressMessage, setVoxcpmModelProgressMessage] = useState('')
   const [distillOpts, setDistillOpts] = useState<DistillOptions>(() => {
     try {
       const raw = window.localStorage.getItem(DISTILL_SETTINGS_STORAGE_KEY)
@@ -797,10 +857,22 @@ function App() {
     }
     return defaultDistillOptions()
   })
+  const [voxcpmOpts, setVoxcpmOpts] = useState<VoxCpmDistillOptions>(() => {
+    try {
+      const raw = window.localStorage.getItem(VOXCPM_SETTINGS_STORAGE_KEY)
+      if (raw) {
+        return { ...defaultVoxcpmOptions(), ...JSON.parse(raw) } as VoxCpmDistillOptions
+      }
+    } catch {
+      // ignore
+    }
+    return defaultVoxcpmOptions()
+  })
   const [gsvCatalog, setGsvCatalog] = useState<GsvModelCatalog | null>(null)
   const [gsvRootStatus, setGsvRootStatus] = useState<{ ok: boolean; message: string } | null>(null)
   const [gsvRootBusy, setGsvRootBusy] = useState(false)
   const [distillAdvancedOpen, setDistillAdvancedOpen] = useState(false)
+  const [voxcpmAdvancedOpen, setVoxcpmAdvancedOpen] = useState(false)
   const [voicepackName, setVoicepackName] = useState('未命名')
   const [voicepackRemark, setVoicepackRemark] = useState('')
   const [voicepackAvatar, setVoicepackAvatar] = useState('')
@@ -894,7 +966,12 @@ function App() {
   const resolvedThemeMode: 'light' | 'dark' = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode
   const drawerWidth = drawerExpanded ? DRAWER_WIDTH : MINI_DRAWER_WIDTH
   const displayTrainingMode = activeRunMode ?? trainingMode
-  const activeProgressStages = displayTrainingMode === 'gsv_distill' ? DISTILL_PIPELINE_STAGES : PIPER_PIPELINE_STAGES
+  const activeProgressStages =
+    displayTrainingMode === 'gsv_distill'
+      ? DISTILL_PIPELINE_STAGES
+      : displayTrainingMode === 'voxcpm_distill'
+        ? VOXCPM_PIPELINE_STAGES
+        : PIPER_PIPELINE_STAGES
   const theme = useMemo(() => buildTheme(resolvedThemeMode), [resolvedThemeMode])
   const cardPaperSx = useMemo(
     () => ({
@@ -939,6 +1016,7 @@ function App() {
       ? gsvCatalog?.versions[distillOpts.version]?.speakers[distillOpts.speaker]?.languages[distillOpts.prompt_lang]?.emotions ?? []
       : []
   const selectedEmotion = catalogEmotions.find((item) => item.name === distillOpts.emotion) ?? null
+  const activeDistillTextSources = trainingMode === 'voxcpm_distill' ? voxcpmOpts.text_sources : distillOpts.text_sources
   const gsviFieldMismatch = {
     gsvAuthor: Boolean(gsviAttributionError) && gsviAttribution.gsvAuthor.trim() !== GSVI_REQUIRED_NAMES.gsvAuthor,
     gsvTrainer: Boolean(gsviAttributionError) && gsviAttribution.gsvTrainer.trim() !== GSVI_REQUIRED_NAMES.gsvTrainer,
@@ -1283,6 +1361,130 @@ function App() {
     }
   }
 
+  const refreshVoxcpmRuntimeStatus = async (silent = false) => {
+    try {
+      if (!silent) {
+        setVoxcpmRuntimeBusy(true)
+      }
+      const status = await requestBackend<VoxCpmRuntimeStatus>('get_voxcpm_runtime_status', {}, 30000)
+      setVoxcpmRuntimeStatus(status)
+      if (!silent) {
+        appendLog(`[runtime] ${status.message}`)
+      }
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取 VoxCPM2 运行时状态失败'
+      if (!silent) {
+        showToast(message, 'error')
+      }
+      throw error
+    } finally {
+      if (!silent) {
+        setVoxcpmRuntimeBusy(false)
+        setVoxcpmRuntimeProgressMessage('')
+      }
+    }
+  }
+
+  const installVoxcpmRuntime = async (force = false) => {
+    try {
+      setVoxcpmRuntimeBusy(true)
+      setVoxcpmRuntimeProgressMessage(force ? '正在重建 VoxCPM2 运行时...' : '正在安装 VoxCPM2 运行时...')
+      const status = await requestBackend<VoxCpmRuntimeStatus>(
+        'install_voxcpm_runtime',
+        { force },
+        60 * 60 * 1000,
+      )
+      setVoxcpmRuntimeStatus(status)
+      setVoxcpmRuntimeProgressMessage(status.message)
+      appendLog(`[runtime] ${status.message}`)
+      showToast(status.message, status.cuda_available === false ? 'warning' : 'success')
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '安装 VoxCPM2 运行时失败'
+      setVoxcpmRuntimeProgressMessage(message)
+      appendLog(`[runtime] ${message}`)
+      showToast(message, 'error')
+      throw error
+    } finally {
+      setVoxcpmRuntimeBusy(false)
+    }
+  }
+
+  const refreshVoxcpmModelStatus = async (silent = false) => {
+    try {
+      if (!silent) {
+        setVoxcpmModelBusy(true)
+      }
+      const status = await requestBackend<VoxCpmModelStatus>('get_voxcpm_model_status', {}, 30000)
+      setVoxcpmModelStatus(status)
+      if (!silent) {
+        appendLog(`[runtime] ${status.message}`)
+      }
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取 VoxCPM2 模型状态失败'
+      if (!silent) {
+        showToast(message, 'error')
+      }
+      throw error
+    } finally {
+      if (!silent) {
+        setVoxcpmModelBusy(false)
+        setVoxcpmModelProgressMessage('')
+      }
+    }
+  }
+
+  const downloadVoxcpmModels = async (force = false) => {
+    try {
+      setVoxcpmModelBusy(true)
+      setVoxcpmModelProgressMessage(force ? '正在重新下载 VoxCPM2 模型...' : '正在下载 VoxCPM2 模型...')
+      const status = await requestBackend<VoxCpmModelStatus>(
+        'download_voxcpm_models',
+        { force, include_denoiser: true },
+        24 * 60 * 60 * 1000,
+      )
+      setVoxcpmModelStatus(status)
+      setVoxcpmModelProgressMessage(status.message)
+      appendLog(`[runtime] ${status.message}`)
+      showToast(status.message, status.denoiser_available ? 'success' : 'warning')
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '下载 VoxCPM2 模型失败'
+      setVoxcpmModelProgressMessage(message)
+      appendLog(`[runtime] ${message}`)
+      showToast(message, 'error')
+      throw error
+    } finally {
+      setVoxcpmModelBusy(false)
+    }
+  }
+
+  const openVoxcpmRuntimeDirectory = async () => {
+    const target = voxcpmRuntimeStatus?.env_path || voxcpmRuntimeStatus?.runtime_root || ''
+    if (!target || !window.paths?.openInExplorer) {
+      showToast('当前没有可打开的 VoxCPM2 运行时目录', 'warning')
+      return
+    }
+    const result = await window.paths.openInExplorer(target)
+    if (!result?.ok) {
+      showToast(result?.message || '打开 VoxCPM2 运行时目录失败', 'error')
+    }
+  }
+
+  const openVoxcpmModelDirectory = async () => {
+    const target = voxcpmModelStatus?.model_root || ''
+    if (!target || !window.paths?.openInExplorer) {
+      showToast('当前没有可打开的 VoxCPM2 模型目录', 'warning')
+      return
+    }
+    const result = await window.paths.openInExplorer(target)
+    if (!result?.ok) {
+      showToast(result?.message || '打开 VoxCPM2 模型目录失败', 'error')
+    }
+  }
+
   const requestBackendRestart = () => {
     rejectPendingRequests('后端已重启，请重试')
     window.backend?.restart?.()
@@ -1340,6 +1542,8 @@ function App() {
             send('get_defaults')
           }
           void refreshCudaRuntimeStatus(true).catch(() => undefined)
+          void refreshVoxcpmRuntimeStatus(true).catch(() => undefined)
+          void refreshVoxcpmModelStatus(true).catch(() => undefined)
         }
         return
       }
@@ -1369,6 +1573,8 @@ function App() {
           const msg = String(evt.message ?? '')
           if (msg) {
             setCudaRuntimeProgressMessage(msg)
+            setVoxcpmRuntimeProgressMessage(msg)
+            setVoxcpmModelProgressMessage(msg)
             setStatus(msg)
           }
         }
@@ -1541,6 +1747,14 @@ function App() {
       // ignore
     }
   }, [distillOpts])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(VOXCPM_SETTINGS_STORAGE_KEY, JSON.stringify(voxcpmOpts))
+    } catch {
+      // ignore
+    }
+  }, [voxcpmOpts])
 
   useEffect(() => {
     setDistillOpts((prev) => {
@@ -1773,6 +1987,13 @@ function App() {
 
   const addDistillSources = (items: DistillTextSource[]) => {
     if (!items.length) return
+    if (trainingMode === 'voxcpm_distill') {
+      setVoxcpmOpts((prev) => ({
+        ...prev,
+        text_sources: mergeDistillSources(prev.text_sources, items),
+      }))
+      return
+    }
     setDistillOpts((prev) => ({
       ...prev,
       text_sources: mergeDistillSources(prev.text_sources, items),
@@ -1814,7 +2035,26 @@ function App() {
     }
   }
 
+  const pickVoxcpmReferenceAudio = async () => {
+    const file = await window.dialogs?.openFile({
+      filters: [
+        { name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'flac', 'ogg'] },
+        { name: 'All', extensions: ['*'] },
+      ],
+    })
+    if (file) {
+      setVoxcpmOpts((prev) => ({ ...prev, reference_audio: file }))
+    }
+  }
+
   const removeDistillSource = (target: DistillTextSource) => {
+    if (trainingMode === 'voxcpm_distill') {
+      setVoxcpmOpts((prev) => ({
+        ...prev,
+        text_sources: prev.text_sources.filter((item) => !(item.kind === target.kind && item.path === target.path)),
+      }))
+      return
+    }
     setDistillOpts((prev) => ({
       ...prev,
       text_sources: prev.text_sources.filter((item) => !(item.kind === target.kind && item.path === target.path)),
@@ -1822,6 +2062,11 @@ function App() {
   }
 
   const clearDistillSources = () => {
+    if (trainingMode === 'voxcpm_distill') {
+      setVoxcpmOpts((prev) => ({ ...prev, text_sources: [] }))
+      showToast('已清空文本来源', 'info')
+      return
+    }
     setDistillOpts((prev) => ({ ...prev, text_sources: [] }))
     showToast('已清空文本来源', 'info')
   }
@@ -2155,6 +2400,15 @@ function App() {
     })
   }
 
+  const launchVoxcpmPipeline = (outputDir: string, commonOpts: CommonPipelineOptions, voxcpmPayload: VoxCpmDistillOptions) => {
+    beginPipelineRun('voxcpm_distill', 'collect', 'VoxCPM2 蒸馏任务启动中...', 'VoxCPM2 蒸馏任务已启动')
+    send('start_voxcpm_distill_pipeline', {
+      output_dir: outputDir,
+      opts: commonOpts,
+      voxcpm: voxcpmPayload,
+    })
+  }
+
   const openGsviConfirmationFlow = (pending: PendingDistillStart) => {
     pendingDistillStartRef.current = pending
     setGsviAttribution(defaultGsviAttributionFields())
@@ -2301,6 +2555,57 @@ function App() {
       return
     }
 
+    if (trainingMode === 'voxcpm_distill') {
+      if (!voxcpmRuntimeStatus?.available) {
+        setStatus('请先安装 VoxCPM2 运行时')
+        showToast('请先安装 VoxCPM2 运行时', 'warning')
+        return
+      }
+      if (!voxcpmModelStatus?.main_available) {
+        setStatus('请先下载 VoxCPM2 主模型')
+        showToast('请先下载 VoxCPM2 主模型', 'warning')
+        return
+      }
+      if (voxcpmOpts.denoise && !voxcpmModelStatus?.denoiser_available) {
+        setStatus('请先下载 VoxCPM2 denoiser 模型')
+        showToast('当前启用了 denoiser，请先下载 denoiser 模型', 'warning')
+        return
+      }
+      if (!voxcpmOpts.voice_description.trim() && !voxcpmOpts.reference_audio.trim()) {
+        setStatus('请先填写音色描述或选择参考音频')
+        showToast('VoxCPM2 至少需要音色描述或参考音频之一', 'warning')
+        return
+      }
+      if (!voxcpmOpts.text_sources.length) {
+        setStatus('请先添加蒸馏文本来源')
+        showToast('请先添加蒸馏文本来源', 'warning')
+        return
+      }
+      if (voxcpmOpts.device === 'cuda' && voxcpmRuntimeStatus.cuda_available === false && !voxcpmOpts.allow_cpu_fallback) {
+        setStatus('当前机器未检测到可用 CUDA')
+        showToast('VoxCPM2 请求使用 CUDA，但当前机器未检测到可用 CUDA', 'warning')
+        return
+      }
+      if (voxcpmOpts.device === 'cuda' && voxcpmRuntimeStatus.cuda_available === false && voxcpmOpts.allow_cpu_fallback) {
+        appendLog('[runtime] VoxCPM2 未检测到 CUDA，将回退 CPU；CPU 推理可能非常慢。')
+        showToast('VoxCPM2 未检测到 CUDA，将回退 CPU，速度可能非常慢', 'warning')
+      }
+      const voxcpmPayload: VoxCpmDistillOptions = {
+        ...voxcpmOpts,
+        device: voxcpmOpts.device === 'cpu' ? 'cpu' : 'cuda',
+        voice_description: voxcpmOpts.voice_description.trim(),
+        reference_audio: voxcpmOpts.reference_audio.trim(),
+        cfg_value: Math.max(0.1, Number(voxcpmOpts.cfg_value) || 2),
+        inference_timesteps: Math.max(1, Math.floor(Number(voxcpmOpts.inference_timesteps) || 10)),
+        min_len: Math.max(1, Math.floor(Number(voxcpmOpts.min_len) || 2)),
+        max_len: Math.max(1, Math.floor(Number(voxcpmOpts.max_len) || 4096)),
+        retry_badcase_max_times: Math.max(0, Math.floor(Number(voxcpmOpts.retry_badcase_max_times) || 3)),
+        retry_badcase_ratio_threshold: Math.max(0.1, Number(voxcpmOpts.retry_badcase_ratio_threshold) || 6),
+      }
+      launchVoxcpmPipeline(effectiveOutputDir, commonOpts, voxcpmPayload)
+      return
+    }
+
     if (!audioFiles.length) {
       setStatus('请先添加音频文件')
       showToast('请先添加音频文件', 'warning')
@@ -2337,12 +2642,15 @@ function App() {
             >
               <MenuItem value="piper">Piper 标准</MenuItem>
               <MenuItem value="gsv_distill">GPT-SoVITS 蒸馏</MenuItem>
+              <MenuItem value="voxcpm_distill">VoxCPM2 蒸馏</MenuItem>
             </Select>
           </FormControl>
           <Typography variant="body2" sx={{ opacity: 0.78 }}>
             {trainingMode === 'piper'
               ? '标准模式会重新做裁剪、VAD 和 ASR。'
-              : '蒸馏模式会直接从 GPT-SoVITS 说话人模型生成语料，再继续训练并导出 KIGTTS 语音包。'}
+              : trainingMode === 'gsv_distill'
+                ? '蒸馏模式会直接从 GPT-SoVITS 说话人模型生成语料，再继续训练并导出 KIGTTS 语音包。'
+                : 'VoxCPM2 蒸馏会用音色描述或参考音频生成语料，再继续训练并导出 KIGTTS 语音包。'}
           </Typography>
         </Stack>
       </Paper>
@@ -2447,7 +2755,7 @@ function App() {
             </List>
           </Box>
         </Paper>
-      ) : (
+      ) : trainingMode === 'gsv_distill' ? (
         <>
           <Paper sx={cardPaperSx}>
             <Stack spacing={1.25}>
@@ -2900,6 +3208,453 @@ function App() {
                     />
                   }
                   label="if_sr"
+                />
+              </Box>
+            </Collapse>
+          </Paper>
+        </>
+      ) : (
+        <>
+          <Paper sx={cardPaperSx}>
+            <Stack spacing={1.5}>
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={1.5}
+                alignItems={{ xs: 'flex-start', md: 'center' }}
+                justifyContent="space-between"
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                    <Typography variant="subtitle1" fontWeight={600}>
+                      VoxCPM2 运行时
+                    </Typography>
+                    <Chip
+                      size="small"
+                      color={getRuntimeChipColor(voxcpmRuntimeStatus)}
+                      label={getRuntimeChipLabel(voxcpmRuntimeStatus)}
+                    />
+                  </Stack>
+                  <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.78 }}>
+                    首次使用会在线创建 voxcpm_env，并安装 PyTorch 2.5+ / CUDA 12 相关依赖。软件本体不内置 CUDA 运行时。
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={1}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<MsIcon name="refresh" size={18} />}
+                    onClick={() => {
+                      void refreshVoxcpmRuntimeStatus()
+                    }}
+                    disabled={voxcpmRuntimeBusy || pipelineRunning}
+                  >
+                    刷新状态
+                  </Button>
+                  <Button
+                    variant="contained"
+                    startIcon={<MsIcon name={voxcpmRuntimeStatus?.available ? 'build' : 'download'} size={18} />}
+                    onClick={() => {
+                      void installVoxcpmRuntime(Boolean(voxcpmRuntimeStatus?.available))
+                    }}
+                    disabled={voxcpmRuntimeBusy || pipelineRunning}
+                  >
+                    {voxcpmRuntimeStatus?.available ? '重建运行时' : '安装运行时'}
+                  </Button>
+                </Stack>
+              </Stack>
+
+              {(voxcpmRuntimeBusy || voxcpmRuntimeProgressMessage) && (
+                <Stack spacing={0.75}>
+                  {voxcpmRuntimeBusy && <LinearProgress />}
+                  <Typography variant="caption" sx={{ opacity: 0.78 }}>
+                    {voxcpmRuntimeProgressMessage || '正在处理 VoxCPM2 运行时...'}
+                  </Typography>
+                </Stack>
+              )}
+
+              {voxcpmRuntimeStatus && (
+                <Alert severity={voxcpmRuntimeStatus.status === 'error' ? 'error' : voxcpmRuntimeStatus.cuda_available === false ? 'warning' : voxcpmRuntimeStatus.available ? 'success' : 'info'}>
+                  <Stack spacing={0.5}>
+                    <Typography variant="body2">{voxcpmRuntimeStatus.message}</Typography>
+                    <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                      运行时目录：{voxcpmRuntimeStatus.env_path}
+                    </Typography>
+                    {voxcpmRuntimeStatus.driver_version && (
+                      <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                        NVIDIA 驱动：{voxcpmRuntimeStatus.driver_version}
+                        {voxcpmRuntimeStatus.gpu_name ? ` / ${voxcpmRuntimeStatus.gpu_name}` : ''}
+                        {voxcpmRuntimeStatus.gpu_memory ? ` / ${voxcpmRuntimeStatus.gpu_memory}` : ''}
+                      </Typography>
+                    )}
+                    {voxcpmRuntimeStatus.torch_version && (
+                      <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                        Torch：{voxcpmRuntimeStatus.torch_version}
+                        {voxcpmRuntimeStatus.torch_cuda_version ? ` / CUDA Runtime ${voxcpmRuntimeStatus.torch_cuda_version}` : ''}
+                        {voxcpmRuntimeStatus.voxcpm_version ? ` / voxcpm ${voxcpmRuntimeStatus.voxcpm_version}` : ''}
+                      </Typography>
+                    )}
+                  </Stack>
+                </Alert>
+              )}
+
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                <Button
+                  variant="outlined"
+                  startIcon={<MsIcon name="folder_open" size={18} />}
+                  onClick={() => {
+                    void openVoxcpmRuntimeDirectory()
+                  }}
+                  disabled={voxcpmRuntimeBusy || !voxcpmRuntimeStatus}
+                >
+                  打开运行时目录
+                </Button>
+                <Typography variant="caption" sx={{ alignSelf: 'center', opacity: 0.72 }}>
+                  默认使用 CUDA；如不可用，可允许回退 CPU，但速度可能非常慢。
+                </Typography>
+              </Stack>
+            </Stack>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Stack spacing={1.5}>
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={1.5}
+                alignItems={{ xs: 'flex-start', md: 'center' }}
+                justifyContent="space-between"
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                    <Typography variant="subtitle1" fontWeight={600}>
+                      VoxCPM2 模型
+                    </Typography>
+                    <Chip
+                      size="small"
+                      color={getVoxcpmModelChipColor(voxcpmModelStatus)}
+                      label={getVoxcpmModelChipLabel(voxcpmModelStatus)}
+                    />
+                  </Stack>
+                  <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.78 }}>
+                    主模型与 denoiser 从 ModelScope 下载到用户数据目录，打包产物不会包含这些权重。
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={1}>
+                  <Button
+                    variant="outlined"
+                    startIcon={<MsIcon name="refresh" size={18} />}
+                    onClick={() => {
+                      void refreshVoxcpmModelStatus()
+                    }}
+                    disabled={voxcpmModelBusy || pipelineRunning}
+                  >
+                    检查状态
+                  </Button>
+                  <Button
+                    variant="contained"
+                    startIcon={<MsIcon name={voxcpmModelStatus?.main_available ? 'sync' : 'download'} size={18} />}
+                    onClick={() => {
+                      void downloadVoxcpmModels(Boolean(voxcpmModelStatus?.main_available))
+                    }}
+                    disabled={voxcpmModelBusy || pipelineRunning || !voxcpmRuntimeStatus?.available}
+                  >
+                    {voxcpmModelStatus?.main_available ? '重新下载' : '下载模型'}
+                  </Button>
+                </Stack>
+              </Stack>
+
+              {(voxcpmModelBusy || voxcpmModelProgressMessage) && (
+                <Stack spacing={0.75}>
+                  {voxcpmModelBusy && <LinearProgress />}
+                  <Typography variant="caption" sx={{ opacity: 0.78 }}>
+                    {voxcpmModelProgressMessage || '正在处理 VoxCPM2 模型...'}
+                  </Typography>
+                </Stack>
+              )}
+
+              {voxcpmModelStatus && (
+                <Alert severity={!voxcpmModelStatus.main_available ? 'warning' : voxcpmModelStatus.denoiser_available ? 'success' : 'warning'}>
+                  <Stack spacing={0.5}>
+                    <Typography variant="body2">{voxcpmModelStatus.message}</Typography>
+                    <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                      主模型：{voxcpmModelStatus.main_repo} {'->'} {voxcpmModelStatus.main_model_dir}
+                    </Typography>
+                    <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                      denoiser：{voxcpmModelStatus.denoiser_repo} {'->'} {voxcpmModelStatus.denoiser_model_dir}
+                    </Typography>
+                  </Stack>
+                </Alert>
+              )}
+
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                <Button
+                  variant="outlined"
+                  startIcon={<MsIcon name="folder_open" size={18} />}
+                  onClick={() => {
+                    void openVoxcpmModelDirectory()
+                  }}
+                  disabled={voxcpmModelBusy || !voxcpmModelStatus}
+                >
+                  打开模型目录
+                </Button>
+                <Typography variant="caption" sx={{ alignSelf: 'center', opacity: 0.72 }}>
+                  默认会同时下载主模型和 denoiser；关闭 denoiser 后可只依赖主模型。
+                </Typography>
+              </Stack>
+            </Stack>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+              音色来源
+            </Typography>
+            <Stack spacing={2}>
+              <TextField
+                label="音色描述"
+                value={voxcpmOpts.voice_description}
+                onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, voice_description: event.target.value }))}
+                multiline
+                minRows={2}
+                fullWidth
+                helperText="例如：温柔、清亮、语速自然的少女声。可与参考音频同时使用。"
+              />
+              <PathField
+                label="参考音频"
+                value={voxcpmOpts.reference_audio}
+                onChange={(value) => setVoxcpmOpts((prev) => ({ ...prev, reference_audio: value }))}
+                onPick={pickVoxcpmReferenceAudio}
+                onDropPath={(value) => setVoxcpmOpts((prev) => ({ ...prev, reference_audio: value }))}
+                onDropFiles={saveDroppedFileSingle}
+                helperText="可选。用于参考音频克隆，建议使用清晰人声。"
+              />
+              <Alert severity="info">
+                VoxCPM2 至少需要音色描述或参考音频之一。最终会先合成 wav 语料，再进入 Piper 训练和 KIGTTS 语音包导出。
+              </Alert>
+            </Stack>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle1" fontWeight={600}>
+                文本来源
+              </Typography>
+              <Stack direction="row" spacing={1}>
+                <Tooltip title="添加文本来源" arrow>
+                  <IconButton size="small" onClick={(event) => setDistillAddAnchorEl(event.currentTarget)}>
+                    <MsIcon name="add" size={20} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="清空文本来源" arrow>
+                  <IconButton size="small" onClick={clearDistillSources}>
+                    <MsIcon name="delete" size={20} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Stack>
+            <Box
+              sx={{
+                mt: 1,
+                border: '1px dashed',
+                borderColor: distillSourcesDragActive ? 'primary.main' : 'transparent',
+                borderRadius: 1,
+                p: 1,
+                transition: 'border-color 0.15s ease',
+              }}
+              onDragOver={(event) => {
+                event.preventDefault()
+                if (event.dataTransfer) {
+                  event.dataTransfer.dropEffect = 'copy'
+                }
+                setDistillSourcesDragActive(true)
+              }}
+              onDragLeave={() => setDistillSourcesDragActive(false)}
+              onDrop={handleDistillSourcesDrop}
+            >
+              <List dense sx={{ maxHeight: 240, overflow: 'auto' }}>
+                {activeDistillTextSources.length === 0 && (
+                  <ListItem>
+                    <ListItemText primary="暂无文本来源" secondary="点击添加或拖拽导入文本文件、旧训练项目目录" />
+                  </ListItem>
+                )}
+                {activeDistillTextSources.map((item) => (
+                  <ListItem
+                    key={`${item.kind}:${item.path}`}
+                    divider
+                    secondaryAction={
+                      <IconButton edge="end" size="small" onClick={() => removeDistillSource(item)}>
+                        <MsIcon name="close" size={18} />
+                      </IconButton>
+                    }
+                  >
+                    <ListItemIcon sx={{ minWidth: 28 }}>
+                      <MsIcon name={item.kind === 'project_dir' ? 'folder' : 'article'} size={18} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={item.path}
+                      secondary={item.kind === 'project_dir' ? '旧训练项目目录' : '文本语料文件'}
+                    />
+                  </ListItem>
+                ))}
+              </List>
+            </Box>
+            <Popover
+              open={Boolean(distillAddAnchorEl)}
+              anchorEl={distillAddAnchorEl}
+              onClose={() => setDistillAddAnchorEl(null)}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+              transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+            >
+              <List dense sx={{ py: 0.5, minWidth: 180 }}>
+                <ListItemButton
+                  onClick={() => {
+                    setDistillAddAnchorEl(null)
+                    void pickDistillTextFiles()
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <MsIcon name="article" size={18} />
+                  </ListItemIcon>
+                  <ListItemText primary="添加语料文件" secondary=".txt / .csv / .jsonl" />
+                </ListItemButton>
+                <ListItemButton
+                  onClick={() => {
+                    setDistillAddAnchorEl(null)
+                    void pickDistillProjectDirs()
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <MsIcon name="folder" size={18} />
+                  </ListItemIcon>
+                  <ListItemText primary="添加旧项目" secondary="读取 work/metadata.csv" />
+                </ListItemButton>
+              </List>
+            </Popover>
+          </Paper>
+
+          <Paper sx={cardPaperSx}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle1" fontWeight={600}>
+                VoxCPM2 推理参数
+              </Typography>
+              <Button
+                size="small"
+                variant="text"
+                startIcon={<MsIcon name={voxcpmAdvancedOpen ? 'expand_less' : 'expand_more'} size={18} />}
+                onClick={() => setVoxcpmAdvancedOpen((prev) => !prev)}
+              >
+                {voxcpmAdvancedOpen ? '收起高级参数' : '展开高级参数'}
+              </Button>
+            </Stack>
+            <Box
+              sx={{
+                mt: 1,
+                display: 'grid',
+                gap: 2,
+                gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+              }}
+            >
+              <FormControl fullWidth size="small">
+                <InputLabel>推理设备</InputLabel>
+                <Select
+                  value={voxcpmOpts.device}
+                  label="推理设备"
+                  onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, device: event.target.value as 'cpu' | 'cuda' }))}
+                >
+                  <MenuItem value="cuda">GPU/CUDA</MenuItem>
+                  <MenuItem value="cpu">CPU</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField
+                label="CFG 强度"
+                type="number"
+                value={voxcpmOpts.cfg_value}
+                onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, cfg_value: Number(event.target.value) }))}
+                size="small"
+                inputProps={{ step: 0.1, min: 0.1 }}
+              />
+              <TextField
+                label="推理步数"
+                type="number"
+                value={voxcpmOpts.inference_timesteps}
+                onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, inference_timesteps: Math.max(1, Number(event.target.value) || 1) }))}
+                size="small"
+                inputProps={{ step: 1, min: 1 }}
+              />
+              <TextField
+                label="max_len"
+                type="number"
+                value={voxcpmOpts.max_len}
+                onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, max_len: Math.max(1, Number(event.target.value) || 1) }))}
+                size="small"
+                inputProps={{ step: 64, min: 1 }}
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={voxcpmOpts.denoise}
+                    onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, denoise: event.target.checked }))}
+                  />
+                }
+                label="启用 denoiser"
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={voxcpmOpts.allow_cpu_fallback}
+                    onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, allow_cpu_fallback: event.target.checked }))}
+                  />
+                }
+                label="CUDA 不可用时回退 CPU"
+              />
+            </Box>
+            <Collapse in={voxcpmAdvancedOpen} timeout={220}>
+              <Box
+                sx={{
+                  mt: 2,
+                  display: 'grid',
+                  gap: 2,
+                  gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' },
+                }}
+              >
+                <TextField
+                  label="min_len"
+                  type="number"
+                  value={voxcpmOpts.min_len}
+                  onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, min_len: Math.max(1, Number(event.target.value) || 1) }))}
+                  size="small"
+                  inputProps={{ step: 1, min: 1 }}
+                />
+                <TextField
+                  label="坏例重试次数"
+                  type="number"
+                  value={voxcpmOpts.retry_badcase_max_times}
+                  onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, retry_badcase_max_times: Math.max(0, Number(event.target.value) || 0) }))}
+                  size="small"
+                  inputProps={{ step: 1, min: 0 }}
+                />
+                <TextField
+                  label="坏例时长比阈值"
+                  type="number"
+                  value={voxcpmOpts.retry_badcase_ratio_threshold}
+                  onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, retry_badcase_ratio_threshold: Number(event.target.value) }))}
+                  size="small"
+                  inputProps={{ step: 0.1, min: 0.1 }}
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={voxcpmOpts.normalize}
+                      onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, normalize: event.target.checked }))}
+                    />
+                  }
+                  label="文本规范化"
+                />
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={voxcpmOpts.retry_badcase}
+                      onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, retry_badcase: event.target.checked }))}
+                    />
+                  }
+                  label="坏例自动重试"
                 />
               </Box>
             </Collapse>

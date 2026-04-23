@@ -9,9 +9,16 @@ from typing import Any, Dict, Optional
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from engine import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, run_distill_pipeline, run_pipeline  # type: ignore
+from engine import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, VoxCpmDistillOptions, run_distill_pipeline, run_pipeline, run_voxcpm_distill_pipeline  # type: ignore
 from engine.gsv_distill import scan_gsv_models, validate_gsv_root  # type: ignore
-from engine.runtime_manager import describe_piper_cuda_runtime, install_piper_cuda_runtime  # type: ignore
+from engine.runtime_manager import (  # type: ignore
+    describe_piper_cuda_runtime,
+    describe_voxcpm_models,
+    describe_voxcpm_runtime,
+    download_voxcpm_models,
+    install_piper_cuda_runtime,
+    install_voxcpm_runtime,
+)
 from engine.voice_preview import synthesize_voicepack  # type: ignore
 
 
@@ -106,6 +113,35 @@ def _build_distill_opts(payload: Dict[str, Any]) -> DistillOptions:
         repetition_penalty=float(payload.get("repetition_penalty") or 1.35),
         sample_steps=int(payload.get("sample_steps") or 16),
         if_sr=bool(payload.get("if_sr", False)),
+        text_sources=text_sources,
+    )
+
+
+def _build_voxcpm_opts(payload: Dict[str, Any]) -> VoxCpmDistillOptions:
+    text_sources = []
+    for item in payload.get("text_sources") or []:
+        if not isinstance(item, dict):
+            continue
+        source_path = _path_or_none(item.get("path"))
+        kind = str(item.get("kind") or "").strip()
+        if not source_path or not kind:
+            continue
+        text_sources.append(DistillTextSource(kind=kind, path=source_path))
+
+    return VoxCpmDistillOptions(
+        device=str(payload.get("device") or "cuda").strip().lower() or "cuda",
+        allow_cpu_fallback=bool(payload.get("allow_cpu_fallback", True)),
+        voice_description=str(payload.get("voice_description") or "").strip(),
+        reference_audio=_path_or_none(payload.get("reference_audio")),
+        cfg_value=float(payload.get("cfg_value") or 2.0),
+        inference_timesteps=max(1, int(payload.get("inference_timesteps") or 10)),
+        min_len=max(1, int(payload.get("min_len") or 2)),
+        max_len=max(1, int(payload.get("max_len") or 4096)),
+        normalize=bool(payload.get("normalize", False)),
+        denoise=bool(payload.get("denoise", True)),
+        retry_badcase=bool(payload.get("retry_badcase", True)),
+        retry_badcase_max_times=max(0, int(payload.get("retry_badcase_max_times") or 3)),
+        retry_badcase_ratio_threshold=float(payload.get("retry_badcase_ratio_threshold") or 6.0),
         text_sources=text_sources,
     )
 
@@ -282,6 +318,68 @@ def _handle_start_distill(req_id: str, payload: Dict[str, Any]) -> None:
     _send({"type": "response", "id": req_id, "payload": {"started": True}})
 
 
+def _handle_start_voxcpm_distill(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    output_dir = payload.get("output_dir")
+    if not output_dir:
+        _send({"type": "error", "id": req_id, "message": "缺少输出目录"})
+        return
+
+    try:
+        opts = _build_opts(payload.get("opts") or {})
+        voxcpm_opts = _build_voxcpm_opts(payload.get("voxcpm") or {})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc)})
+        return
+
+    paths = ProjectPaths(project_root=Path(output_dir))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send(
+            {
+                "type": "progress",
+                "id": req_id,
+                "stage": stage,
+                "value": value,
+                "message": message,
+            }
+        )
+
+    def run() -> None:
+        _set_active(True)
+        try:
+            result = run_voxcpm_distill_pipeline(paths, opts, voxcpm_opts, progress)
+            _send(
+                {
+                    "type": "done",
+                    "id": req_id,
+                    "payload": {
+                        "manifest_path": str(result.manifest_path),
+                        "voicepack_path": str(result.voicepack_path),
+                        "preview_path": str(result.preview_path) if result.preview_path else None,
+                        "training_log": str(result.training_log) if result.training_log else None,
+                    },
+                }
+            )
+        except Exception as exc:
+            _send(
+                {
+                    "type": "error",
+                    "id": req_id,
+                    "message": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            )
+        finally:
+            _set_active(False)
+
+    threading.Thread(target=run, daemon=True).start()
+    _send({"type": "response", "id": req_id, "payload": {"started": True}})
+
+
 def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
         _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
@@ -372,6 +470,65 @@ def _handle_install_piper_cuda_runtime(req_id: str, payload: Dict[str, Any]) -> 
         _set_active(False)
 
 
+def _handle_get_voxcpm_runtime(req_id: str) -> None:
+    try:
+        payload = describe_voxcpm_runtime()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_install_voxcpm_runtime(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    force = bool(payload.get("force", False))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    _set_active(True)
+    try:
+        result = install_voxcpm_runtime(progress=progress, force=force)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
+def _handle_get_voxcpm_models(req_id: str) -> None:
+    try:
+        payload = describe_voxcpm_models()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_download_voxcpm_models(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    include_denoiser = bool(payload.get("include_denoiser", True))
+    force = bool(payload.get("force", False))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    _set_active(True)
+    try:
+        result = download_voxcpm_models(progress=progress, include_denoiser=include_denoiser, force=force)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
 def _handle_request(req: Dict[str, Any]) -> None:
     req_id = str(req.get("id") or "")
     msg_type = req.get("type")
@@ -385,6 +542,9 @@ def _handle_request(req: Dict[str, Any]) -> None:
         return
     if msg_type == "start_distill_pipeline":
         _handle_start_distill(req_id, payload)
+        return
+    if msg_type == "start_voxcpm_distill_pipeline":
+        _handle_start_voxcpm_distill(req_id, payload)
         return
     if msg_type == "preview_voicepack":
         _handle_preview(req_id, payload)
@@ -416,6 +576,18 @@ def _handle_request(req: Dict[str, Any]) -> None:
         return
     if msg_type == "install_piper_cuda_runtime":
         _handle_install_piper_cuda_runtime(req_id, payload)
+        return
+    if msg_type == "get_voxcpm_runtime_status":
+        _handle_get_voxcpm_runtime(req_id)
+        return
+    if msg_type == "install_voxcpm_runtime":
+        _handle_install_voxcpm_runtime(req_id, payload)
+        return
+    if msg_type == "get_voxcpm_model_status":
+        _handle_get_voxcpm_models(req_id)
+        return
+    if msg_type == "download_voxcpm_models":
+        _handle_download_voxcpm_models(req_id, payload)
         return
 
     _send({"type": "error", "id": req_id, "message": f"未知命令: {msg_type}"})

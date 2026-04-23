@@ -72,6 +72,24 @@ class DistillOptions:
 
 
 @dataclass
+class VoxCpmDistillOptions:
+    device: str = "cuda"
+    allow_cpu_fallback: bool = True
+    voice_description: str = ""
+    reference_audio: Optional[Path] = None
+    cfg_value: float = 2.0
+    inference_timesteps: int = 10
+    min_len: int = 2
+    max_len: int = 4096
+    normalize: bool = False
+    denoise: bool = True
+    retry_badcase: bool = True
+    retry_badcase_max_times: int = 3
+    retry_badcase_ratio_threshold: float = 6.0
+    text_sources: List[DistillTextSource] = field(default_factory=list)
+
+
+@dataclass
 class ProjectPaths:
     project_root: Path
     input_audio: List[Path] = field(default_factory=list)

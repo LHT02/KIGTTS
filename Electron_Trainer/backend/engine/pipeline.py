@@ -4,8 +4,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from . import asr, gsv_distill, packager, preprocess, training, vad
-from .config import DistillOptions, PipelineResult, ProgressCallback, ProjectPaths, TrainingOptions
+from . import asr, gsv_distill, packager, preprocess, training, vad, voxcpm_distill
+from .config import DistillOptions, PipelineResult, ProgressCallback, ProjectPaths, TrainingOptions, VoxCpmDistillOptions
 from .utils import find_executable
 
 
@@ -116,6 +116,46 @@ def run_distill_pipeline(
     _ensure_dirs(paths)
 
     gsv_distill.build_distill_corpus(paths, distill_opts, progress)
+    training.write_preview_text(opts.text_sample, paths.work_dir / "preview.txt")
+
+    ckpt = training.run_piper_training(paths.training_manifest, paths.work_dir, opts, progress)
+    if progress:
+        progress("export", 0.0, "训练完成，准备导出 ONNX")
+    model_dir = paths.work_dir / "onnx"
+    model_dir.mkdir(exist_ok=True, parents=True)
+    training.export_onnx(ckpt, model_dir, opts, progress)
+    if progress:
+        progress("export", 0.7, "ONNX 导出完成，准备生成预览")
+    preview_path = synth_preview(model_dir, opts)
+    if progress:
+        progress("export", 0.85, "预览处理完成，正在打包语音包")
+
+    voicepack_zip = packager.package_voicepack(
+        model_dir=model_dir,
+        out_zip=paths.voicepack_path,
+        opts=opts,
+        preview=preview_path,
+        phonemizer_dict=opts.phonemizer_dict,
+    )
+    if progress:
+        progress("export", 1.0, "导出与打包完成")
+    return PipelineResult(
+        manifest_path=model_dir / "manifest.json",
+        voicepack_path=voicepack_zip,
+        preview_path=preview_path,
+        training_log=paths.work_dir / "training.log",
+    )
+
+
+def run_voxcpm_distill_pipeline(
+    paths: ProjectPaths,
+    opts: TrainingOptions,
+    voxcpm_opts: VoxCpmDistillOptions,
+    progress: Optional[ProgressCallback] = None,
+) -> PipelineResult:
+    _ensure_dirs(paths)
+
+    voxcpm_distill.build_voxcpm_corpus(paths, voxcpm_opts, progress)
     training.write_preview_text(opts.text_sample, paths.work_dir / "preview.txt")
 
     ckpt = training.run_piper_training(paths.training_manifest, paths.work_dir, opts, progress)

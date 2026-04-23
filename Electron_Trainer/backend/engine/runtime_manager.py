@@ -32,13 +32,30 @@ CUDA_CONDA_PACKAGES = (
     "torchaudio=0.13.1",
     "pytorch-cuda=11.7",
 )
+VOXCPM_CONDA_PACKAGES = (
+    "python=3.10",
+    "pip",
+    "pytorch=2.5.1=py3.10_cuda12.4_cudnn9_0",
+    "torchvision=0.20.1=py310_cu124",
+    "torchaudio=2.5.1=py310_cu124",
+    "pytorch-cuda=12.4",
+)
 PIP_TOOLCHAIN_PACKAGES = (
     "pip==24.0",
     "setuptools==80.9.0",
     "wheel",
 )
+VOXCPM_PIP_PACKAGES = (
+    "voxcpm==2.0.2",
+    "modelscope",
+    "soundfile",
+)
 META_FILENAME = "runtime_meta.json"
 ENV_NAME = "piper_env_cuda"
+VOXCPM_ENV_NAME = "voxcpm_env"
+VOXCPM_META_FILENAME = "voxcpm_runtime_meta.json"
+VOXCPM_MAIN_REPO = "OpenBMB/VoxCPM2"
+VOXCPM_DENOISER_REPO = "iic/speech_zipenhancer_ans_multiloss_16k_base"
 
 
 def _app_dir() -> Path:
@@ -67,6 +84,10 @@ def _cuda_env_dir() -> Path:
     return _runtime_root() / ENV_NAME
 
 
+def _voxcpm_env_dir() -> Path:
+    return _runtime_root() / VOXCPM_ENV_NAME
+
+
 def _mamba_root_dir() -> Path:
     return _runtime_root() / "mamba-root"
 
@@ -79,10 +100,32 @@ def _runtime_meta_path() -> Path:
     return _runtime_root() / META_FILENAME
 
 
+def _voxcpm_runtime_meta_path() -> Path:
+    return _runtime_root() / VOXCPM_META_FILENAME
+
+
 def _cuda_python_path() -> Path:
     if os.name == "nt":
         return _cuda_env_dir() / "python.exe"
     return _cuda_env_dir() / "bin" / "python3"
+
+
+def _voxcpm_python_path() -> Path:
+    if os.name == "nt":
+        return _voxcpm_env_dir() / "python.exe"
+    return _voxcpm_env_dir() / "bin" / "python3"
+
+
+def _models_root() -> Path:
+    return _user_data_dir() / "models" / "voxcpm2"
+
+
+def _voxcpm_main_model_dir() -> Path:
+    return _models_root() / "OpenBMB" / "VoxCPM2"
+
+
+def _voxcpm_denoiser_model_dir() -> Path:
+    return _models_root() / "iic" / "speech_zipenhancer_ans_multiloss_16k_base"
 
 
 def _stage(progress: Optional[ProgressCallback], value: float, message: str) -> None:
@@ -152,6 +195,22 @@ def _read_meta() -> Dict[str, Any]:
 
 def _write_meta(payload: Dict[str, Any]) -> None:
     meta_path = _runtime_meta_path()
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _read_voxcpm_meta() -> Dict[str, Any]:
+    meta_path = _voxcpm_runtime_meta_path()
+    if not meta_path.exists():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _write_voxcpm_meta(payload: Dict[str, Any]) -> None:
+    meta_path = _voxcpm_runtime_meta_path()
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -252,7 +311,7 @@ def _probe_env_python(python_path: Path) -> Dict[str, Any]:
         "}; "
         "print(json.dumps(payload, ensure_ascii=False))"
     )
-    code, output = _run_command([str(python_path), "-c", probe_code], env=env, cwd=python_path.parent, timeout=60)
+    code, output = _run_command([str(python_path), "-c", probe_code], env=env, cwd=python_path.parent, timeout=240)
     if code != 0:
         raise RuntimeError(_trim_output(output) or "运行时探测失败")
     last_line = next((line for line in reversed(output.splitlines()) if line.strip()), "")
@@ -262,6 +321,33 @@ def _probe_env_python(python_path: Path) -> Dict[str, Any]:
         return json.loads(last_line)
     except Exception as exc:
         raise RuntimeError(f"运行时探测输出无法解析: {last_line}") from exc
+
+
+def _probe_voxcpm_env_python(python_path: Path) -> Dict[str, Any]:
+    env = _pip_env(python_path)
+    probe_code = (
+        "import json; "
+        "import importlib.metadata as md; "
+        "import torch; "
+        "payload = {"
+        "'torch_version': torch.__version__, "
+        "'torch_cuda_version': getattr(torch.version, 'cuda', None), "
+        "'cuda_available': bool(torch.cuda.is_available()), "
+        "'voxcpm_version': md.version('voxcpm'), "
+        "'modelscope_version': md.version('modelscope'), "
+        "}; "
+        "print(json.dumps(payload, ensure_ascii=False))"
+    )
+    code, output = _run_command([str(python_path), "-c", probe_code], env=env, cwd=python_path.parent, timeout=240)
+    if code != 0:
+        raise RuntimeError(_trim_output(output) or "VoxCPM2 运行时探测失败")
+    last_line = next((line for line in reversed(output.splitlines()) if line.strip()), "")
+    if not last_line:
+        raise RuntimeError("VoxCPM2 运行时探测无输出")
+    try:
+        return json.loads(last_line)
+    except Exception as exc:
+        raise RuntimeError(f"VoxCPM2 运行时探测输出无法解析: {last_line}") from exc
 
 
 def _build_status(
@@ -286,6 +372,31 @@ def _build_status(
         "local_wheel_dirs": [str(path) for path in _existing_local_wheel_dirs()],
     }
     payload.update(_read_meta())
+    payload.update(_probe_nvidia_smi())
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _build_voxcpm_runtime_status(
+    *,
+    available: bool,
+    status: str,
+    message: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "available": available,
+        "status": status,
+        "message": message,
+        "runtime_root": str(_runtime_root()),
+        "env_path": str(_voxcpm_env_dir()),
+        "python_path": str(_voxcpm_python_path()),
+        "micromamba_path": str(_micromamba_cache_path()),
+        "bundled_micromamba_path": str(_resolve_bundled_micromamba() or ""),
+    }
+    payload.update(_read_voxcpm_meta())
     payload.update(_probe_nvidia_smi())
     if extra:
         payload.update(extra)
@@ -341,6 +452,34 @@ def describe_piper_cuda_runtime() -> Dict[str, Any]:
     )
 
 
+def describe_voxcpm_runtime() -> Dict[str, Any]:
+    python_path = _voxcpm_python_path()
+    if not python_path.exists():
+        return _build_voxcpm_runtime_status(
+            available=False,
+            status="missing",
+            message="VoxCPM2 运行时未安装。",
+        )
+
+    try:
+        probe = _probe_voxcpm_env_python(python_path)
+    except Exception as exc:
+        return _build_voxcpm_runtime_status(
+            available=False,
+            status="error",
+            message=f"VoxCPM2 运行时存在但不可用：{exc}",
+        )
+
+    cuda_available = bool(probe.get("cuda_available"))
+    message = "VoxCPM2 运行时已就绪。" if cuda_available else "VoxCPM2 运行时已安装，但当前机器未检测到可用 CUDA，CPU 推理会非常慢。"
+    return _build_voxcpm_runtime_status(
+        available=True,
+        status="ready",
+        message=message,
+        extra=probe,
+    )
+
+
 def resolve_cuda_python() -> Optional[Path]:
     python_path = _cuda_python_path()
     if not python_path.exists():
@@ -352,14 +491,38 @@ def resolve_cuda_python() -> Optional[Path]:
     return python_path
 
 
+def resolve_voxcpm_python() -> Optional[Path]:
+    python_path = _voxcpm_python_path()
+    if not python_path.exists():
+        return None
+    try:
+        _probe_voxcpm_env_python(python_path)
+    except Exception:
+        return None
+    return python_path
+
+
+def get_voxcpm_python_path() -> Optional[Path]:
+    python_path = _voxcpm_python_path()
+    return python_path if python_path.exists() else None
+
+
 def _remove_existing_env() -> None:
     env_dir = _cuda_env_dir()
     if env_dir.exists():
         shutil.rmtree(env_dir, ignore_errors=True)
 
 
-def _run_micromamba_create(
+def _remove_existing_voxcpm_env() -> None:
+    env_dir = _voxcpm_env_dir()
+    if env_dir.exists():
+        shutil.rmtree(env_dir, ignore_errors=True)
+
+
+def _run_micromamba_create_env(
     micromamba_path: Path,
+    env_dir: Path,
+    packages: tuple[str, ...],
     channels: tuple[str, ...],
     *,
     progress: Optional[ProgressCallback],
@@ -374,8 +537,8 @@ def _run_micromamba_create(
         "-r",
         str(_mamba_root_dir()),
         "-p",
-        str(_cuda_env_dir()),
-        *CUDA_CONDA_PACKAGES,
+        str(env_dir),
+        *packages,
     ]
     for channel in channels:
         cmd.extend(["-c", channel])
@@ -385,6 +548,21 @@ def _run_micromamba_create(
         return True, output
     _stage(progress, 0.34, "Conda 依赖解析失败，准备切换源重试...")
     return False, output
+
+
+def _run_micromamba_create(
+    micromamba_path: Path,
+    channels: tuple[str, ...],
+    *,
+    progress: Optional[ProgressCallback],
+) -> tuple[bool, str]:
+    return _run_micromamba_create_env(
+        micromamba_path,
+        _cuda_env_dir(),
+        CUDA_CONDA_PACKAGES,
+        channels,
+        progress=progress,
+    )
 
 
 def _run_pip_install(
@@ -546,3 +724,239 @@ def install_piper_cuda_runtime(
     except Exception:
         _remove_existing_env()
         raise
+
+
+def install_voxcpm_runtime(
+    progress: Optional[ProgressCallback] = None,
+    *,
+    force: bool = False,
+) -> Dict[str, Any]:
+    status = describe_voxcpm_runtime()
+    if status.get("available") and not force:
+        return status
+
+    _runtime_root().mkdir(parents=True, exist_ok=True)
+    _mamba_root_dir().mkdir(parents=True, exist_ok=True)
+
+    micromamba_path = _ensure_micromamba(progress)
+    if force:
+        _stage(progress, 0.08, "清理旧的 VoxCPM2 运行时...")
+        _remove_existing_voxcpm_env()
+
+    create_output = ""
+    source_name = ""
+    try:
+        _remove_existing_voxcpm_env()
+        _stage(progress, 0.12, "使用国内镜像创建 VoxCPM2 CUDA 基础环境...")
+        domestic_ok, create_output = _run_micromamba_create_env(
+            micromamba_path,
+            _voxcpm_env_dir(),
+            VOXCPM_CONDA_PACKAGES,
+            DOMESTIC_CONDA_CHANNELS,
+            progress=progress,
+        )
+        if domestic_ok:
+            source_name = "domestic"
+        else:
+            _remove_existing_voxcpm_env()
+            _stage(progress, 0.18, "国内镜像不可用或缺包，回退官方源创建基础环境...")
+            official_ok, create_output = _run_micromamba_create_env(
+                micromamba_path,
+                _voxcpm_env_dir(),
+                VOXCPM_CONDA_PACKAGES,
+                OFFICIAL_CONDA_CHANNELS,
+                progress=progress,
+            )
+            if not official_ok:
+                raise RuntimeError(_trim_output(create_output) or "micromamba 创建 VoxCPM2 环境失败")
+            source_name = "official"
+
+        python_path = _voxcpm_python_path()
+        if not python_path.exists():
+            raise RuntimeError("VoxCPM2 基础环境创建完成，但未找到 python.exe")
+
+        ok, pip_output = _run_pip_install(
+            python_path,
+            [
+                "--index-url",
+                DOMESTIC_PYPI_INDEX,
+                "--extra-index-url",
+                OFFICIAL_PYPI_INDEX,
+                "--upgrade",
+                *PIP_TOOLCHAIN_PACKAGES,
+            ],
+            progress=progress,
+            label="正在准备 VoxCPM2 pip 工具链...",
+        )
+        if not ok:
+            ok, pip_output = _run_pip_install(
+                python_path,
+                [
+                    "--index-url",
+                    OFFICIAL_PYPI_INDEX,
+                    "--upgrade",
+                    *PIP_TOOLCHAIN_PACKAGES,
+                ],
+                progress=progress,
+                label="国内镜像升级 pip 失败，改用官方源重试...",
+            )
+            if not ok:
+                raise RuntimeError(_trim_output(pip_output) or "VoxCPM2 pip 工具链安装失败")
+
+        ok, pip_output = _run_pip_install(
+            python_path,
+            [
+                "--prefer-binary",
+                "--index-url",
+                DOMESTIC_PYPI_INDEX,
+                "--extra-index-url",
+                OFFICIAL_PYPI_INDEX,
+                *VOXCPM_PIP_PACKAGES,
+            ],
+            progress=progress,
+            label="使用国内镜像安装 VoxCPM2 依赖...",
+        )
+        if not ok:
+            ok, pip_output = _run_pip_install(
+                python_path,
+                [
+                    "--prefer-binary",
+                    "--index-url",
+                    OFFICIAL_PYPI_INDEX,
+                    *VOXCPM_PIP_PACKAGES,
+                ],
+                progress=progress,
+                label="国内镜像安装依赖失败，改用官方源重试...",
+            )
+            if not ok:
+                raise RuntimeError(_trim_output(pip_output) or "VoxCPM2 依赖安装失败")
+
+        _stage(progress, 0.9, "校验 VoxCPM2 运行时...")
+        probe = _probe_voxcpm_env_python(python_path)
+        _write_voxcpm_meta(
+            {
+                "source": source_name,
+                "installed_with": "micromamba",
+                "micromamba_path": str(micromamba_path),
+                "installed_env_path": str(_voxcpm_env_dir()),
+            }
+        )
+        _stage(progress, 1.0, "VoxCPM2 运行时已准备完成。")
+        return _build_voxcpm_runtime_status(
+            available=True,
+            status="ready",
+            message="VoxCPM2 运行时已准备完成。",
+            extra=probe,
+        )
+    except Exception:
+        _remove_existing_voxcpm_env()
+        raise
+
+
+def _looks_like_model_dir(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    markers = [
+        "config.json",
+        "configuration.json",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+    ]
+    if any((path / marker).exists() for marker in markers):
+        return True
+    suffixes = {".safetensors", ".bin", ".pt", ".pth", ".onnx"}
+    return any(item.is_file() and item.suffix.lower() in suffixes for item in path.rglob("*"))
+
+
+def describe_voxcpm_models() -> Dict[str, Any]:
+    main_dir = _voxcpm_main_model_dir()
+    denoiser_dir = _voxcpm_denoiser_model_dir()
+    main_available = _looks_like_model_dir(main_dir)
+    denoiser_available = _looks_like_model_dir(denoiser_dir)
+    if main_available and denoiser_available:
+        message = "VoxCPM2 主模型和 denoiser 已就绪。"
+    elif main_available:
+        message = "VoxCPM2 主模型已就绪，denoiser 未下载。"
+    else:
+        message = "VoxCPM2 模型未下载。"
+    return {
+        "ok": True,
+        "main_available": main_available,
+        "denoiser_available": denoiser_available,
+        "message": message,
+        "model_root": str(_models_root()),
+        "main_model_dir": str(main_dir),
+        "denoiser_model_dir": str(denoiser_dir),
+        "main_repo": VOXCPM_MAIN_REPO,
+        "denoiser_repo": VOXCPM_DENOISER_REPO,
+    }
+
+
+def _download_modelscope_repo(
+    python_path: Path,
+    repo_id: str,
+    target_dir: Path,
+    *,
+    progress: Optional[ProgressCallback],
+    progress_value: float,
+) -> tuple[bool, str]:
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    script = (
+        "import sys; "
+        "from modelscope import snapshot_download; "
+        "repo_id = sys.argv[1]; target = sys.argv[2]; "
+        "snapshot_download(model_id=repo_id, local_dir=target)"
+    )
+    _stage(progress, progress_value, f"正在从 ModelScope 下载 {repo_id}...")
+    code, output = _run_command(
+        [str(python_path), "-c", script, repo_id, str(target_dir)],
+        env=_pip_env(python_path),
+        cwd=_models_root(),
+        timeout=86400,
+    )
+    return code == 0, output
+
+
+def download_voxcpm_models(
+    progress: Optional[ProgressCallback] = None,
+    *,
+    include_denoiser: bool = True,
+    force: bool = False,
+) -> Dict[str, Any]:
+    python_path = resolve_voxcpm_python()
+    if python_path is None:
+        raise RuntimeError("VoxCPM2 运行时未就绪，请先安装运行时。")
+
+    _models_root().mkdir(parents=True, exist_ok=True)
+    targets = [(VOXCPM_MAIN_REPO, _voxcpm_main_model_dir())]
+    if include_denoiser:
+        targets.append((VOXCPM_DENOISER_REPO, _voxcpm_denoiser_model_dir()))
+
+    if force:
+        for _, target in targets:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+
+    status = describe_voxcpm_models()
+    if status.get("main_available") and (not include_denoiser or status.get("denoiser_available")) and not force:
+        return status
+
+    for index, (repo_id, target) in enumerate(targets, start=1):
+        ok, output = _download_modelscope_repo(
+            python_path,
+            repo_id,
+            target,
+            progress=progress,
+            progress_value=0.15 + 0.75 * ((index - 1) / max(1, len(targets))),
+        )
+        if not ok:
+            raise RuntimeError(_trim_output(output) or f"ModelScope 下载失败: {repo_id}")
+        _stage(progress, 0.15 + 0.75 * (index / max(1, len(targets))), f"{repo_id} 下载完成。")
+
+    final_status = describe_voxcpm_models()
+    if not final_status.get("main_available"):
+        raise RuntimeError("VoxCPM2 主模型下载完成后仍不可用，请检查模型目录。")
+    if include_denoiser and not final_status.get("denoiser_available"):
+        raise RuntimeError("VoxCPM2 denoiser 下载完成后仍不可用，请检查模型目录。")
+    _stage(progress, 1.0, "VoxCPM2 模型已准备完成。")
+    return final_status

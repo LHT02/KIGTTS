@@ -1,13 +1,14 @@
 export {}
 
 declare global {
-  type TrainingMode = 'piper' | 'gsv_distill'
+  type TrainingMode = 'piper' | 'gsv_distill' | 'voxcpm_distill'
 
   type PipelineStage =
     | 'idle'
     | 'runtime'
     | 'collect'
     | 'distill'
+    | 'synth'
     | 'preprocess'
     | 'vad'
     | 'asr'
@@ -79,6 +80,23 @@ declare global {
     text_sources: DistillTextSource[]
   }
 
+  type VoxCpmDistillOptions = {
+    device: 'cpu' | 'cuda'
+    allow_cpu_fallback: boolean
+    voice_description: string
+    reference_audio: string
+    cfg_value: number
+    inference_timesteps: number
+    min_len: number
+    max_len: number
+    normalize: boolean
+    denoise: boolean
+    retry_badcase: boolean
+    retry_badcase_max_times: number
+    retry_badcase_ratio_threshold: number
+    text_sources: DistillTextSource[]
+  }
+
   type PiperCudaRuntimeStatus = {
     ok: boolean
     available: boolean
@@ -104,6 +122,41 @@ declare global {
     driver_version?: string
     gpu_name?: string
     gpu_memory?: string
+  }
+
+  type VoxCpmRuntimeStatus = {
+    ok: boolean
+    available: boolean
+    status: 'missing' | 'ready' | 'error'
+    message: string
+    runtime_root: string
+    env_path: string
+    python_path: string
+    micromamba_path: string
+    bundled_micromamba_path?: string
+    source?: string
+    installed_with?: string
+    torch_version?: string
+    torch_cuda_version?: string | null
+    voxcpm_version?: string
+    modelscope_version?: string
+    cuda_available?: boolean
+    nvidia_smi_path?: string
+    driver_version?: string
+    gpu_name?: string
+    gpu_memory?: string
+  }
+
+  type VoxCpmModelStatus = {
+    ok: boolean
+    main_available: boolean
+    denoiser_available: boolean
+    message: string
+    model_root: string
+    main_model_dir: string
+    denoiser_model_dir: string
+    main_repo: string
+    denoiser_repo: string
   }
 
   type BackendResponsePayload = {
