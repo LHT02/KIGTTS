@@ -87,10 +87,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.camera.core.CameraSelector
@@ -159,8 +161,10 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -171,7 +175,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Shape
@@ -275,6 +281,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.recyclerview.widget.ItemTouchHelper
@@ -8716,7 +8723,7 @@ fun AppScaffold(viewModel: MainViewModel) {
             soundboardSubPageOpen -> {
                 soundboardNavController.popBackStack(SoundboardRoutes.Main, inclusive = false)
             }
-            settingsLogOpen -> {
+            settingsLogOpen || settingsLicensesOpen || settingsPrivacyOpen -> {
                 settingsNavController.popBackStack(SettingsRoutes.Main, inclusive = false)
             }
             quickCardEditorOpen -> {
@@ -9078,7 +9085,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                         targetState = when {
                             quickSubtitleSubPageOpen -> 1
                             soundboardSubPageOpen -> 2
-                            settingsLogOpen -> 3
+                            settingsLogOpen || settingsLicensesOpen || settingsPrivacyOpen -> 3
                             quickCardSubPageOpen -> 4
                             else -> 0
                         },
@@ -9821,7 +9828,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 .fillMaxHeight()
                                 .graphicsLayer { clip = true }
                                 .zIndex(0f)
-                                .padding(start = animatedContentStartPadding, end = landscapeCutoutEnd)
+                                .padding(start = animatedContentStartPadding, end = landscapeChromeEndInset)
                         )
                     }
 
@@ -9958,7 +9965,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                             Modifier
                                 .fillMaxSize()
                                 .padding(innerPadding)
-                                .padding(start = landscapeCutoutStart, end = landscapeCutoutEnd)
+                                .padding(start = landscapeChromeStartInset, end = landscapeChromeEndInset)
                         )
                     }
                 }
@@ -17269,19 +17276,20 @@ fun SettingsScreen(
         avatarRes: Int,
         name: String,
         homepage: String,
-        modifier: Modifier = Modifier
+        modifier: Modifier = Modifier,
+        avatarSize: Dp = 54.dp
     ) {
         Row(
             modifier = modifier,
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Image(
                 painter = androidx.compose.ui.res.painterResource(id = avatarRes),
                 contentDescription = name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(avatarSize)
                     .clip(CircleShape)
                     .border(
                         width = 1.dp,
@@ -17289,25 +17297,19 @@ fun SettingsScreen(
                         shape = CircleShape
                     )
             )
-            Row(
+            Text(
+                text = name,
                 modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = name,
-                    modifier = Modifier.weight(1f),
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) {
+                Md2IconButton(
+                    icon = "open_in_new",
+                    contentDescription = "打开${name}主页",
+                    onClick = { openExternalPage(homepage) }
                 )
-                CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) {
-                    Md2IconButton(
-                        icon = "open_in_new",
-                        contentDescription = "打开${name}主页",
-                        onClick = { openExternalPage(homepage) }
-                    )
-                }
             }
         }
     }
@@ -17348,6 +17350,8 @@ fun SettingsScreen(
 
     @Composable
     fun AboutSettingsContent() {
+        val configuration = LocalConfiguration.current
+        val isPortrait = configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
         val packageInfo = remember(context) {
             runCatching {
                 context.packageManager.getPackageInfo(context.packageName, 0)
@@ -17367,19 +17371,26 @@ fun SettingsScreen(
         }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Md2StaggeredFloatIn(index = 0) {
-                Md2SettingsCard(title = "KIGTTS") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.CardElevation
+                ) {
                     val logoRes = if (isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
                     Column(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Image(
                             painter = androidx.compose.ui.res.painterResource(id = logoRes),
                             contentDescription = "KIGTTS Logo",
                             modifier = Modifier
-                                .fillMaxWidth(0.72f)
-                                .height(42.dp),
+                                .fillMaxWidth(0.82f)
+                                .height(50.dp),
                             contentScale = ContentScale.Fit
                         )
                         Text(
@@ -17393,40 +17404,83 @@ fun SettingsScreen(
 
             Md2StaggeredFloatIn(index = 1) {
                 Md2SettingsCard(title = "软件制作") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        AboutContributorItem(
-                            avatarRes = R.drawable.avatar_lht,
-                            name = "LHT",
-                            homepage = "https://www.bilibili.com/space/87244951",
-                            modifier = Modifier.weight(1f)
-                        )
-                        AboutContributorItem(
-                            avatarRes = R.drawable.avatar_yuilu,
-                            name = "Yui Lu",
-                            homepage = "https://www.bilibili.com/space/573842321",
-                            modifier = Modifier.weight(1f)
-                        )
-                        AboutContributorItem(
-                            avatarRes = R.drawable.avatar_huajiang,
-                            name = "花酱",
-                            homepage = "https://www.bilibili.com/space/573842321",
-                            modifier = Modifier.weight(1f)
-                        )
+                    if (isPortrait) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_lht,
+                                name = "LHT",
+                                homepage = "https://www.bilibili.com/space/87244951",
+                                modifier = Modifier.fillMaxWidth(),
+                                avatarSize = 60.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_yuilu,
+                                name = "Yui Lu",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.fillMaxWidth(),
+                                avatarSize = 60.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_huajiang,
+                                name = "花酱",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.fillMaxWidth(),
+                                avatarSize = 60.dp
+                            )
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_lht,
+                                name = "LHT",
+                                homepage = "https://www.bilibili.com/space/87244951",
+                                modifier = Modifier.weight(1f),
+                                avatarSize = 48.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_yuilu,
+                                name = "Yui Lu",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.weight(1f),
+                                avatarSize = 48.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_huajiang,
+                                name = "花酱",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.weight(1f),
+                                avatarSize = 48.dp
+                            )
+                        }
                     }
                 }
             }
 
             Md2StaggeredFloatIn(index = 2) {
-                Md2SettingsCard(title = "文档与政策") {
-                    AboutDocumentRow(title = "开源许可证", onClick = onOpenLicenses)
-                    AboutDocumentRow(
-                        title = "隐私政策",
-                        onClick = onOpenPrivacy,
-                        showDivider = false
-                    )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.CardElevation
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        AboutDocumentRow(
+                            title = "开源许可证",
+                            onClick = onOpenLicenses,
+                            showDivider = false
+                        )
+                        AboutDocumentRow(
+                            title = "隐私政策",
+                            onClick = onOpenPrivacy,
+                            showDivider = false
+                        )
+                    }
                 }
             }
         }
@@ -18431,41 +18485,558 @@ fun LogScreen(
 @Composable
 private fun LegalDocumentScreen(assetPath: String) {
     val context = LocalContext.current
-    val scroll = rememberScrollState()
-    val documentText by produceState(initialValue = "加载中...", assetPath) {
-        value = withContext(Dispatchers.IO) {
+    val listState = rememberLazyListState()
+    val legalBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 8.dp
+    val markdownBlocks = remember(assetPath) { mutableStateListOf<MarkdownBlock>() }
+    var isParsing by remember(assetPath) { mutableStateOf(true) }
+
+    LaunchedEffect(assetPath) {
+        isParsing = true
+        markdownBlocks.clear()
+        val documentText = withContext(Dispatchers.IO) {
             runCatching {
                 context.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    .removePrefix("\uFEFF")
             }.getOrElse {
                 "文档加载失败：${it.message ?: "未知错误"}"
             }
         }
+        var emittedAny = false
+        withContext(Dispatchers.Default) {
+            parseMarkdownBlocksStreaming(documentText, chunkSize = 24) { chunk ->
+                withContext(Dispatchers.Main) {
+                    markdownBlocks.addAll(chunk)
+                    if (!emittedAny) {
+                        emittedAny = true
+                        isParsing = false
+                    }
+                }
+            }
+        }
+        if (!emittedAny) {
+            markdownBlocks += MarkdownBlock.Paragraph("暂无内容")
+        }
+        isParsing = false
+    }
+    fun openExternalUrl(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }.onFailure {
+            toast(context, "打开链接失败")
+        }
+    }
+    CenteredPageBox(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = UiTokens.PageTopBlank, bottom = legalBottomPadding),
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(14.dp)
+            ) {
+                if (markdownBlocks.isEmpty() && isParsing) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                itemsIndexed(markdownBlocks) { _, block ->
+                    MarkdownBlockView(
+                        block = block,
+                        onOpenUrl = ::openExternalUrl
+                    )
+                }
+                if (isParsing && markdownBlocks.isNotEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 2.5.dp,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private sealed interface MarkdownBlock {
+    data class Heading(val level: Int, val text: String) : MarkdownBlock
+    data class Paragraph(val text: String) : MarkdownBlock
+    data class ListBlock(
+        val items: List<String>,
+        val ordered: Boolean,
+        val startIndex: Int = 1
+    ) : MarkdownBlock
+    data class CodeFence(val code: String) : MarkdownBlock
+    data object Divider : MarkdownBlock
+}
+
+private fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
+    val blocks = mutableListOf<MarkdownBlock>()
+    val lines = markdown.replace("\r\n", "\n").split('\n')
+    val paragraphLines = mutableListOf<String>()
+
+    fun flushParagraph() {
+        if (paragraphLines.isEmpty()) return
+        val text = paragraphLines.joinToString(" ") { it.trim() }
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (text.isNotEmpty()) {
+            blocks += MarkdownBlock.Paragraph(text)
+        }
+        paragraphLines.clear()
     }
 
-    CenteredPageColumn(
-        maxWidth = UiTokens.WideContentMaxWidth,
-        scroll = scroll
-    ) {
-        Spacer(Modifier.height(UiTokens.PageTopBlank))
-        Md2StaggeredFloatIn(index = 0) {
+    var index = 0
+    while (index < lines.size) {
+        val rawLine = lines[index]
+        val trimmed = rawLine.trim()
+
+        if (trimmed.startsWith("```")) {
+            flushParagraph()
+            val codeLines = mutableListOf<String>()
+            index++
+            while (index < lines.size && !lines[index].trim().startsWith("```")) {
+                codeLines += lines[index]
+                index++
+            }
+            blocks += MarkdownBlock.CodeFence(codeLines.joinToString("\n").trimEnd())
+            index++
+            continue
+        }
+
+        if (trimmed.isBlank()) {
+            flushParagraph()
+            index++
+            continue
+        }
+
+        val headingMatch = Regex("^(#{1,6})\\s+(.+)$").matchEntire(trimmed)
+        if (headingMatch != null) {
+            flushParagraph()
+            blocks += MarkdownBlock.Heading(
+                level = headingMatch.groupValues[1].length,
+                text = headingMatch.groupValues[2].trim()
+            )
+            index++
+            continue
+        }
+
+        if (trimmed.matches(Regex("^([-*_])\\1{2,}$"))) {
+            flushParagraph()
+            blocks += MarkdownBlock.Divider
+            index++
+            continue
+        }
+
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            flushParagraph()
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                if (listLine.startsWith("- ") || listLine.startsWith("* ")) {
+                    items += listLine.substring(2).trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                blocks += MarkdownBlock.ListBlock(items = items, ordered = false)
+            }
+            continue
+        }
+
+        val orderedMatch = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(trimmed)
+        if (orderedMatch != null) {
+            flushParagraph()
+            val startIndex = orderedMatch.groupValues[1].toIntOrNull() ?: 1
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                val match = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(listLine)
+                if (match != null) {
+                    items += match.groupValues[2].trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                blocks += MarkdownBlock.ListBlock(items = items, ordered = true, startIndex = startIndex)
+            }
+            continue
+        }
+
+        paragraphLines += rawLine
+        index++
+    }
+
+    flushParagraph()
+    return blocks
+}
+
+private data class MarkdownColors(
+    val text: Color,
+    val heading: Color,
+    val link: Color,
+    val code: Color,
+    val codeBackground: Color,
+    val codeBlockBackground: Color,
+    val divider: Color,
+    val hint: Color
+)
+
+private suspend fun parseMarkdownBlocksStreaming(
+    markdown: String,
+    chunkSize: Int,
+    onChunk: suspend (List<MarkdownBlock>) -> Unit
+) {
+    val lines = markdown.replace("\r\n", "\n").split('\n')
+    val paragraphLines = mutableListOf<String>()
+    val pendingBlocks = mutableListOf<MarkdownBlock>()
+
+    suspend fun emitBlock(block: MarkdownBlock) {
+        pendingBlocks += block
+        if (pendingBlocks.size >= chunkSize) {
+            onChunk(pendingBlocks.toList())
+            pendingBlocks.clear()
+            yield()
+        }
+    }
+
+    suspend fun flushParagraph() {
+        if (paragraphLines.isEmpty()) return
+        val text = paragraphLines.joinToString(" ") { it.trim() }
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (text.isNotEmpty()) {
+            emitBlock(MarkdownBlock.Paragraph(text))
+        }
+        paragraphLines.clear()
+    }
+
+    var index = 0
+    while (index < lines.size) {
+        val rawLine = lines[index]
+        val trimmed = rawLine.trim()
+
+        if (trimmed.startsWith("```")) {
+            flushParagraph()
+            val codeLines = mutableListOf<String>()
+            index++
+            while (index < lines.size && !lines[index].trim().startsWith("```")) {
+                codeLines += lines[index]
+                index++
+            }
+            emitBlock(MarkdownBlock.CodeFence(codeLines.joinToString("\n").trimEnd()))
+            index++
+            continue
+        }
+
+        if (trimmed.isBlank()) {
+            flushParagraph()
+            index++
+            continue
+        }
+
+        val headingMatch = Regex("^(#{1,6})\\s+(.+)$").matchEntire(trimmed)
+        if (headingMatch != null) {
+            flushParagraph()
+            emitBlock(
+                MarkdownBlock.Heading(
+                    level = headingMatch.groupValues[1].length,
+                    text = headingMatch.groupValues[2].trim()
+                )
+            )
+            index++
+            continue
+        }
+
+        if (trimmed.matches(Regex("^([-*_])\\1{2,}$"))) {
+            flushParagraph()
+            emitBlock(MarkdownBlock.Divider)
+            index++
+            continue
+        }
+
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            flushParagraph()
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                if (listLine.startsWith("- ") || listLine.startsWith("* ")) {
+                    items += listLine.substring(2).trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                emitBlock(MarkdownBlock.ListBlock(items = items, ordered = false))
+            }
+            continue
+        }
+
+        val orderedMatch = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(trimmed)
+        if (orderedMatch != null) {
+            flushParagraph()
+            val startIndex = orderedMatch.groupValues[1].toIntOrNull() ?: 1
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                val match = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(listLine)
+                if (match != null) {
+                    items += match.groupValues[2].trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                emitBlock(
+                    MarkdownBlock.ListBlock(
+                        items = items,
+                        ordered = true,
+                        startIndex = startIndex
+                    )
+                )
+            }
+            continue
+        }
+
+        paragraphLines += rawLine
+        index++
+    }
+
+    flushParagraph()
+    if (pendingBlocks.isNotEmpty()) {
+        onChunk(pendingBlocks.toList())
+    }
+}
+
+@Composable
+private fun MarkdownBlockView(
+    block: MarkdownBlock,
+    onOpenUrl: (String) -> Unit
+) {
+    val dark = isSystemInDarkTheme()
+    val colors = remember(dark) {
+        MarkdownColors(
+            text = if (dark) Color(0xFFE5ECEF) else Color(0xFF1B1F22),
+            heading = if (dark) Color(0xFFF4FAFC) else Color(0xFF101417),
+            link = if (dark) Color(0xFF7FD7F1) else Color(0xFF007C91),
+            code = if (dark) Color(0xFFF5F7F9) else Color(0xFF1D252B),
+            codeBackground = if (dark) Color(0xFF24313A) else Color(0xFFE8EEF2),
+            codeBlockBackground = if (dark) Color(0xFF1A232A) else Color(0xFFF3F6F8),
+            divider = if (dark) Color(0xFF45525A) else Color(0xFFD6DEE3),
+            hint = if (dark) Color(0xFF9FB0BA) else Color(0xFF687780)
+        )
+    }
+    when (block) {
+        is MarkdownBlock.Heading -> {
+            val style = when (block.level) {
+                1 -> MaterialTheme.typography.h5.copy(color = colors.heading)
+                2 -> MaterialTheme.typography.h6.copy(color = colors.heading)
+                3 -> MaterialTheme.typography.subtitle1.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.heading
+                )
+                else -> MaterialTheme.typography.body1.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.heading
+                )
+            }
+            MarkdownText(
+                text = block.text,
+                style = style,
+                colors = colors,
+                onOpenUrl = onOpenUrl
+            )
+        }
+
+        is MarkdownBlock.Paragraph -> {
+            MarkdownText(
+                text = block.text,
+                style = MaterialTheme.typography.body2.copy(
+                    lineHeight = 20.sp,
+                    color = colors.text
+                ),
+                colors = colors,
+                onOpenUrl = onOpenUrl
+            )
+        }
+
+        is MarkdownBlock.ListBlock -> {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                block.items.forEachIndexed { itemIndex, item ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (block.ordered) "${block.startIndex + itemIndex}." else "•",
+                            style = MaterialTheme.typography.body2.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                lineHeight = 20.sp,
+                                color = colors.heading
+                            ),
+                            modifier = Modifier.padding(top = 1.dp)
+                        )
+                        MarkdownText(
+                            text = item,
+                            style = MaterialTheme.typography.body2.copy(
+                                lineHeight = 20.sp,
+                                color = colors.text
+                            ),
+                            modifier = Modifier.weight(1f),
+                            colors = colors,
+                            onOpenUrl = onOpenUrl
+                        )
+                    }
+                }
+            }
+        }
+
+        is MarkdownBlock.CodeFence -> {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(UiTokens.Radius),
-                backgroundColor = md2CardContainerColor(),
-                elevation = UiTokens.CardElevation
+                shape = RoundedCornerShape(8.dp),
+                backgroundColor = colors.codeBlockBackground,
+                elevation = 0.dp
             ) {
                 SelectionContainer(
-                    modifier = Modifier.padding(14.dp)
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                 ) {
                     Text(
-                        text = documentText,
-                        style = MaterialTheme.typography.bodySmall,
-                        lineHeight = 20.sp
+                        text = block.code,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = colors.code,
+                            fontFamily = FontFamily.Monospace,
+                            lineHeight = 20.sp
+                        )
                     )
                 }
             }
         }
-        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+
+        MarkdownBlock.Divider -> Divider(color = colors.divider)
+    }
+}
+
+@Composable
+private fun MarkdownText(
+    text: String,
+    style: TextStyle,
+    colors: MarkdownColors,
+    onOpenUrl: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val annotated = remember(text, colors) {
+        buildMarkdownAnnotatedString(
+            text = text,
+            linkColor = colors.link,
+            codeColor = colors.code,
+            codeBackground = colors.codeBackground
+        )
+    }
+    ClickableText(
+        text = annotated,
+        modifier = modifier,
+        style = style,
+        onClick = { offset ->
+            annotated
+                .getStringAnnotations(tag = "URL", start = offset, end = offset)
+                .firstOrNull()
+                ?.let { onOpenUrl(it.item) }
+        }
+    )
+}
+
+private fun buildMarkdownAnnotatedString(
+    text: String,
+    linkColor: Color,
+    codeColor: Color,
+    codeBackground: Color
+): AnnotatedString = buildAnnotatedString {
+    var index = 0
+    while (index < text.length) {
+        val linkMatch = Regex("""^\[([^\]]+)]\((https?://[^)]+)\)""").find(text.substring(index))
+        if (linkMatch != null && linkMatch.range.first == 0) {
+            val label = linkMatch.groupValues[1]
+            val url = linkMatch.groupValues[2]
+            pushStringAnnotation(tag = "URL", annotation = url)
+            withStyle(
+                SpanStyle(
+                    color = linkColor,
+                    textDecoration = TextDecoration.Underline
+                )
+            ) {
+                append(label)
+            }
+            pop()
+            index += linkMatch.value.length
+            continue
+        }
+
+        if (text.startsWith("**", index)) {
+            val end = text.indexOf("**", startIndex = index + 2)
+            if (end > index + 2) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                    append(text.substring(index + 2, end))
+                }
+                index = end + 2
+                continue
+            }
+        }
+
+        if (text[index] == '`') {
+            val end = text.indexOf('`', startIndex = index + 1)
+            if (end > index + 1) {
+                withStyle(
+                    SpanStyle(
+                        color = codeColor,
+                        background = codeBackground,
+                        fontFamily = FontFamily.Monospace
+                    )
+                ) {
+                    append(text.substring(index + 1, end))
+                }
+                index = end + 1
+                continue
+            }
+        }
+
+        append(text[index])
+        index++
     }
 }
 
