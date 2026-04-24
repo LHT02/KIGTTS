@@ -1010,7 +1010,7 @@ class MainViewModel(
         private set
     var soundboardPlaybackStates by mutableStateOf<Map<Long, SoundboardPlaybackState>>(emptyMap())
         private set
-    var settingsSelectedCategoryName by mutableStateOf(SettingsCategory.Resources.name)
+    var settingsSelectedCategoryName by mutableStateOf(SettingsCategory.Recognition.name)
         private set
     var quickCards by mutableStateOf<List<QuickCard>>(emptyList())
         private set
@@ -7315,6 +7315,8 @@ private object QuickCardRoutes {
 private object SettingsRoutes {
     const val Main = "settings/main"
     const val Log = "settings/log"
+    const val Licenses = "settings/licenses"
+    const val Privacy = "settings/privacy"
 }
 
 private val SoundboardAudioFileExtensions = setOf(
@@ -8192,10 +8194,10 @@ private fun Md2SettingDropdownRow(
 }
 
 enum class SettingsCategory(val title: String, val icon: String) {
-    Resources("资源", "inventory_2"),
     Recognition("识别", "graphic_eq"),
     Audio("音频", "volume_up"),
-    System("系统", "tune")
+    System("系统", "tune"),
+    About("关于", "info")
 }
 
 @Composable
@@ -8473,6 +8475,10 @@ fun AppScaffold(viewModel: MainViewModel) {
         basePage == pageQuickCard && quickCardRoute != QuickCardRoutes.Main
     val settingsLogOpen =
         basePage == pageSettings && settingsRoute == SettingsRoutes.Log
+    val settingsLicensesOpen =
+        basePage == pageSettings && settingsRoute == SettingsRoutes.Licenses
+    val settingsPrivacyOpen =
+        basePage == pageSettings && settingsRoute == SettingsRoutes.Privacy
     var lastTopBarBackClickAtMs by remember { mutableLongStateOf(0L) }
     var drawerExpanded by rememberSaveable { mutableStateOf(false) }
     val runningStripEligible = !(drawingFullscreen && basePage == pageDrawing)
@@ -8993,6 +8999,10 @@ fun AppScaffold(viewModel: MainViewModel) {
             "二维码网页"
         } else if (settingsLogOpen) {
             "日志"
+        } else if (settingsLicensesOpen) {
+            "开源许可证"
+        } else if (settingsPrivacyOpen) {
+            "隐私政策"
         } else {
             when (basePage) {
                 pageQuickSubtitle -> "便捷字幕"
@@ -9119,7 +9129,8 @@ fun AppScaffold(viewModel: MainViewModel) {
                         basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Web
                     val showDrawingActions = basePage == pageDrawing
                     val showVoicePackActions = basePage == pageVoicePack
-                    val showSettingsEntryActions = basePage == pageSettings && !settingsLogOpen
+                    val showSettingsEntryActions =
+                        basePage == pageSettings && settingsRoute == SettingsRoutes.Main
                     val showSettingsLogActions = basePage == pageSettings && settingsLogOpen
                     val settingsActions = logTopBarActions
 
@@ -10087,8 +10098,8 @@ fun ModelScreen(state: UiState) {
             elevation = UiTokens.CardElevation
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("ASR 模型导入已迁移", fontWeight = FontWeight.SemiBold)
-                Text("请前往“设置 > 模型与资源”导入或替换 ASR 模型。")
+                Text("ASR 模型已由应用内置与自动管理", fontWeight = FontWeight.SemiBold)
+                Text("当前 Android 版本默认随应用提供内置 ASR 资源，无需再通过设置页单独导入。")
                 Spacer(Modifier.height(8.dp))
                 Text("当前 ASR 路径：", style = MaterialTheme.typography.labelSmall)
                 Text(state.asrDir?.absolutePath ?: "未导入")
@@ -12696,13 +12707,14 @@ private fun SettingsNavHost(
     state: UiState,
     onTopBarActionsChange: (LogTopBarActions?) -> Unit
 ) {
+    fun isSettingsSubPage(route: String?): Boolean = route != null && route != SettingsRoutes.Main
     NavHost(
         navController = navController,
         startDestination = SettingsRoutes.Main,
         modifier = Modifier.fillMaxSize(),
         enterTransition = {
             if (initialState.destination.route == SettingsRoutes.Main &&
-                targetState.destination.route == SettingsRoutes.Log
+                isSettingsSubPage(targetState.destination.route)
             ) {
                 fadeIn(animationSpec = tween(170)) +
                         androidx.compose.animation.slideInHorizontally(
@@ -12715,7 +12727,7 @@ private fun SettingsNavHost(
         },
         exitTransition = {
             if (initialState.destination.route == SettingsRoutes.Main &&
-                targetState.destination.route == SettingsRoutes.Log
+                isSettingsSubPage(targetState.destination.route)
             ) {
                 fadeOut(animationSpec = tween(120)) +
                         androidx.compose.animation.slideOutHorizontally(
@@ -12727,7 +12739,7 @@ private fun SettingsNavHost(
             }
         },
         popEnterTransition = {
-            if (initialState.destination.route == SettingsRoutes.Log &&
+            if (isSettingsSubPage(initialState.destination.route) &&
                 targetState.destination.route == SettingsRoutes.Main
             ) {
                 fadeIn(animationSpec = tween(150)) +
@@ -12740,7 +12752,7 @@ private fun SettingsNavHost(
             }
         },
         popExitTransition = {
-            if (initialState.destination.route == SettingsRoutes.Log &&
+            if (isSettingsSubPage(initialState.destination.route) &&
                 targetState.destination.route == SettingsRoutes.Main
             ) {
                 fadeOut(animationSpec = tween(120)) +
@@ -12754,10 +12766,29 @@ private fun SettingsNavHost(
         }
     ) {
         composable(SettingsRoutes.Main) {
-            SettingsScreen(viewModel, state)
+            SettingsScreen(
+                viewModel = viewModel,
+                state = state,
+                onOpenLicenses = {
+                    navController.navigate(SettingsRoutes.Licenses) { launchSingleTop = true }
+                },
+                onOpenPrivacy = {
+                    navController.navigate(SettingsRoutes.Privacy) { launchSingleTop = true }
+                }
+            )
         }
         composable(SettingsRoutes.Log) {
             LogScreen(onTopBarActionsChange = onTopBarActionsChange)
+        }
+        composable(SettingsRoutes.Licenses) {
+            LegalDocumentScreen(
+                assetPath = "legal/open_source_licenses.md"
+            )
+        }
+        composable(SettingsRoutes.Privacy) {
+            LegalDocumentScreen(
+                assetPath = "legal/privacy_policy.md"
+            )
         }
     }
 }
@@ -17069,7 +17100,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStrokeOnBoard(
 }
 
 @Composable
-fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
+fun SettingsScreen(
+    viewModel: MainViewModel,
+    state: UiState,
+    onOpenLicenses: () -> Unit,
+    onOpenPrivacy: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
@@ -17115,7 +17151,6 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     var speakerEnrollMessage by remember { mutableStateOf("") }
     var speakerEnrollRetryDialog by remember { mutableStateOf(false) }
     var speakerEnrollOpenedByToggle by remember { mutableStateOf(false) }
-    var showBuiltinAsrPicker by remember { mutableStateOf(false) }
     val speakerEnrollTexts = remember {
         listOf(
             "清晨的风吹过脸颊，我大步沿着河边走。",
@@ -17124,14 +17159,22 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         )
     }
     val speakerEnrollSamples = remember { mutableStateListOf<FloatArray?>() }
-    val asrPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) viewModel.importAsr(uri) else toast(context, "未选择文件")
-    }
     val drawingDirPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             viewModel.setDrawingSavePathFromTreeUri(uri)
         } else {
             toast(context, "未选择目录")
+        }
+    }
+    fun openExternalPage(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }.onFailure {
+            toast(context, "打开主页失败")
         }
     }
     fun startSpeakerEnrollStepCapture(step: Int) {
@@ -17222,21 +17265,168 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     }
 
     @Composable
-    fun ResourceSettingsContent() {
+    fun AboutContributorItem(
+        avatarRes: Int,
+        name: String,
+        homepage: String,
+        modifier: Modifier = Modifier
+    ) {
+        Row(
+            modifier = modifier,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Image(
+                painter = androidx.compose.ui.res.painterResource(id = avatarRes),
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                        shape = CircleShape
+                    )
+            )
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = name,
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) {
+                    Md2IconButton(
+                        icon = "open_in_new",
+                        contentDescription = "打开${name}主页",
+                        onClick = { openExternalPage(homepage) }
+                    )
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun AboutDocumentRow(
+        title: String,
+        onClick: () -> Unit,
+        modifier: Modifier = Modifier,
+        showDivider: Boolean = true
+    ) {
+        Column(modifier = modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = rememberRipple(bounded = true),
+                        onClick = onClick
+                    )
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                MsIcon("chevron_right", contentDescription = null)
+            }
+            if (showDivider) {
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            }
+        }
+    }
+
+    @Composable
+    fun AboutSettingsContent() {
+        val packageInfo = remember(context) {
+            runCatching {
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            }.getOrNull()
+        }
+        @Suppress("DEPRECATION")
+        val versionLabel = remember(packageInfo) {
+            val versionName = packageInfo?.versionName ?: "未知版本"
+            val versionCode = packageInfo?.let {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    it.longVersionCode
+                } else {
+                    it.versionCode.toLong()
+                }
+            } ?: 0L
+            "版本 $versionName ($versionCode)"
+        }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Md2StaggeredFloatIn(index = 0) {
-                Md2SettingsCard(title = "模型与资源") {
-                    Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
-                    Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
-                    Md2Button(onClick = {
-                        if (state.useBuiltinFileManager) {
-                            showBuiltinAsrPicker = true
-                        } else {
-                            asrPicker.launch("*/*")
-                        }
-                    }) {
-                        Text("导入 ASR 模型")
+                Md2SettingsCard(title = "KIGTTS") {
+                    val logoRes = if (isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Image(
+                            painter = androidx.compose.ui.res.painterResource(id = logoRes),
+                            contentDescription = "KIGTTS Logo",
+                            modifier = Modifier
+                                .fillMaxWidth(0.72f)
+                                .height(42.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                        Text(
+                            text = versionLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "软件制作") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AboutContributorItem(
+                            avatarRes = R.drawable.avatar_lht,
+                            name = "LHT",
+                            homepage = "https://www.bilibili.com/space/87244951",
+                            modifier = Modifier.weight(1f)
+                        )
+                        AboutContributorItem(
+                            avatarRes = R.drawable.avatar_yuilu,
+                            name = "Yui Lu",
+                            homepage = "https://www.bilibili.com/space/573842321",
+                            modifier = Modifier.weight(1f)
+                        )
+                        AboutContributorItem(
+                            avatarRes = R.drawable.avatar_huajiang,
+                            name = "花酱",
+                            homepage = "https://www.bilibili.com/space/573842321",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 2) {
+                Md2SettingsCard(title = "文档与政策") {
+                    AboutDocumentRow(title = "开源许可证", onClick = onOpenLicenses)
+                    AboutDocumentRow(
+                        title = "隐私政策",
+                        onClick = onOpenPrivacy,
+                        showDivider = false
+                    )
                 }
             }
         }
@@ -17829,7 +18019,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     @Composable
     fun SettingsCategoryContent(category: SettingsCategory) {
         when (category) {
-            SettingsCategory.Resources -> ResourceSettingsContent()
+            SettingsCategory.About -> AboutSettingsContent()
             SettingsCategory.Recognition -> RecognitionSettingsContent()
             SettingsCategory.Audio -> AudioSettingsContent()
             SettingsCategory.System -> SystemSettingsContent()
@@ -17942,22 +18132,6 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                 }
             }
         }
-    }
-
-    if (showBuiltinAsrPicker) {
-        BuiltinFilePickerDialog(
-            title = "选择 ASR 模型文件",
-            allowedExtensions = setOf("zip"),
-            onDismiss = { showBuiltinAsrPicker = false },
-            onPicked = { uri ->
-                showBuiltinAsrPicker = false
-                viewModel.importAsr(uri)
-            },
-            onOpenSystemPicker = {
-                showBuiltinAsrPicker = false
-                asrPicker.launch("*/*")
-            }
-        )
     }
 
     if (showSpeakerEnrollDialog) {
@@ -18248,6 +18422,47 @@ fun LogScreen(
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodySmall
                 )
+            }
+        }
+        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+}
+
+@Composable
+private fun LegalDocumentScreen(assetPath: String) {
+    val context = LocalContext.current
+    val scroll = rememberScrollState()
+    val documentText by produceState(initialValue = "加载中...", assetPath) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                context.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
+            }.getOrElse {
+                "文档加载失败：${it.message ?: "未知错误"}"
+            }
+        }
+    }
+
+    CenteredPageColumn(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        scroll = scroll
+    ) {
+        Spacer(Modifier.height(UiTokens.PageTopBlank))
+        Md2StaggeredFloatIn(index = 0) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.CardElevation
+            ) {
+                SelectionContainer(
+                    modifier = Modifier.padding(14.dp)
+                ) {
+                    Text(
+                        text = documentText,
+                        style = MaterialTheme.typography.bodySmall,
+                        lineHeight = 20.sp
+                    )
+                }
             }
         }
         Spacer(Modifier.height(UiTokens.PageBottomBlank))
