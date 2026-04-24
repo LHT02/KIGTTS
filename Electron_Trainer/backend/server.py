@@ -9,7 +9,18 @@ from typing import Any, Dict, Optional
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from engine import ProjectPaths, TrainingOptions, run_pipeline  # type: ignore
+from engine import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, VoxCpmDistillOptions, run_distill_pipeline, run_pipeline, run_resume_project_pipeline, run_voxcpm_distill_pipeline  # type: ignore
+from engine.gsv_distill import scan_gsv_models, synthesize_gsv_preview, validate_gsv_root  # type: ignore
+from engine.project_state import load_project_config, read_metadata_entries  # type: ignore
+from engine.runtime_manager import (  # type: ignore
+    describe_piper_cuda_runtime,
+    describe_voxcpm_models,
+    describe_voxcpm_runtime,
+    download_voxcpm_models,
+    install_piper_cuda_runtime,
+    install_voxcpm_runtime,
+)
+from engine.voxcpm_distill import synthesize_voxcpm_preview  # type: ignore
 from engine.voice_preview import synthesize_voicepack  # type: ignore
 
 
@@ -65,6 +76,78 @@ def _build_opts(payload: Dict[str, Any]) -> TrainingOptions:
             opts.phonemizer_dict = candidate
 
     return opts
+
+
+def _build_distill_opts(payload: Dict[str, Any]) -> DistillOptions:
+    gsv_root = _path_or_none(payload.get("gsv_root"))
+    if gsv_root is None:
+        raise RuntimeError("缺少 GPT-SoVITS 根目录")
+
+    text_sources = []
+    for item in payload.get("text_sources") or []:
+        if not isinstance(item, dict):
+            continue
+        source_path = _path_or_none(item.get("path"))
+        kind = str(item.get("kind") or "").strip()
+        if not source_path or not kind:
+            continue
+        text_sources.append(DistillTextSource(kind=kind, path=source_path))
+
+    return DistillOptions(
+        gsv_root=gsv_root,
+        version=str(payload.get("version") or "").strip(),
+        speaker=str(payload.get("speaker") or "").strip(),
+        prompt_lang=str(payload.get("prompt_lang") or "").strip(),
+        emotion=str(payload.get("emotion") or "").strip(),
+        device=str(payload.get("device") or "cuda").strip().lower() or "cuda",
+        text_lang=str(payload.get("text_lang") or "中文").strip() or "中文",
+        text_split_method=str(payload.get("text_split_method") or "按标点符号切").strip() or "按标点符号切",
+        speed_factor=float(payload.get("speed_factor") or 1.0),
+        temperature=float(payload.get("temperature") or 1.0),
+        batch_size=max(1, int(payload.get("batch_size") or 1)),
+        seed=int(payload.get("seed") or -1),
+        top_k=int(payload.get("top_k") or 10),
+        top_p=float(payload.get("top_p") or 1.0),
+        batch_threshold=float(payload.get("batch_threshold") or 0.75),
+        split_bucket=bool(payload.get("split_bucket", True)),
+        fragment_interval=float(payload.get("fragment_interval") or 0.3),
+        parallel_infer=bool(payload.get("parallel_infer", True)),
+        repetition_penalty=float(payload.get("repetition_penalty") or 1.35),
+        sample_steps=int(payload.get("sample_steps") or 16),
+        if_sr=bool(payload.get("if_sr", False)),
+        text_sources=text_sources,
+    )
+
+
+def _build_voxcpm_opts(payload: Dict[str, Any]) -> VoxCpmDistillOptions:
+    text_sources = []
+    for item in payload.get("text_sources") or []:
+        if not isinstance(item, dict):
+            continue
+        source_path = _path_or_none(item.get("path"))
+        kind = str(item.get("kind") or "").strip()
+        if not source_path or not kind:
+            continue
+        text_sources.append(DistillTextSource(kind=kind, path=source_path))
+
+    return VoxCpmDistillOptions(
+        device=str(payload.get("device") or "cuda").strip().lower() or "cuda",
+        allow_cpu_fallback=bool(payload.get("allow_cpu_fallback", True)),
+        voice_mode=str(payload.get("voice_mode") or "description").strip().lower() or "description",
+        voice_description=str(payload.get("voice_description") or "").strip(),
+        reference_audio=_path_or_none(payload.get("reference_audio")),
+        prompt_text=str(payload.get("prompt_text") or "").strip(),
+        cfg_value=float(payload.get("cfg_value") or 2.0),
+        inference_timesteps=max(1, int(payload.get("inference_timesteps") or 10)),
+        min_len=max(1, int(payload.get("min_len") or 2)),
+        max_len=max(1, int(payload.get("max_len") or 4096)),
+        normalize=bool(payload.get("normalize", False)),
+        denoise=bool(payload.get("denoise", False)),
+        retry_badcase=bool(payload.get("retry_badcase", True)),
+        retry_badcase_max_times=max(0, int(payload.get("retry_badcase_max_times") or 3)),
+        retry_badcase_ratio_threshold=float(payload.get("retry_badcase_ratio_threshold") or 6.0),
+        text_sources=text_sources,
+    )
 
 
 def _pick_first(paths: list[Path]) -> Optional[Path]:
@@ -177,6 +260,295 @@ def _handle_start(req_id: str, payload: Dict[str, Any]) -> None:
     _send({"type": "response", "id": req_id, "payload": {"started": True}})
 
 
+def _handle_start_distill(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    output_dir = payload.get("output_dir")
+    if not output_dir:
+        _send({"type": "error", "id": req_id, "message": "缺少输出目录"})
+        return
+
+    try:
+        opts = _build_opts(payload.get("opts") or {})
+        distill_opts = _build_distill_opts(payload.get("distill") or {})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc)})
+        return
+
+    paths = ProjectPaths(project_root=Path(output_dir))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send(
+            {
+                "type": "progress",
+                "id": req_id,
+                "stage": stage,
+                "value": value,
+                "message": message,
+            }
+        )
+
+    def run() -> None:
+        _set_active(True)
+        try:
+            result = run_distill_pipeline(paths, opts, distill_opts, progress)
+            _send(
+                {
+                    "type": "done",
+                    "id": req_id,
+                    "payload": {
+                        "manifest_path": str(result.manifest_path),
+                        "voicepack_path": str(result.voicepack_path),
+                        "preview_path": str(result.preview_path) if result.preview_path else None,
+                        "training_log": str(result.training_log) if result.training_log else None,
+                    },
+                }
+            )
+        except Exception as exc:
+            _send(
+                {
+                    "type": "error",
+                    "id": req_id,
+                    "message": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            )
+        finally:
+            _set_active(False)
+
+    threading.Thread(target=run, daemon=True).start()
+    _send({"type": "response", "id": req_id, "payload": {"started": True}})
+
+
+def _handle_start_voxcpm_distill(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    output_dir = payload.get("output_dir")
+    if not output_dir:
+        _send({"type": "error", "id": req_id, "message": "缺少输出目录"})
+        return
+
+    try:
+        opts = _build_opts(payload.get("opts") or {})
+        voxcpm_opts = _build_voxcpm_opts(payload.get("voxcpm") or {})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc)})
+        return
+
+    paths = ProjectPaths(project_root=Path(output_dir))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send(
+            {
+                "type": "progress",
+                "id": req_id,
+                "stage": stage,
+                "value": value,
+                "message": message,
+            }
+        )
+
+    def run() -> None:
+        _set_active(True)
+        try:
+            result = run_voxcpm_distill_pipeline(paths, opts, voxcpm_opts, progress)
+            _send(
+                {
+                    "type": "done",
+                    "id": req_id,
+                    "payload": {
+                        "manifest_path": str(result.manifest_path),
+                        "voicepack_path": str(result.voicepack_path),
+                        "preview_path": str(result.preview_path) if result.preview_path else None,
+                        "training_log": str(result.training_log) if result.training_log else None,
+                    },
+                }
+            )
+        except Exception as exc:
+            _send(
+                {
+                    "type": "error",
+                    "id": req_id,
+                    "message": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            )
+        finally:
+            _set_active(False)
+
+    threading.Thread(target=run, daemon=True).start()
+    _send({"type": "response", "id": req_id, "payload": {"started": True}})
+
+
+def _handle_start_resume_project(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    project_dir = _path_or_none(payload.get("project_dir"))
+    if project_dir is None:
+        _send({"type": "error", "id": req_id, "message": "缺少旧项目目录"})
+        return
+
+    paths = ProjectPaths(project_root=project_dir)
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    def run() -> None:
+        _set_active(True)
+        try:
+            result = run_resume_project_pipeline(paths, progress)
+            _send(
+                {
+                    "type": "done",
+                    "id": req_id,
+                    "payload": {
+                        "manifest_path": str(result.manifest_path),
+                        "voicepack_path": str(result.voicepack_path),
+                        "preview_path": str(result.preview_path) if result.preview_path else None,
+                        "training_log": str(result.training_log) if result.training_log else None,
+                    },
+                }
+            )
+        except Exception as exc:
+            _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        finally:
+            _set_active(False)
+
+    threading.Thread(target=run, daemon=True).start()
+    _send({"type": "response", "id": req_id, "payload": {"started": True}})
+
+
+def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> None:
+    project_dir = _path_or_none(payload.get("project_dir"))
+    if project_dir is None:
+        _send({"type": "response", "id": req_id, "payload": {"ok": False, "message": "缺少旧项目目录"}})
+        return
+    try:
+        config = load_project_config(project_dir)
+        paths = ProjectPaths(project_root=project_dir)
+        mode = str(config.get("mode") or "").strip()
+        raw_expected_texts = config.get("metadata_texts") or []
+        if not isinstance(raw_expected_texts, list):
+            raw_expected_texts = []
+        expected_texts = [str(item) for item in raw_expected_texts]
+        raw_input_audio = config.get("input_audio") or []
+        if not isinstance(raw_input_audio, list):
+            raw_input_audio = []
+        input_audio = [Path(str(item)) for item in raw_input_audio if str(item).strip()]
+        input_audio_existing = [path for path in input_audio if path.exists()]
+        metadata_error = ""
+        try:
+            entries = read_metadata_entries(paths.training_manifest)
+            missing = [str(audio_path) for audio_path, _text in entries if not audio_path.exists()]
+            metadata_texts = [text for _audio_path, text in entries]
+            metadata_message = f"语料 {len(entries)} 条，缺失音频 {len(missing)} 条"
+        except Exception as metadata_exc:
+            entries = []
+            missing = []
+            metadata_texts = []
+            metadata_error = str(metadata_exc)
+            metadata_message = f"metadata 不完整：{metadata_exc}"
+            if mode != "piper" or not config.get("input_audio"):
+                raise
+        metadata_inconsistent = bool(expected_texts and metadata_texts and expected_texts != metadata_texts)
+        existing_count = len(entries) - len(missing)
+        direct_train_ready = bool(entries) and not missing and not metadata_inconsistent
+        needs_material_rebuild = not direct_train_ready
+        can_rebuild_material = False
+        material_status = ""
+        training_opts = config.get("training_options") or {}
+        if not isinstance(training_opts, dict):
+            training_opts = {}
+        config_summary = f"device={training_opts.get('device', 'cpu')} / batch={training_opts.get('batch_size', '默认')}"
+
+        if mode == "piper":
+            can_rebuild_material = bool(input_audio_existing)
+            if direct_train_ready:
+                material_status = "训练素材完整，可直接进入 Piper 训练，不会重新切分或 ASR。"
+            elif can_rebuild_material:
+                material_status = "训练素材不完整，将使用项目内保存的原始音频重新预处理、VAD 切分和 ASR。"
+            else:
+                material_status = "训练素材不完整，且项目内没有可用原始音频，无法自动重建。"
+        elif mode == "gsv_distill":
+            distill_opts = config.get("distill_options") or {}
+            if not isinstance(distill_opts, dict):
+                distill_opts = {}
+            config_summary = (
+                f"{distill_opts.get('version', '未知版本')} / {distill_opts.get('speaker', '未知说话人')} / "
+                f"{distill_opts.get('prompt_lang', '未知语言')} / {distill_opts.get('emotion', '未知情感')}"
+            )
+            can_rebuild_material = bool(entries)
+            if direct_train_ready:
+                material_status = "训练素材完整，可直接进入 Piper 训练。"
+            elif existing_count:
+                material_status = "部分合成音频缺失；开始训练时会尝试按项目配置补生成，失败时移除缺失文本后继续。"
+            else:
+                material_status = "合成音频完全缺失；开始训练时必须能访问原 GPT-SoVITS/GSVI 模型配置才能补生成。"
+        elif mode == "voxcpm_distill":
+            voxcpm_opts = config.get("voxcpm_options") or {}
+            if not isinstance(voxcpm_opts, dict):
+                voxcpm_opts = {}
+            config_summary = (
+                f"{voxcpm_opts.get('voice_mode', 'description')} / device={voxcpm_opts.get('device', 'cuda')} / "
+                f"denoise={'on' if voxcpm_opts.get('denoise') else 'off'}"
+            )
+            can_rebuild_material = bool(entries)
+            if direct_train_ready:
+                material_status = "训练素材完整，可直接进入 Piper 训练。"
+            else:
+                material_status = "部分或全部合成音频缺失；开始训练时会按项目内 VoxCPM2 配置继续生成缺失音频。"
+        else:
+            material_status = "项目模式未知，无法判断素材恢复策略。"
+
+        known_modes = {"piper", "gsv_distill", "voxcpm_distill"}
+        ok = mode in known_modes and (direct_train_ready or can_rebuild_material)
+        _send(
+            {
+                "type": "response",
+                "id": req_id,
+                "payload": {
+                    "ok": ok,
+                    "message": f"项目{'可用' if ok else '不可用'}：{mode or '未知模式'}，{metadata_message}",
+                    "mode": mode,
+                    "project_dir": str(project_dir),
+                    "metadata_count": len(entries),
+                    "existing_count": existing_count,
+                    "missing_count": len(missing),
+                    "metadata_inconsistent": metadata_inconsistent,
+                    "metadata_error": metadata_error,
+                    "expected_text_count": len(expected_texts),
+                    "input_audio_count": len(input_audio),
+                    "input_audio_available_count": len(input_audio_existing),
+                    "input_audio_missing_count": len(input_audio) - len(input_audio_existing),
+                    "direct_train_ready": direct_train_ready,
+                    "needs_material_rebuild": needs_material_rebuild,
+                    "can_rebuild_material": can_rebuild_material,
+                    "material_status": material_status,
+                    "config_summary": config_summary,
+                    "config_path": str(paths.work_dir / "kigtts_project.json"),
+                },
+            }
+        )
+    except Exception as exc:
+        _send(
+            {
+                "type": "response",
+                "id": req_id,
+                "payload": {
+                    "ok": False,
+                    "message": str(exc),
+                    "project_dir": str(project_dir),
+                },
+            }
+        )
+
+
 def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
         _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
@@ -230,6 +602,173 @@ def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
     _send({"type": "response", "id": req_id, "payload": {"started": True}})
 
 
+def _handle_gsv_distill_preview(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        _send({"type": "error", "id": req_id, "message": "缺少试听文本"})
+        return
+    try:
+        distill_opts = _build_distill_opts(payload.get("distill") or {})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc)})
+        return
+
+    output_root = _path_or_none(payload.get("output_dir")) or Path.cwd()
+    preview_root = output_root / "preview" / "gsv_distill"
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    def run() -> None:
+        _set_active(True)
+        try:
+            result = synthesize_gsv_preview(preview_root, distill_opts, text, progress)
+            _send({"type": "preview_done", "id": req_id, "payload": {"audio_path": str(result)}})
+        except Exception as exc:
+            _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        finally:
+            _set_active(False)
+
+    threading.Thread(target=run, daemon=True).start()
+    _send({"type": "response", "id": req_id, "payload": {"started": True}})
+
+
+def _handle_voxcpm_distill_preview(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        _send({"type": "error", "id": req_id, "message": "缺少试听文本"})
+        return
+    try:
+        opts = _build_opts(payload.get("opts") or {})
+        voxcpm_opts = _build_voxcpm_opts(payload.get("voxcpm") or {})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc)})
+        return
+
+    output_root = _path_or_none(payload.get("output_dir")) or Path.cwd()
+    preview_root = output_root / "preview" / "voxcpm_distill"
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    def run() -> None:
+        _set_active(True)
+        try:
+            result = synthesize_voxcpm_preview(preview_root, voxcpm_opts, text, opts, progress)
+            _send({"type": "preview_done", "id": req_id, "payload": {"audio_path": str(result)}})
+        except Exception as exc:
+            _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        finally:
+            _set_active(False)
+
+    threading.Thread(target=run, daemon=True).start()
+    _send({"type": "response", "id": req_id, "payload": {"started": True}})
+
+
+def _handle_get_piper_cuda_runtime(req_id: str) -> None:
+    try:
+        payload = describe_piper_cuda_runtime()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_install_piper_cuda_runtime(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    force = bool(payload.get("force", False))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send(
+            {
+                "type": "progress",
+                "id": req_id,
+                "stage": stage,
+                "value": value,
+                "message": message,
+            }
+        )
+
+    _set_active(True)
+    try:
+        result = install_piper_cuda_runtime(progress=progress, force=force)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
+def _handle_get_voxcpm_runtime(req_id: str) -> None:
+    try:
+        payload = describe_voxcpm_runtime()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_install_voxcpm_runtime(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    force = bool(payload.get("force", False))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    _set_active(True)
+    try:
+        result = install_voxcpm_runtime(progress=progress, force=force)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
+def _handle_get_voxcpm_models(req_id: str) -> None:
+    try:
+        payload = describe_voxcpm_models()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_download_voxcpm_models(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        return
+
+    include_denoiser = bool(payload.get("include_denoiser", True))
+    force = bool(payload.get("force", False))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    _set_active(True)
+    try:
+        result = download_voxcpm_models(progress=progress, include_denoiser=include_denoiser, force=force)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
 def _handle_request(req: Dict[str, Any]) -> None:
     req_id = str(req.get("id") or "")
     msg_type = req.get("type")
@@ -241,11 +780,66 @@ def _handle_request(req: Dict[str, Any]) -> None:
     if msg_type == "start_pipeline":
         _handle_start(req_id, payload)
         return
+    if msg_type == "start_distill_pipeline":
+        _handle_start_distill(req_id, payload)
+        return
+    if msg_type == "start_voxcpm_distill_pipeline":
+        _handle_start_voxcpm_distill(req_id, payload)
+        return
+    if msg_type == "start_resume_project_pipeline":
+        _handle_start_resume_project(req_id, payload)
+        return
+    if msg_type == "inspect_training_project":
+        _handle_inspect_training_project(req_id, payload)
+        return
     if msg_type == "preview_voicepack":
         _handle_preview(req_id, payload)
         return
+    if msg_type == "preview_gsv_distill":
+        _handle_gsv_distill_preview(req_id, payload)
+        return
+    if msg_type == "preview_voxcpm_distill":
+        _handle_voxcpm_distill_preview(req_id, payload)
+        return
     if msg_type == "get_defaults":
         _send({"type": "defaults", "id": req_id, "payload": _find_default_paths()})
+        return
+    if msg_type == "validate_gsv_root":
+        root = _path_or_none(payload.get("gsv_root"))
+        if root is None:
+            _send({"type": "response", "id": req_id, "payload": {"ok": False, "message": "缺少 GPT-SoVITS 根目录"}})
+            return
+        _send({"type": "response", "id": req_id, "payload": validate_gsv_root(root)})
+        return
+    if msg_type == "scan_gsv_models":
+        root = _path_or_none(payload.get("gsv_root"))
+        if root is None:
+            _send({"type": "error", "id": req_id, "message": "缺少 GPT-SoVITS 根目录"})
+            return
+        try:
+            catalog = scan_gsv_models(root)
+        except Exception as exc:
+            _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+            return
+        _send({"type": "response", "id": req_id, "payload": catalog})
+        return
+    if msg_type == "get_piper_cuda_runtime_status":
+        _handle_get_piper_cuda_runtime(req_id)
+        return
+    if msg_type == "install_piper_cuda_runtime":
+        _handle_install_piper_cuda_runtime(req_id, payload)
+        return
+    if msg_type == "get_voxcpm_runtime_status":
+        _handle_get_voxcpm_runtime(req_id)
+        return
+    if msg_type == "install_voxcpm_runtime":
+        _handle_install_voxcpm_runtime(req_id, payload)
+        return
+    if msg_type == "get_voxcpm_model_status":
+        _handle_get_voxcpm_models(req_id)
+        return
+    if msg_type == "download_voxcpm_models":
+        _handle_download_voxcpm_models(req_id, payload)
         return
 
     _send({"type": "error", "id": req_id, "message": f"未知命令: {msg_type}"})

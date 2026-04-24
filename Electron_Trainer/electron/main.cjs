@@ -13,6 +13,24 @@ const pendingBackendEvents = [];
 const isDev = !app.isPackaged;
 const isMac = process.platform === 'darwin';
 
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.kigtts.trainer');
+}
+
+function resolveWindowIcon() {
+  if (process.platform !== 'win32' && process.platform !== 'linux') {
+    return undefined;
+  }
+  if (!isDev) {
+    const packagedIcon = path.join(process.resourcesPath, 'build', 'icons', 'kigtts.ico');
+    if (fs.existsSync(packagedIcon)) {
+      return packagedIcon;
+    }
+    return undefined;
+  }
+  return path.join(__dirname, '..', 'build', 'icons', 'kigtts.ico');
+}
+
 function resolvePython() {
   if (!isDev) {
     if (process.platform === 'win32') {
@@ -72,6 +90,8 @@ function startBackend() {
     PYTHONIOENCODING: 'utf-8',
     KGTTS_RESOURCES: resolveResources(),
     KGTTS_BASE_DIR: resolveBaseDir(),
+    KGTTS_APP_DIR: isDev ? path.join(__dirname, '..') : process.resourcesPath,
+    KGTTS_USER_DATA: app.getPath('userData'),
   };
 
   if (!fs.existsSync(pythonPath)) {
@@ -169,6 +189,8 @@ function createWindow() {
     width: 1280,
     height: 860,
     backgroundColor: '#0f1115',
+    title: 'KIGTTS Trainer',
+    icon: resolveWindowIcon(),
     frame: false,
     titleBarStyle: isMac ? 'hiddenInset' : undefined,
     trafficLightPosition: isMac ? { x: 12, y: 12 } : undefined,
@@ -328,13 +350,15 @@ app.whenReady().then(() => {
     return mainWindow ? mainWindow.isMaximized() : false;
   });
 
-  ipcMain.handle('dialog:openFiles', async () => {
+  ipcMain.handle('dialog:openFiles', async (_, opts = {}) => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'flac'] },
-        { name: 'All', extensions: ['*'] },
-      ],
+      title: opts.title || undefined,
+      properties: opts.properties || ['openFile', 'multiSelections'],
+      filters:
+        opts.filters || [
+          { name: 'Audio', extensions: ['wav', 'mp3', 'm4a', 'flac'] },
+          { name: 'All', extensions: ['*'] },
+        ],
     });
     return result.canceled ? [] : result.filePaths;
   });
@@ -387,6 +411,18 @@ app.whenReady().then(() => {
       }
       shell.showItemInFolder(resolved);
       return { ok: true, target: resolved };
+    } catch (err) {
+      return { ok: false, message: String(err) };
+    }
+  });
+
+  ipcMain.handle('path:openExternal', async (_, targetUrl) => {
+    try {
+      if (!targetUrl || typeof targetUrl !== 'string') {
+        return { ok: false, message: '链接为空' };
+      }
+      await shell.openExternal(targetUrl);
+      return { ok: true, target: targetUrl };
     } catch (err) {
       return { ok: false, message: String(err) };
     }
@@ -567,6 +603,30 @@ app.whenReady().then(() => {
       return true;
     } catch (err) {
       return false;
+    }
+  });
+
+  ipcMain.handle('fs:ensureTextPresetFile', async (_, payload) => {
+    try {
+      const inputName = payload?.name;
+      const text = payload?.text;
+      if (!inputName || typeof inputName !== 'string') {
+        return '';
+      }
+      if (text !== undefined && typeof text !== 'string') {
+        return '';
+      }
+      const safeName = path
+        .basename(inputName)
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .trim() || `preset-${Date.now()}.txt`;
+      const outDir = path.join(app.getPath('userData'), 'text_presets');
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, safeName);
+      fs.writeFileSync(outPath, text || '', 'utf8');
+      return outPath;
+    } catch (err) {
+      return '';
     }
   });
 

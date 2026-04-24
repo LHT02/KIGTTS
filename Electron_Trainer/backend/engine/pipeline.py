@@ -4,8 +4,19 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from . import preprocess, vad, asr, training, packager
-from .config import ProjectPaths, TrainingOptions, PipelineResult, ProgressCallback
+from . import asr, gsv_distill, packager, preprocess, training, vad, voxcpm_distill
+from .config import DistillOptions, PipelineResult, ProgressCallback, ProjectPaths, TrainingOptions, VoxCpmDistillOptions
+from .project_state import (
+    archive_input_audio,
+    archive_voxcpm_reference,
+    distill_options_from_dict,
+    load_project_config,
+    read_metadata_entries,
+    save_project_config,
+    training_options_from_dict,
+    voxcpm_options_from_dict,
+    write_metadata_entries,
+)
 from .utils import find_executable
 
 
@@ -62,28 +73,18 @@ def synth_preview(model_dir: Path, opts: TrainingOptions) -> Optional[Path]:
     return preview_path
 
 
-def run_pipeline(
+def _train_export_package(
     paths: ProjectPaths,
     opts: TrainingOptions,
     progress: Optional[ProgressCallback] = None,
 ) -> PipelineResult:
-    _ensure_dirs(paths)
-
-    processed = preprocess.preprocess_audios(
-        paths.input_audio, paths.work_dir / "processed", opts, progress
-    )
-    segments = vad.vad_split(processed, paths.segments_dir, opts, progress)
-    transcripts = asr.transcribe_segments(segments, opts, progress)
-
-    training.write_metadata(transcripts, paths.training_manifest)
     training.write_preview_text(opts.text_sample, paths.work_dir / "preview.txt")
-
     ckpt = training.run_piper_training(paths.training_manifest, paths.work_dir, opts, progress)
     if progress:
         progress("export", 0.0, "训练完成，准备导出 ONNX")
     model_dir = paths.work_dir / "onnx"
     model_dir.mkdir(exist_ok=True, parents=True)
-    export_path = training.export_onnx(ckpt, model_dir, opts, progress)
+    training.export_onnx(ckpt, model_dir, opts, progress)
     if progress:
         progress("export", 0.7, "ONNX 导出完成，准备生成预览")
     preview_path = synth_preview(model_dir, opts)
@@ -105,3 +106,139 @@ def run_pipeline(
         preview_path=preview_path,
         training_log=paths.work_dir / "training.log",
     )
+
+
+def run_pipeline(
+    paths: ProjectPaths,
+    opts: TrainingOptions,
+    progress: Optional[ProgressCallback] = None,
+) -> PipelineResult:
+    _ensure_dirs(paths)
+    archive_input_audio(paths)
+
+    processed = preprocess.preprocess_audios(
+        paths.input_audio, paths.work_dir / "processed", opts, progress
+    )
+    segments = vad.vad_split(processed, paths.segments_dir, opts, progress)
+    transcripts = asr.transcribe_segments(segments, opts, progress)
+
+    training.write_metadata(transcripts, paths.training_manifest)
+    save_project_config(paths, "piper", opts)
+    return _train_export_package(paths, opts, progress)
+
+
+def run_distill_pipeline(
+    paths: ProjectPaths,
+    opts: TrainingOptions,
+    distill_opts: DistillOptions,
+    progress: Optional[ProgressCallback] = None,
+) -> PipelineResult:
+    _ensure_dirs(paths)
+
+    gsv_distill.build_distill_corpus(paths, distill_opts, progress)
+    save_project_config(paths, "gsv_distill", opts, distill_opts=distill_opts)
+    return _train_export_package(paths, opts, progress)
+
+
+def run_voxcpm_distill_pipeline(
+    paths: ProjectPaths,
+    opts: TrainingOptions,
+    voxcpm_opts: VoxCpmDistillOptions,
+    progress: Optional[ProgressCallback] = None,
+) -> PipelineResult:
+    _ensure_dirs(paths)
+
+    archive_voxcpm_reference(paths, voxcpm_opts)
+    voxcpm_distill.build_voxcpm_corpus(paths, voxcpm_opts, opts, progress)
+    save_project_config(paths, "voxcpm_distill", opts, voxcpm_opts=voxcpm_opts)
+    return _train_export_package(paths, opts, progress)
+
+
+def run_resume_project_pipeline(
+    paths: ProjectPaths,
+    progress: Optional[ProgressCallback] = None,
+) -> PipelineResult:
+    _ensure_dirs(paths)
+    config = load_project_config(paths.project_root)
+    mode = str(config.get("mode") or "").strip()
+    opts = training_options_from_dict(config.get("training_options") or {})
+    try:
+        entries = read_metadata_entries(paths.training_manifest)
+        metadata_error = ""
+    except Exception as exc:
+        entries = []
+        metadata_error = str(exc)
+    expected_texts = [str(item) for item in (config.get("metadata_texts") or [])]
+    metadata_texts = [text for _audio, text in entries]
+    metadata_inconsistent = bool(expected_texts and expected_texts != metadata_texts)
+    if metadata_inconsistent and progress:
+        progress("collect", 0.0, "项目 metadata.csv 文本与项目配置记录不一致，将按当前 metadata.csv 继续。")
+
+    existing_entries = [(audio_path, text) for audio_path, text in entries if audio_path.exists()]
+    missing_entries = [(audio_path, text) for audio_path, text in entries if not audio_path.exists()]
+    if entries and not metadata_inconsistent and not missing_entries and len(existing_entries) == len(entries):
+        if progress:
+            progress("collect", 1.0, f"旧项目音频完整，直接进入训练，共 {len(entries)} 条")
+        return _train_export_package(paths, opts, progress)
+
+    if not entries and mode != "piper":
+        raise RuntimeError(metadata_error or "旧项目没有可用于恢复的 metadata 文本")
+
+    if progress:
+        progress("collect", 0.5, f"旧项目检测到 {len(missing_entries)} 条音频缺失")
+
+    if mode == "voxcpm_distill":
+        voxcpm_opts = voxcpm_options_from_dict(config.get("voxcpm_options") or {})
+        voxcpm_distill.generate_voxcpm_entries(paths, voxcpm_opts, opts, missing_entries, progress)
+        still_missing = [(audio_path, text) for audio_path, text in entries if not audio_path.exists()]
+        if still_missing:
+            raise RuntimeError(f"VoxCPM2 补生成后仍缺失 {len(still_missing)} 条音频，无法继续训练。")
+        if progress:
+            progress("collect", 1.0, f"旧项目音频已补齐，共 {len(entries)} 条")
+        return _train_export_package(paths, opts, progress)
+
+    if mode == "gsv_distill":
+        distill_opts = distill_options_from_dict(config.get("distill_options") or {})
+        try:
+            gsv_distill.generate_distill_entries(paths, distill_opts, missing_entries, progress)
+        except Exception as exc:
+            if not existing_entries:
+                raise RuntimeError(f"GPT-SoVITS 音频完全缺失，且无法按项目配置补生成：{exc}") from exc
+            write_metadata_entries(existing_entries, paths.training_manifest)
+            if progress:
+                progress(
+                    "collect",
+                    1.0,
+                    f"GPT-SoVITS 模型不可用或补生成失败，已移除 {len(missing_entries)} 条缺失文本，继续训练 {len(existing_entries)} 条。",
+                )
+            save_project_config(paths, mode, opts, distill_opts=distill_opts)
+            return _train_export_package(paths, opts, progress)
+        still_missing = [(audio_path, text) for audio_path, text in entries if not audio_path.exists()]
+        if still_missing:
+            existing_entries = [(audio_path, text) for audio_path, text in entries if audio_path.exists()]
+            if not existing_entries:
+                raise RuntimeError("GPT-SoVITS 音频完全缺失，且补生成后仍没有可训练音频。")
+            write_metadata_entries(existing_entries, paths.training_manifest)
+            if progress:
+                progress("collect", 1.0, f"已移除 {len(still_missing)} 条仍缺失文本，继续训练 {len(existing_entries)} 条。")
+        else:
+            if progress:
+                progress("collect", 1.0, f"旧项目音频已补齐，共 {len(entries)} 条")
+        save_project_config(paths, mode, opts, distill_opts=distill_opts)
+        return _train_export_package(paths, opts, progress)
+
+    if mode == "piper":
+        needs_rerun = bool(metadata_error or metadata_inconsistent or missing_entries or not entries)
+        if needs_rerun:
+            stored_audio = [Path(str(item)) for item in (config.get("input_audio") or []) if str(item).strip()]
+            stored_audio = [path for path in stored_audio if path.exists()]
+            if not stored_audio:
+                reason = metadata_error or f"缺失 {len(missing_entries)} 条音频"
+                raise RuntimeError(f"标准训练旧项目需要重新处理，但项目配置中没有可用原始音频：{reason}")
+            if progress:
+                progress("collect", 0.0, "标准训练旧项目音频或 metadata 不完整，按项目内原始音频重新切分和 ASR。")
+            paths.input_audio = stored_audio
+            return run_pipeline(paths, opts, progress)
+        return _train_export_package(paths, opts, progress)
+
+    raise RuntimeError(f"不支持的旧项目训练模式: {mode or '未知'}")

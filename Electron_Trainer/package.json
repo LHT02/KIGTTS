@@ -15,8 +15,11 @@
     "preview": "vite preview"
   },
   "build": {
-    "appId": "com.kgtts.trainer",
-    "productName": "KGTTS Trainer",
+    "appId": "com.kigtts.trainer",
+    "productName": "KIGTTS Trainer",
+    "win": {
+      "icon": "icons/kigtts.ico"
+    },
     "asar": true,
     "asarUnpack": [
       "backend/**"
@@ -67,6 +70,28 @@
         "filter": [
           "**/*.ckpt"
         ]
+      },
+      {
+        "from": "build/micromamba",
+        "to": "micromamba"
+      },
+      {
+        "from": "build/icons",
+        "to": "build/icons",
+        "filter": [
+          "**/*.ico"
+        ]
+      },
+      {
+        "from": "../pc_trainer/piper_wheels/piper_train-1.0.0-py3-none-any.whl",
+        "to": "runtime_assets/piper_train-1.0.0-py3-none-any.whl"
+      },
+      {
+        "from": "../pc_trainer/piper_wheels",
+        "to": "runtime_assets/piper_wheels",
+        "filter": [
+          "**/*.whl"
+        ]
       }
     ]
   },
@@ -77,7 +102,9 @@
     "@mui/material": "^7.3.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-easy-crop": "^5.5.6"
+    "react-easy-crop": "^5.5.6",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

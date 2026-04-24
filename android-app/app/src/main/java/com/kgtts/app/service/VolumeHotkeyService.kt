@@ -30,11 +30,23 @@ class VolumeHotkeyService : Service() {
     private val scope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate
     )
+    private val handler = Handler(Looper.getMainLooper())
     private val sequenceDetector = VolumeHotkeySequenceDetector()
+    private val volumePollRunnable =
+        object : Runnable {
+            override fun run() {
+                if (!volumePolling) return
+                handleVolumePossiblyChanged()
+                if (volumePolling) {
+                    handler.postDelayed(this, VOLUME_POLL_INTERVAL_MS)
+                }
+            }
+        }
     private var settings = UserPrefs.AppSettings()
     private var settingsJob: kotlinx.coroutines.Job? = null
     private var audioManager: AudioManager? = null
     private var volumeObserver: ContentObserver? = null
+    private var volumePolling = false
     private var lastStreamVolumes: Map<Int, Int> = emptyMap()
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -55,6 +67,7 @@ class VolumeHotkeyService : Service() {
             return
         }
         registerVolumeObserver()
+        startVolumePolling()
         observeSettings()
     }
 
@@ -73,6 +86,7 @@ class VolumeHotkeyService : Service() {
         AppLogger.i("VolumeHotkeyService.onDestroy")
         settingsJob?.cancel()
         settingsJob = null
+        stopVolumePolling()
         volumeObserver?.let { runCatching { contentResolver.unregisterContentObserver(it) } }
         volumeObserver = null
         audioManager = null
@@ -143,13 +157,24 @@ class VolumeHotkeyService : Service() {
     private fun registerVolumeObserver() {
         val manager = audioManager ?: return
         lastStreamVolumes = snapshotStreamVolumes(manager)
-        volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        volumeObserver = object : ContentObserver(handler) {
             override fun onChange(selfChange: Boolean) {
                 super.onChange(selfChange)
                 handleVolumePossiblyChanged()
             }
         }
         contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, volumeObserver!!)
+    }
+
+    private fun startVolumePolling() {
+        if (volumePolling) return
+        volumePolling = true
+        handler.postDelayed(volumePollRunnable, VOLUME_POLL_INTERVAL_MS)
+    }
+
+    private fun stopVolumePolling() {
+        volumePolling = false
+        handler.removeCallbacks(volumePollRunnable)
     }
 
     private fun handleVolumePossiblyChanged() {
@@ -207,6 +232,7 @@ class VolumeHotkeyService : Service() {
         private const val NOTIFICATION_ID = 3205
         private const val ACTION_REFRESH = "com.lhtstudio.kigtts.app.action.VOLUME_HOTKEY_REFRESH"
         private const val ACTION_STOP = "com.lhtstudio.kigtts.app.action.VOLUME_HOTKEY_STOP"
+        private const val VOLUME_POLL_INTERVAL_MS = 130L
         private val VOLUME_STREAM_PRIORITY =
             listOf(
                 AudioManager.STREAM_MUSIC,

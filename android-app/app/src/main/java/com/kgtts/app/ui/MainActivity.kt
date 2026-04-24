@@ -87,10 +87,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.camera.core.CameraSelector
@@ -159,8 +161,10 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -171,7 +175,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.Shape
@@ -275,6 +281,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.recyclerview.widget.ItemTouchHelper
@@ -578,6 +585,7 @@ data class UiState(
     val volumeHotkeyDownUpEnabled: Boolean = false,
     val volumeHotkeyWindowMs: Int = UserPrefs.VOLUME_HOTKEY_DEFAULT_WINDOW_MS,
     val volumeHotkeyAccessibilityEnabled: Boolean = false,
+    val volumeHotkeyEnableWarningDismissed: Boolean = false,
     val volumeHotkeyUpDownAction: VolumeHotkeyActionSpec =
         VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.UpDown),
     val volumeHotkeyDownUpAction: VolumeHotkeyActionSpec =
@@ -623,6 +631,10 @@ data class ExternalQuickSubtitleRequest(
 data class ExternalRecordAudioPermissionRequest(
     val requestId: Long,
     val startRealtimeOnGrant: Boolean = false
+)
+
+data class ExternalAccessibilityExplainRequest(
+    val requestId: Long
 )
 
 data class ExternalVoicePackInstallRequest(
@@ -850,6 +862,8 @@ class MainViewModel(
         private set
     var pendingRecordAudioPermissionRequest by mutableStateOf<ExternalRecordAudioPermissionRequest?>(null)
         private set
+    var pendingAccessibilityExplainRequest by mutableStateOf<ExternalAccessibilityExplainRequest?>(null)
+        private set
 
     private var realtimeHost: RealtimeHostService? = null
     private var hostStateJob: Job? = null
@@ -1003,7 +1017,7 @@ class MainViewModel(
         private set
     var soundboardPlaybackStates by mutableStateOf<Map<Long, SoundboardPlaybackState>>(emptyMap())
         private set
-    var settingsSelectedCategoryName by mutableStateOf(SettingsCategory.Resources.name)
+    var settingsSelectedCategoryName by mutableStateOf(SettingsCategory.Recognition.name)
         private set
     var quickCards by mutableStateOf<List<QuickCard>>(emptyList())
         private set
@@ -1170,6 +1184,7 @@ class MainViewModel(
             volumeHotkeyDownUpEnabled = settings.volumeHotkeyDownUpEnabled,
             volumeHotkeyWindowMs = settings.volumeHotkeyWindowMs,
             volumeHotkeyAccessibilityEnabled = settings.volumeHotkeyAccessibilityEnabled,
+            volumeHotkeyEnableWarningDismissed = settings.volumeHotkeyEnableWarningDismissed,
             volumeHotkeyUpDownAction = settings.volumeHotkeyUpDownAction,
             volumeHotkeyDownUpAction = settings.volumeHotkeyDownUpAction,
             ttsDisabled = settings.ttsDisabled,
@@ -1464,6 +1479,17 @@ class MainViewModel(
     fun consumeRecordAudioPermissionRequest(requestId: Long) {
         if (pendingRecordAudioPermissionRequest?.requestId == requestId) {
             pendingRecordAudioPermissionRequest = null
+        }
+    }
+
+    fun requestAccessibilityExplainDialog() {
+        pendingAccessibilityExplainRequest =
+            ExternalAccessibilityExplainRequest(requestId = SystemClock.uptimeMillis())
+    }
+
+    fun consumeAccessibilityExplainRequest(requestId: Long) {
+        if (pendingAccessibilityExplainRequest?.requestId == requestId) {
+            pendingAccessibilityExplainRequest = null
         }
     }
 
@@ -3047,6 +3073,13 @@ class MainViewModel(
         uiState = uiState.copy(volumeHotkeyAccessibilityEnabled = enabled)
         viewModelScope.launch {
             UserPrefs.setVolumeHotkeyAccessibilityEnabled(appContext, enabled)
+        }
+    }
+
+    fun setVolumeHotkeyEnableWarningDismissed(dismissed: Boolean) {
+        uiState = uiState.copy(volumeHotkeyEnableWarningDismissed = dismissed)
+        viewModelScope.launch {
+            UserPrefs.setVolumeHotkeyEnableWarningDismissed(appContext, dismissed)
         }
     }
 
@@ -7289,6 +7322,8 @@ private object QuickCardRoutes {
 private object SettingsRoutes {
     const val Main = "settings/main"
     const val Log = "settings/log"
+    const val Licenses = "settings/licenses"
+    const val Privacy = "settings/privacy"
 }
 
 private val SoundboardAudioFileExtensions = setOf(
@@ -7489,6 +7524,11 @@ class MainActivity : ComponentActivity() {
                 val startRealtimeOnGrant =
                     intent.getBooleanExtra(OverlayBridge.EXTRA_START_REALTIME_ON_GRANT, false)
                 viewModel.requestRecordAudioPermission(startRealtimeOnGrant)
+            }
+
+            OverlayBridge.ACTION_SHOW_ACCESSIBILITY_GUIDE -> {
+                viewModel.requestAccessibilityExplainDialog()
+                setIntent(Intent())
             }
 
             Intent.ACTION_VIEW,
@@ -8161,10 +8201,10 @@ private fun Md2SettingDropdownRow(
 }
 
 enum class SettingsCategory(val title: String, val icon: String) {
-    Resources("资源", "inventory_2"),
     Recognition("识别", "graphic_eq"),
     Audio("音频", "volume_up"),
-    System("系统", "tune")
+    System("系统", "tune"),
+    About("关于", "info")
 }
 
 @Composable
@@ -8442,6 +8482,10 @@ fun AppScaffold(viewModel: MainViewModel) {
         basePage == pageQuickCard && quickCardRoute != QuickCardRoutes.Main
     val settingsLogOpen =
         basePage == pageSettings && settingsRoute == SettingsRoutes.Log
+    val settingsLicensesOpen =
+        basePage == pageSettings && settingsRoute == SettingsRoutes.Licenses
+    val settingsPrivacyOpen =
+        basePage == pageSettings && settingsRoute == SettingsRoutes.Privacy
     var lastTopBarBackClickAtMs by remember { mutableLongStateOf(0L) }
     var drawerExpanded by rememberSaveable { mutableStateOf(false) }
     val runningStripEligible = !(drawingFullscreen && basePage == pageDrawing)
@@ -8491,6 +8535,12 @@ fun AppScaffold(viewModel: MainViewModel) {
     LaunchedEffect(basePage, quickCardWebOpen) {
         if (basePage != pageQuickCard || !quickCardWebOpen) {
             quickCardWebMenuExpanded = false
+        }
+    }
+    val pendingAccessibilityExplainRequest = viewModel.pendingAccessibilityExplainRequest
+    LaunchedEffect(pendingAccessibilityExplainRequest?.requestId) {
+        if (pendingAccessibilityExplainRequest != null) {
+            page = pageOverlay
         }
     }
     LaunchedEffect(basePage, quickCardNavReady, pendingQuickCardOverlayTarget, quickCardRoute) {
@@ -8673,7 +8723,7 @@ fun AppScaffold(viewModel: MainViewModel) {
             soundboardSubPageOpen -> {
                 soundboardNavController.popBackStack(SoundboardRoutes.Main, inclusive = false)
             }
-            settingsLogOpen -> {
+            settingsLogOpen || settingsLicensesOpen || settingsPrivacyOpen -> {
                 settingsNavController.popBackStack(SettingsRoutes.Main, inclusive = false)
             }
             quickCardEditorOpen -> {
@@ -8956,6 +9006,10 @@ fun AppScaffold(viewModel: MainViewModel) {
             "二维码网页"
         } else if (settingsLogOpen) {
             "日志"
+        } else if (settingsLicensesOpen) {
+            "开源许可证"
+        } else if (settingsPrivacyOpen) {
+            "隐私政策"
         } else {
             when (basePage) {
                 pageQuickSubtitle -> "便捷字幕"
@@ -9031,7 +9085,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                         targetState = when {
                             quickSubtitleSubPageOpen -> 1
                             soundboardSubPageOpen -> 2
-                            settingsLogOpen -> 3
+                            settingsLogOpen || settingsLicensesOpen || settingsPrivacyOpen -> 3
                             quickCardSubPageOpen -> 4
                             else -> 0
                         },
@@ -9082,7 +9136,8 @@ fun AppScaffold(viewModel: MainViewModel) {
                         basePage == pageQuickCard && quickCardRoute == QuickCardRoutes.Web
                     val showDrawingActions = basePage == pageDrawing
                     val showVoicePackActions = basePage == pageVoicePack
-                    val showSettingsEntryActions = basePage == pageSettings && !settingsLogOpen
+                    val showSettingsEntryActions =
+                        basePage == pageSettings && settingsRoute == SettingsRoutes.Main
                     val showSettingsLogActions = basePage == pageSettings && settingsLogOpen
                     val settingsActions = logTopBarActions
 
@@ -9773,7 +9828,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 .fillMaxHeight()
                                 .graphicsLayer { clip = true }
                                 .zIndex(0f)
-                                .padding(start = animatedContentStartPadding, end = landscapeCutoutEnd)
+                                .padding(start = animatedContentStartPadding, end = landscapeChromeEndInset)
                         )
                     }
 
@@ -9910,7 +9965,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                             Modifier
                                 .fillMaxSize()
                                 .padding(innerPadding)
-                                .padding(start = landscapeCutoutStart, end = landscapeCutoutEnd)
+                                .padding(start = landscapeChromeStartInset, end = landscapeChromeEndInset)
                         )
                     }
                 }
@@ -10050,8 +10105,8 @@ fun ModelScreen(state: UiState) {
             elevation = UiTokens.CardElevation
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("ASR 模型导入已迁移", fontWeight = FontWeight.SemiBold)
-                Text("请前往“设置 > 模型与资源”导入或替换 ASR 模型。")
+                Text("ASR 模型已由应用内置与自动管理", fontWeight = FontWeight.SemiBold)
+                Text("当前 Android 版本默认随应用提供内置 ASR 资源，无需再通过设置页单独导入。")
                 Spacer(Modifier.height(8.dp))
                 Text("当前 ASR 路径：", style = MaterialTheme.typography.labelSmall)
                 Text(state.asrDir?.absolutePath ?: "未导入")
@@ -12659,13 +12714,14 @@ private fun SettingsNavHost(
     state: UiState,
     onTopBarActionsChange: (LogTopBarActions?) -> Unit
 ) {
+    fun isSettingsSubPage(route: String?): Boolean = route != null && route != SettingsRoutes.Main
     NavHost(
         navController = navController,
         startDestination = SettingsRoutes.Main,
         modifier = Modifier.fillMaxSize(),
         enterTransition = {
             if (initialState.destination.route == SettingsRoutes.Main &&
-                targetState.destination.route == SettingsRoutes.Log
+                isSettingsSubPage(targetState.destination.route)
             ) {
                 fadeIn(animationSpec = tween(170)) +
                         androidx.compose.animation.slideInHorizontally(
@@ -12678,7 +12734,7 @@ private fun SettingsNavHost(
         },
         exitTransition = {
             if (initialState.destination.route == SettingsRoutes.Main &&
-                targetState.destination.route == SettingsRoutes.Log
+                isSettingsSubPage(targetState.destination.route)
             ) {
                 fadeOut(animationSpec = tween(120)) +
                         androidx.compose.animation.slideOutHorizontally(
@@ -12690,7 +12746,7 @@ private fun SettingsNavHost(
             }
         },
         popEnterTransition = {
-            if (initialState.destination.route == SettingsRoutes.Log &&
+            if (isSettingsSubPage(initialState.destination.route) &&
                 targetState.destination.route == SettingsRoutes.Main
             ) {
                 fadeIn(animationSpec = tween(150)) +
@@ -12703,7 +12759,7 @@ private fun SettingsNavHost(
             }
         },
         popExitTransition = {
-            if (initialState.destination.route == SettingsRoutes.Log &&
+            if (isSettingsSubPage(initialState.destination.route) &&
                 targetState.destination.route == SettingsRoutes.Main
             ) {
                 fadeOut(animationSpec = tween(120)) +
@@ -12717,10 +12773,29 @@ private fun SettingsNavHost(
         }
     ) {
         composable(SettingsRoutes.Main) {
-            SettingsScreen(viewModel, state)
+            SettingsScreen(
+                viewModel = viewModel,
+                state = state,
+                onOpenLicenses = {
+                    navController.navigate(SettingsRoutes.Licenses) { launchSingleTop = true }
+                },
+                onOpenPrivacy = {
+                    navController.navigate(SettingsRoutes.Privacy) { launchSingleTop = true }
+                }
+            )
         }
         composable(SettingsRoutes.Log) {
             LogScreen(onTopBarActionsChange = onTopBarActionsChange)
+        }
+        composable(SettingsRoutes.Licenses) {
+            LegalDocumentScreen(
+                assetPath = "legal/open_source_licenses.md"
+            )
+        }
+        composable(SettingsRoutes.Privacy) {
+            LegalDocumentScreen(
+                assetPath = "legal/privacy_policy.md"
+            )
         }
     }
 }
@@ -15142,6 +15217,8 @@ fun FloatingOverlayScreen(
     var externalShortcutChoices by remember { mutableStateOf<List<ExternalShortcutChoice>>(emptyList()) }
     var externalShortcutLoading by remember { mutableStateOf(false) }
     var accessibilityExplainDialogOpen by remember { mutableStateOf(false) }
+    var pendingVolumeHotkeyEnableSequence by remember { mutableStateOf<VolumeHotkeySequence?>(null) }
+    var dismissVolumeHotkeyEnableWarning by remember { mutableStateOf(false) }
     val overlayPermissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             val granted = FloatingOverlayService.canDrawOverlays(context)
@@ -15167,6 +15244,12 @@ fun FloatingOverlayScreen(
                 VolumeHotkeyService.syncWithSettings(context)
             }
         }
+    val pendingAccessibilityExplainRequest = viewModel.pendingAccessibilityExplainRequest
+    LaunchedEffect(pendingAccessibilityExplainRequest?.requestId) {
+        val request = pendingAccessibilityExplainRequest ?: return@LaunchedEffect
+        accessibilityExplainDialogOpen = true
+        viewModel.consumeAccessibilityExplainRequest(request.requestId)
+    }
 
     LaunchedEffect(Unit) {
         overlayPermissionGranted.value = FloatingOverlayService.canDrawOverlays(context)
@@ -15232,6 +15315,30 @@ fun FloatingOverlayScreen(
         accessibilitySettingsLauncher.launch(
             VolumeHotkeyAccessibilityService.buildSettingsIntent()
         )
+    }
+
+    fun requestVolumeHotkeyEnabled(sequence: VolumeHotkeySequence, enabled: Boolean) {
+        if (!enabled) {
+            viewModel.setVolumeHotkeyEnabled(sequence, false)
+            return
+        }
+        if (accessibilityPermissionGranted.value) {
+            viewModel.setVolumeHotkeyAccessibilityEnabled(true)
+            viewModel.setVolumeHotkeyEnabled(sequence, true)
+            return
+        }
+        if (state.volumeHotkeyEnableWarningDismissed) {
+            viewModel.setVolumeHotkeyEnabled(sequence, true)
+            return
+        }
+        dismissVolumeHotkeyEnableWarning = false
+        pendingVolumeHotkeyEnableSequence = sequence
+    }
+
+    fun persistVolumeHotkeyEnableWarningChoiceIfNeeded() {
+        if (dismissVolumeHotkeyEnableWarning) {
+            viewModel.setVolumeHotkeyEnableWarningDismissed(true)
+        }
     }
 
     CenteredPageColumn(
@@ -15328,21 +15435,6 @@ fun FloatingOverlayScreen(
         }
 
         Md2StaggeredFloatIn(index = 1) {
-            Md2SettingsCard(title = "启动器快捷方式补全") {
-                Md2SettingSwitchRow(
-                    title = "使用内嵌列表补全第三方快捷方式",
-                    checked = state.floatingOverlayHardcodedShortcutSupplement,
-                    onCheckedChange = { viewModel.setFloatingOverlayHardcodedShortcutSupplement(it) },
-                    supportingText = "默认关闭。开启后，悬浮窗启动器里第三方应用的长按菜单会用内置国内常用应用列表补齐缺失项；微信“扫一扫”始终保留。"
-                )
-                Text(
-                    "运行时能正常查询到的系统快捷方式不受影响；该开关只控制写死列表的额外增补。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-
-        Md2StaggeredFloatIn(index = 2) {
             Md2SettingsCard(title = "音量热键") {
                 Text(
                     "序列监听由独立服务处理，不挂在现有悬浮窗服务上。开启无障碍稳定监听后，会优先直接读取音量键事件；未授权时会自动回退到系统音量变化判定。",
@@ -15441,7 +15533,7 @@ fun FloatingOverlayScreen(
                     actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyUpDownAction),
                     supportingText = "先按音量加，再在设定时间内按音量减。",
                     onEnabledChange = {
-                        viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.UpDown, it)
+                        requestVolumeHotkeyEnabled(VolumeHotkeySequence.UpDown, it)
                     },
                     onPickAction = { hotkeyActionPickerSequence = VolumeHotkeySequence.UpDown }
                 )
@@ -15455,7 +15547,7 @@ fun FloatingOverlayScreen(
                     actionLabel = VolumeHotkeyActions.labelOf(state.volumeHotkeyDownUpAction),
                     supportingText = "先按音量减，再在设定时间内按音量加。",
                     onEnabledChange = {
-                        viewModel.setVolumeHotkeyEnabled(VolumeHotkeySequence.DownUp, it)
+                        requestVolumeHotkeyEnabled(VolumeHotkeySequence.DownUp, it)
                     },
                     onPickAction = { hotkeyActionPickerSequence = VolumeHotkeySequence.DownUp }
                 )
@@ -15463,6 +15555,67 @@ fun FloatingOverlayScreen(
         }
 
         Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+
+    pendingVolumeHotkeyEnableSequence?.let { sequence ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingVolumeHotkeyEnableSequence = null
+                dismissVolumeHotkeyEnableWarning = false
+            },
+            title = { Text("建议开启无障碍稳定监听") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("部分系统由于设计原因，首次点按音量键时只会弹出音量调整控件，并不会真正调整音量。")
+                    Text("未开启无障碍稳定监听时，KIGTTS 只能通过系统音量数值变化判断按键序列，可能需要多按几次音量键才能触发。")
+                    Text("开启无障碍稳定监听后，可以直接读取音量键事件，触发会更稳定。")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = dismissVolumeHotkeyEnableWarning,
+                            onCheckedChange = { dismissVolumeHotkeyEnableWarning = it }
+                        )
+                        Text("下次开启不再提示")
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            pendingVolumeHotkeyEnableSequence = null
+                            dismissVolumeHotkeyEnableWarning = false
+                        }
+                    ) {
+                        Text("取消")
+                    }
+                    TextButton(
+                        onClick = {
+                            persistVolumeHotkeyEnableWarningChoiceIfNeeded()
+                            viewModel.setVolumeHotkeyEnabled(sequence, true)
+                            pendingVolumeHotkeyEnableSequence = null
+                            dismissVolumeHotkeyEnableWarning = false
+                        }
+                    ) {
+                        Text("开启热键")
+                    }
+                    TextButton(
+                        onClick = {
+                            persistVolumeHotkeyEnableWarningChoiceIfNeeded()
+                            viewModel.setVolumeHotkeyEnabled(sequence, true)
+                            pendingVolumeHotkeyEnableSequence = null
+                            dismissVolumeHotkeyEnableWarning = false
+                            accessibilityExplainDialogOpen = true
+                        }
+                    ) {
+                        Text("开启无障碍")
+                    }
+                }
+            }
+        )
     }
 
     hotkeyActionPickerSequence?.let { sequence ->
@@ -16954,7 +17107,12 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStrokeOnBoard(
 }
 
 @Composable
-fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
+fun SettingsScreen(
+    viewModel: MainViewModel,
+    state: UiState,
+    onOpenLicenses: () -> Unit,
+    onOpenPrivacy: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
@@ -17000,7 +17158,6 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     var speakerEnrollMessage by remember { mutableStateOf("") }
     var speakerEnrollRetryDialog by remember { mutableStateOf(false) }
     var speakerEnrollOpenedByToggle by remember { mutableStateOf(false) }
-    var showBuiltinAsrPicker by remember { mutableStateOf(false) }
     val speakerEnrollTexts = remember {
         listOf(
             "清晨的风吹过脸颊，我大步沿着河边走。",
@@ -17009,14 +17166,22 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
         )
     }
     val speakerEnrollSamples = remember { mutableStateListOf<FloatArray?>() }
-    val asrPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) viewModel.importAsr(uri) else toast(context, "未选择文件")
-    }
     val drawingDirPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) {
             viewModel.setDrawingSavePathFromTreeUri(uri)
         } else {
             toast(context, "未选择目录")
+        }
+    }
+    fun openExternalPage(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }.onFailure {
+            toast(context, "打开主页失败")
         }
     }
     fun startSpeakerEnrollStepCapture(step: Int) {
@@ -17107,20 +17272,214 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     }
 
     @Composable
-    fun ResourceSettingsContent() {
+    fun AboutContributorItem(
+        avatarRes: Int,
+        name: String,
+        homepage: String,
+        modifier: Modifier = Modifier,
+        avatarSize: Dp = 54.dp
+    ) {
+        Row(
+            modifier = modifier,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Image(
+                painter = androidx.compose.ui.res.painterResource(id = avatarRes),
+                contentDescription = name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(avatarSize)
+                    .clip(CircleShape)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                        shape = CircleShape
+                    )
+            )
+            Text(
+                text = name,
+                modifier = Modifier.weight(1f),
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.primary) {
+                Md2IconButton(
+                    icon = "open_in_new",
+                    contentDescription = "打开${name}主页",
+                    onClick = { openExternalPage(homepage) }
+                )
+            }
+        }
+    }
+
+    @Composable
+    fun AboutDocumentRow(
+        title: String,
+        onClick: () -> Unit,
+        modifier: Modifier = Modifier,
+        showDivider: Boolean = true
+    ) {
+        Column(modifier = modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = rememberRipple(bounded = true),
+                        onClick = onClick
+                    )
+                    .padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                MsIcon("chevron_right", contentDescription = null)
+            }
+            if (showDivider) {
+                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.18f))
+            }
+        }
+    }
+
+    @Composable
+    fun AboutSettingsContent() {
+        val configuration = LocalConfiguration.current
+        val isPortrait = configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
+        val packageInfo = remember(context) {
+            runCatching {
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            }.getOrNull()
+        }
+        @Suppress("DEPRECATION")
+        val versionLabel = remember(packageInfo) {
+            val versionName = packageInfo?.versionName ?: "未知版本"
+            val versionCode = packageInfo?.let {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    it.longVersionCode
+                } else {
+                    it.versionCode.toLong()
+                }
+            } ?: 0L
+            "版本 $versionName ($versionCode)"
+        }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Md2StaggeredFloatIn(index = 0) {
-                Md2SettingsCard(title = "模型与资源") {
-                    Text("ASR 模型 (sosv-int8.zip)", fontWeight = FontWeight.Bold)
-                    Text(state.asrDir?.absolutePath ?: "未导入", style = MaterialTheme.typography.bodySmall)
-                    Md2Button(onClick = {
-                        if (state.useBuiltinFileManager) {
-                            showBuiltinAsrPicker = true
-                        } else {
-                            asrPicker.launch("*/*")
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.CardElevation
+                ) {
+                    val logoRes = if (isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Image(
+                            painter = androidx.compose.ui.res.painterResource(id = logoRes),
+                            contentDescription = "KIGTTS Logo",
+                            modifier = Modifier
+                                .fillMaxWidth(0.82f)
+                                .height(50.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                        Text(
+                            text = versionLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 1) {
+                Md2SettingsCard(title = "软件制作") {
+                    if (isPortrait) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_lht,
+                                name = "LHT",
+                                homepage = "https://www.bilibili.com/space/87244951",
+                                modifier = Modifier.fillMaxWidth(),
+                                avatarSize = 60.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_yuilu,
+                                name = "Yui Lu",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.fillMaxWidth(),
+                                avatarSize = 60.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_huajiang,
+                                name = "花酱",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.fillMaxWidth(),
+                                avatarSize = 60.dp
+                            )
                         }
-                    }) {
-                        Text("导入 ASR 模型")
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_lht,
+                                name = "LHT",
+                                homepage = "https://www.bilibili.com/space/87244951",
+                                modifier = Modifier.weight(1f),
+                                avatarSize = 48.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_yuilu,
+                                name = "Yui Lu",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.weight(1f),
+                                avatarSize = 48.dp
+                            )
+                            AboutContributorItem(
+                                avatarRes = R.drawable.avatar_huajiang,
+                                name = "花酱",
+                                homepage = "https://www.bilibili.com/space/573842321",
+                                modifier = Modifier.weight(1f),
+                                avatarSize = 48.dp
+                            )
+                        }
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 2) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.CardElevation
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        AboutDocumentRow(
+                            title = "开源许可证",
+                            onClick = onOpenLicenses,
+                            showDivider = false
+                        )
+                        AboutDocumentRow(
+                            title = "隐私政策",
+                            onClick = onOpenPrivacy,
+                            showDivider = false
+                        )
                     }
                 }
             }
@@ -17714,7 +18073,7 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
     @Composable
     fun SettingsCategoryContent(category: SettingsCategory) {
         when (category) {
-            SettingsCategory.Resources -> ResourceSettingsContent()
+            SettingsCategory.About -> AboutSettingsContent()
             SettingsCategory.Recognition -> RecognitionSettingsContent()
             SettingsCategory.Audio -> AudioSettingsContent()
             SettingsCategory.System -> SystemSettingsContent()
@@ -17827,22 +18186,6 @@ fun SettingsScreen(viewModel: MainViewModel, state: UiState) {
                 }
             }
         }
-    }
-
-    if (showBuiltinAsrPicker) {
-        BuiltinFilePickerDialog(
-            title = "选择 ASR 模型文件",
-            allowedExtensions = setOf("zip"),
-            onDismiss = { showBuiltinAsrPicker = false },
-            onPicked = { uri ->
-                showBuiltinAsrPicker = false
-                viewModel.importAsr(uri)
-            },
-            onOpenSystemPicker = {
-                showBuiltinAsrPicker = false
-                asrPicker.launch("*/*")
-            }
-        )
     }
 
     if (showSpeakerEnrollDialog) {
@@ -18136,6 +18479,564 @@ fun LogScreen(
             }
         }
         Spacer(Modifier.height(UiTokens.PageBottomBlank))
+    }
+}
+
+@Composable
+private fun LegalDocumentScreen(assetPath: String) {
+    val context = LocalContext.current
+    val listState = rememberLazyListState()
+    val legalBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 8.dp
+    val markdownBlocks = remember(assetPath) { mutableStateListOf<MarkdownBlock>() }
+    var isParsing by remember(assetPath) { mutableStateOf(true) }
+
+    LaunchedEffect(assetPath) {
+        isParsing = true
+        markdownBlocks.clear()
+        val documentText = withContext(Dispatchers.IO) {
+            runCatching {
+                context.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    .removePrefix("\uFEFF")
+            }.getOrElse {
+                "文档加载失败：${it.message ?: "未知错误"}"
+            }
+        }
+        var emittedAny = false
+        withContext(Dispatchers.Default) {
+            parseMarkdownBlocksStreaming(documentText, chunkSize = 24) { chunk ->
+                withContext(Dispatchers.Main) {
+                    markdownBlocks.addAll(chunk)
+                    if (!emittedAny) {
+                        emittedAny = true
+                        isParsing = false
+                    }
+                }
+            }
+        }
+        if (!emittedAny) {
+            markdownBlocks += MarkdownBlock.Paragraph("暂无内容")
+        }
+        isParsing = false
+    }
+    fun openExternalUrl(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }.onFailure {
+            toast(context, "打开链接失败")
+        }
+    }
+    CenteredPageBox(
+        maxWidth = UiTokens.WideContentMaxWidth,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = UiTokens.PageTopBlank, bottom = legalBottomPadding),
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(14.dp)
+            ) {
+                if (markdownBlocks.isEmpty() && isParsing) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+                itemsIndexed(markdownBlocks) { _, block ->
+                    MarkdownBlockView(
+                        block = block,
+                        onOpenUrl = ::openExternalUrl
+                    )
+                }
+                if (isParsing && markdownBlocks.isNotEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 2.5.dp,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private sealed interface MarkdownBlock {
+    data class Heading(val level: Int, val text: String) : MarkdownBlock
+    data class Paragraph(val text: String) : MarkdownBlock
+    data class ListBlock(
+        val items: List<String>,
+        val ordered: Boolean,
+        val startIndex: Int = 1
+    ) : MarkdownBlock
+    data class CodeFence(val code: String) : MarkdownBlock
+    data object Divider : MarkdownBlock
+}
+
+private fun parseMarkdownBlocks(markdown: String): List<MarkdownBlock> {
+    val blocks = mutableListOf<MarkdownBlock>()
+    val lines = markdown.replace("\r\n", "\n").split('\n')
+    val paragraphLines = mutableListOf<String>()
+
+    fun flushParagraph() {
+        if (paragraphLines.isEmpty()) return
+        val text = paragraphLines.joinToString(" ") { it.trim() }
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (text.isNotEmpty()) {
+            blocks += MarkdownBlock.Paragraph(text)
+        }
+        paragraphLines.clear()
+    }
+
+    var index = 0
+    while (index < lines.size) {
+        val rawLine = lines[index]
+        val trimmed = rawLine.trim()
+
+        if (trimmed.startsWith("```")) {
+            flushParagraph()
+            val codeLines = mutableListOf<String>()
+            index++
+            while (index < lines.size && !lines[index].trim().startsWith("```")) {
+                codeLines += lines[index]
+                index++
+            }
+            blocks += MarkdownBlock.CodeFence(codeLines.joinToString("\n").trimEnd())
+            index++
+            continue
+        }
+
+        if (trimmed.isBlank()) {
+            flushParagraph()
+            index++
+            continue
+        }
+
+        val headingMatch = Regex("^(#{1,6})\\s+(.+)$").matchEntire(trimmed)
+        if (headingMatch != null) {
+            flushParagraph()
+            blocks += MarkdownBlock.Heading(
+                level = headingMatch.groupValues[1].length,
+                text = headingMatch.groupValues[2].trim()
+            )
+            index++
+            continue
+        }
+
+        if (trimmed.matches(Regex("^([-*_])\\1{2,}$"))) {
+            flushParagraph()
+            blocks += MarkdownBlock.Divider
+            index++
+            continue
+        }
+
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            flushParagraph()
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                if (listLine.startsWith("- ") || listLine.startsWith("* ")) {
+                    items += listLine.substring(2).trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                blocks += MarkdownBlock.ListBlock(items = items, ordered = false)
+            }
+            continue
+        }
+
+        val orderedMatch = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(trimmed)
+        if (orderedMatch != null) {
+            flushParagraph()
+            val startIndex = orderedMatch.groupValues[1].toIntOrNull() ?: 1
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                val match = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(listLine)
+                if (match != null) {
+                    items += match.groupValues[2].trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                blocks += MarkdownBlock.ListBlock(items = items, ordered = true, startIndex = startIndex)
+            }
+            continue
+        }
+
+        paragraphLines += rawLine
+        index++
+    }
+
+    flushParagraph()
+    return blocks
+}
+
+private data class MarkdownColors(
+    val text: Color,
+    val heading: Color,
+    val link: Color,
+    val code: Color,
+    val codeBackground: Color,
+    val codeBlockBackground: Color,
+    val divider: Color,
+    val hint: Color
+)
+
+private suspend fun parseMarkdownBlocksStreaming(
+    markdown: String,
+    chunkSize: Int,
+    onChunk: suspend (List<MarkdownBlock>) -> Unit
+) {
+    val lines = markdown.replace("\r\n", "\n").split('\n')
+    val paragraphLines = mutableListOf<String>()
+    val pendingBlocks = mutableListOf<MarkdownBlock>()
+
+    suspend fun emitBlock(block: MarkdownBlock) {
+        pendingBlocks += block
+        if (pendingBlocks.size >= chunkSize) {
+            onChunk(pendingBlocks.toList())
+            pendingBlocks.clear()
+            yield()
+        }
+    }
+
+    suspend fun flushParagraph() {
+        if (paragraphLines.isEmpty()) return
+        val text = paragraphLines.joinToString(" ") { it.trim() }
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (text.isNotEmpty()) {
+            emitBlock(MarkdownBlock.Paragraph(text))
+        }
+        paragraphLines.clear()
+    }
+
+    var index = 0
+    while (index < lines.size) {
+        val rawLine = lines[index]
+        val trimmed = rawLine.trim()
+
+        if (trimmed.startsWith("```")) {
+            flushParagraph()
+            val codeLines = mutableListOf<String>()
+            index++
+            while (index < lines.size && !lines[index].trim().startsWith("```")) {
+                codeLines += lines[index]
+                index++
+            }
+            emitBlock(MarkdownBlock.CodeFence(codeLines.joinToString("\n").trimEnd()))
+            index++
+            continue
+        }
+
+        if (trimmed.isBlank()) {
+            flushParagraph()
+            index++
+            continue
+        }
+
+        val headingMatch = Regex("^(#{1,6})\\s+(.+)$").matchEntire(trimmed)
+        if (headingMatch != null) {
+            flushParagraph()
+            emitBlock(
+                MarkdownBlock.Heading(
+                    level = headingMatch.groupValues[1].length,
+                    text = headingMatch.groupValues[2].trim()
+                )
+            )
+            index++
+            continue
+        }
+
+        if (trimmed.matches(Regex("^([-*_])\\1{2,}$"))) {
+            flushParagraph()
+            emitBlock(MarkdownBlock.Divider)
+            index++
+            continue
+        }
+
+        if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+            flushParagraph()
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                if (listLine.startsWith("- ") || listLine.startsWith("* ")) {
+                    items += listLine.substring(2).trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                emitBlock(MarkdownBlock.ListBlock(items = items, ordered = false))
+            }
+            continue
+        }
+
+        val orderedMatch = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(trimmed)
+        if (orderedMatch != null) {
+            flushParagraph()
+            val startIndex = orderedMatch.groupValues[1].toIntOrNull() ?: 1
+            val items = mutableListOf<String>()
+            while (index < lines.size) {
+                val listLine = lines[index].trim()
+                val match = Regex("^(\\d+)\\.\\s+(.+)$").matchEntire(listLine)
+                if (match != null) {
+                    items += match.groupValues[2].trim()
+                    index++
+                } else {
+                    break
+                }
+            }
+            if (items.isNotEmpty()) {
+                emitBlock(
+                    MarkdownBlock.ListBlock(
+                        items = items,
+                        ordered = true,
+                        startIndex = startIndex
+                    )
+                )
+            }
+            continue
+        }
+
+        paragraphLines += rawLine
+        index++
+    }
+
+    flushParagraph()
+    if (pendingBlocks.isNotEmpty()) {
+        onChunk(pendingBlocks.toList())
+    }
+}
+
+@Composable
+private fun MarkdownBlockView(
+    block: MarkdownBlock,
+    onOpenUrl: (String) -> Unit
+) {
+    val dark = isSystemInDarkTheme()
+    val colors = remember(dark) {
+        MarkdownColors(
+            text = if (dark) Color(0xFFE5ECEF) else Color(0xFF1B1F22),
+            heading = if (dark) Color(0xFFF4FAFC) else Color(0xFF101417),
+            link = if (dark) Color(0xFF7FD7F1) else Color(0xFF007C91),
+            code = if (dark) Color(0xFFF5F7F9) else Color(0xFF1D252B),
+            codeBackground = if (dark) Color(0xFF24313A) else Color(0xFFE8EEF2),
+            codeBlockBackground = if (dark) Color(0xFF1A232A) else Color(0xFFF3F6F8),
+            divider = if (dark) Color(0xFF45525A) else Color(0xFFD6DEE3),
+            hint = if (dark) Color(0xFF9FB0BA) else Color(0xFF687780)
+        )
+    }
+    when (block) {
+        is MarkdownBlock.Heading -> {
+            val style = when (block.level) {
+                1 -> MaterialTheme.typography.h5.copy(color = colors.heading)
+                2 -> MaterialTheme.typography.h6.copy(color = colors.heading)
+                3 -> MaterialTheme.typography.subtitle1.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.heading
+                )
+                else -> MaterialTheme.typography.body1.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.heading
+                )
+            }
+            MarkdownText(
+                text = block.text,
+                style = style,
+                colors = colors,
+                onOpenUrl = onOpenUrl
+            )
+        }
+
+        is MarkdownBlock.Paragraph -> {
+            MarkdownText(
+                text = block.text,
+                style = MaterialTheme.typography.body2.copy(
+                    lineHeight = 20.sp,
+                    color = colors.text
+                ),
+                colors = colors,
+                onOpenUrl = onOpenUrl
+            )
+        }
+
+        is MarkdownBlock.ListBlock -> {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                block.items.forEachIndexed { itemIndex, item ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (block.ordered) "${block.startIndex + itemIndex}." else "•",
+                            style = MaterialTheme.typography.body2.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                lineHeight = 20.sp,
+                                color = colors.heading
+                            ),
+                            modifier = Modifier.padding(top = 1.dp)
+                        )
+                        MarkdownText(
+                            text = item,
+                            style = MaterialTheme.typography.body2.copy(
+                                lineHeight = 20.sp,
+                                color = colors.text
+                            ),
+                            modifier = Modifier.weight(1f),
+                            colors = colors,
+                            onOpenUrl = onOpenUrl
+                        )
+                    }
+                }
+            }
+        }
+
+        is MarkdownBlock.CodeFence -> {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                backgroundColor = colors.codeBlockBackground,
+                elevation = 0.dp
+            ) {
+                SelectionContainer(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    Text(
+                        text = block.code,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = colors.code,
+                            fontFamily = FontFamily.Monospace,
+                            lineHeight = 20.sp
+                        )
+                    )
+                }
+            }
+        }
+
+        MarkdownBlock.Divider -> Divider(color = colors.divider)
+    }
+}
+
+@Composable
+private fun MarkdownText(
+    text: String,
+    style: TextStyle,
+    colors: MarkdownColors,
+    onOpenUrl: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val annotated = remember(text, colors) {
+        buildMarkdownAnnotatedString(
+            text = text,
+            linkColor = colors.link,
+            codeColor = colors.code,
+            codeBackground = colors.codeBackground
+        )
+    }
+    ClickableText(
+        text = annotated,
+        modifier = modifier,
+        style = style,
+        onClick = { offset ->
+            annotated
+                .getStringAnnotations(tag = "URL", start = offset, end = offset)
+                .firstOrNull()
+                ?.let { onOpenUrl(it.item) }
+        }
+    )
+}
+
+private fun buildMarkdownAnnotatedString(
+    text: String,
+    linkColor: Color,
+    codeColor: Color,
+    codeBackground: Color
+): AnnotatedString = buildAnnotatedString {
+    var index = 0
+    while (index < text.length) {
+        val linkMatch = Regex("""^\[([^\]]+)]\((https?://[^)]+)\)""").find(text.substring(index))
+        if (linkMatch != null && linkMatch.range.first == 0) {
+            val label = linkMatch.groupValues[1]
+            val url = linkMatch.groupValues[2]
+            pushStringAnnotation(tag = "URL", annotation = url)
+            withStyle(
+                SpanStyle(
+                    color = linkColor,
+                    textDecoration = TextDecoration.Underline
+                )
+            ) {
+                append(label)
+            }
+            pop()
+            index += linkMatch.value.length
+            continue
+        }
+
+        if (text.startsWith("**", index)) {
+            val end = text.indexOf("**", startIndex = index + 2)
+            if (end > index + 2) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                    append(text.substring(index + 2, end))
+                }
+                index = end + 2
+                continue
+            }
+        }
+
+        if (text[index] == '`') {
+            val end = text.indexOf('`', startIndex = index + 1)
+            if (end > index + 1) {
+                withStyle(
+                    SpanStyle(
+                        color = codeColor,
+                        background = codeBackground,
+                        fontFamily = FontFamily.Monospace
+                    )
+                ) {
+                    append(text.substring(index + 1, end))
+                }
+                index = end + 1
+                continue
+            }
+        }
+
+        append(text[index])
+        index++
     }
 }
 

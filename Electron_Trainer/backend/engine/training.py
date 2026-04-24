@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from .config import SegmentMetadata, TrainingOptions, ProgressCallback
+from .runtime_manager import resolve_cuda_python
 from .utils import find_executable
 
 
@@ -41,7 +42,11 @@ def _resources_dir() -> Path:
     return base
 
 
-def _find_piper_python() -> Optional[Path]:
+def _find_piper_python(*, prefer_cuda: bool = False) -> Optional[Path]:
+    if prefer_cuda:
+        cuda_python = resolve_cuda_python()
+        if cuda_python and cuda_python.exists():
+            return cuda_python
     base = _base_dir()
     candidates = [
         base / "piper_env" / "python.exe",
@@ -59,17 +64,27 @@ def _piper_env(piper_python: Path) -> dict:
     piper_root = piper_python.parent
     env["PYTHONHOME"] = str(piper_root)
     env["PYTHONPATH"] = ""
-    env["PATH"] = f"{piper_root};{piper_root / 'Scripts'};{env.get('PATH', '')}"
+    path_entries = [
+        str(piper_root),
+        str(piper_root / "Scripts"),
+        str(piper_root / "Library" / "bin"),
+        str(piper_root / "Library" / "usr" / "bin"),
+        str(piper_root / "Library" / "mingw-w64" / "bin"),
+        env.get("PATH", ""),
+    ]
+    env["PATH"] = os.pathsep.join(entry for entry in path_entries if entry)
     return env
 
 
-def _cuda_available(piper_python: Path) -> bool:
+def _cuda_available(piper_python: Path) -> Optional[bool]:
     env = _piper_env(piper_python)
+    env.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "1")
     cmd = [
         str(piper_python),
         "-c",
         "import torch; print('1' if torch.cuda.is_available() else '0')",
     ]
+    timeout_sec = int(os.environ.get("KGTTS_CUDA_CHECK_TIMEOUT_SEC", "15"))
     try:
         proc = subprocess.run(
             cmd,
@@ -78,10 +93,20 @@ def _cuda_available(piper_python: Path) -> bool:
             text=True,
             env=env,
             cwd=str(piper_python.parent),
+            timeout=timeout_sec,
         )
+    except subprocess.TimeoutExpired:
+        return None
     except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    output = proc.stdout.strip()
+    if "1" in output:
+        return True
+    if "0" in output:
         return False
-    return proc.returncode == 0 and "1" in proc.stdout.strip()
+    return None
 
 
 def _default_phonemizer_dict() -> Path:
@@ -374,7 +399,8 @@ def run_piper_training(
 ) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
     log_path = work_dir / "training.log"
-    piper_python = _find_piper_python()
+    prefer_cuda = opts.device.lower() in {"cuda", "gpu"}
+    piper_python = _find_piper_python(prefer_cuda=prefer_cuda)
     if piper_python:
         prep_script = _resources_dir() / "tools" / "piper_prep.py"
         if not prep_script.exists():
@@ -417,12 +443,6 @@ def run_piper_training(
             ]
         else:
             prep_cmd += ["--phoneme-type", "text", "--dict", str(phonemizer)]
-
-        accelerator = "gpu" if opts.device.lower() in {"cuda", "gpu"} else "cpu"
-        if accelerator == "gpu" and not _cuda_available(piper_python):
-            if progress:
-                progress("train", 0.0, "未检测到 CUDA，自动切换为 CPU 训练")
-            accelerator = "cpu"
 
         base_ckpt = opts.piper_base_checkpoint
         if base_ckpt and not base_ckpt.exists():
@@ -533,15 +553,96 @@ def run_piper_training(
         def run_with_stream(cmd: list[str], stage: str, base_progress: float, label: str) -> int:
             if progress:
                 progress(stage, base_progress, label)
+            env_stream = env.copy()
+            env_stream["PYTHONUNBUFFERED"] = "1"
+            env_stream["PYTHONIOENCODING"] = "utf-8"
+            env_stream["PYTHONUTF8"] = "1"
+
+            def format_stream_message_for_ui(raw_line: str) -> Optional[str]:
+                msg = raw_line.strip()
+                if not msg:
+                    return None
+
+                if msg.startswith("Traceback (most recent call last):"):
+                    return None
+                if re.match(r'^\s*File ".*", line \d+, in .+$', msg):
+                    return None
+
+                if msg.startswith("DEBUG:piper_train:Namespace("):
+                    accelerator_match = re.search(r"accelerator='([^']+)'", msg)
+                    batch_match = re.search(r"batch_size=(\d+)", msg)
+                    accelerator_name = accelerator_match.group(1) if accelerator_match else "unknown"
+                    batch_value = batch_match.group(1) if batch_match else "?"
+                    return f"Piper 训练参数已加载（device={accelerator_name}, batch={batch_value}）"
+
+                if msg.startswith("DEBUG:piper_train:Checkpoints will be saved every "):
+                    epoch_match = re.search(r"every (\d+) epoch", msg)
+                    every_epoch = epoch_match.group(1) if epoch_match else "?"
+                    return f"检查点保存间隔: 每 {every_epoch} 个 epoch"
+
+                if msg.startswith("DEBUG:vits.dataset:Loading dataset:"):
+                    dataset_path = msg.split("DEBUG:vits.dataset:Loading dataset:", 1)[1].strip()
+                    return f"加载数据集: {Path(dataset_path).name}"
+
+                if msg.startswith("DEBUG:fsspec.local:open file:"):
+                    return None
+
+                if msg.startswith("GPU available:"):
+                    gpu_match = re.search(r"GPU available:\s*(True|False), used:\s*(True|False)", msg)
+                    if gpu_match:
+                        available = "可用" if gpu_match.group(1) == "True" else "不可用"
+                        used = "使用中" if gpu_match.group(2) == "True" else "未使用"
+                        return f"GPU 状态: {available}，当前{used}"
+                    return "GPU 状态已更新"
+
+                if msg.startswith(("TPU available:", "IPU available:", "HPU available:")):
+                    return None
+
+                if msg.startswith("Missing logger folder:"):
+                    return "初始化训练日志目录"
+
+                if msg.startswith("Restoring states from the checkpoint path at "):
+                    ckpt_path = msg.split(" at ", 1)[1].strip()
+                    return f"正在恢复基线检查点: {Path(ckpt_path).name}"
+
+                if msg.startswith("Restored all states from the checkpoint file at "):
+                    ckpt_path = msg.split(" at ", 1)[1].strip()
+                    return f"已恢复基线检查点: {Path(ckpt_path).name}"
+
+                warning_match = re.match(
+                    r"^[A-Za-z]:\\.*?\.py:\d+:\s*([A-Za-z]+Warning|LightningDeprecationWarning|PossibleUserWarning):\s*(.+)$",
+                    msg,
+                )
+                if warning_match:
+                    warning_type = warning_match.group(1)
+                    warning_body = warning_match.group(2).strip()
+                    warning_body_lower = warning_body.lower()
+                    if "does not have many workers" in warning_body_lower:
+                        return "提示: train_dataloader 的 num_workers 较少，可能影响训练速度。"
+                    if "total length of `dataloader` across ranks is zero" in warning_body_lower:
+                        return "提示: 某个 DataLoader 长度为 0，请确认这是你的预期。"
+                    if "callbacks used to create the checkpoint need to be provided" in warning_body_lower:
+                        return "提示: 恢复检查点时未附带原始回调配置，后续检查点保存策略可能与基线不同。"
+                    if "resume_from_checkpoint" in warning_body_lower:
+                        return "兼容性提示: 当前 Piper 训练仍在使用旧版 resume_from_checkpoint 接口。"
+                    prefix = "兼容性提示" if "Deprecation" in warning_type else "提示"
+                    return f"{prefix}: {warning_body}"
+
+                return msg
+
             with log_path.open("a", encoding="utf-8") as log_file:
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
                     text=True,
-                    env=env,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env_stream,
                     cwd=str(piper_python.parent),
                     bufsize=1,
+                    close_fds=True,
                 )
 
                 line_queue: queue.Queue[Optional[str]] = queue.Queue()
@@ -558,6 +659,7 @@ def run_piper_training(
                 threading.Thread(target=reader, daemon=True).start()
 
                 last_emit = 0.0
+                last_ui_msg: Optional[str] = None
                 while True:
                     try:
                         line = line_queue.get(timeout=0.5)
@@ -576,10 +678,11 @@ def run_piper_training(
                     log_file.flush()
                     now = time.monotonic()
                     if progress and now - last_emit > 1.0:
-                        msg = line.strip()
-                        if msg:
-                            progress(stage, base_progress, msg[:120])
-                        last_emit = now
+                        ui_msg = format_stream_message_for_ui(line)
+                        if ui_msg and ui_msg != last_ui_msg:
+                            progress(stage, base_progress, ui_msg[:120])
+                            last_ui_msg = ui_msg
+                            last_emit = now
 
                 try:
                     proc.wait(timeout=1)
@@ -590,6 +693,84 @@ def run_piper_training(
                     log_file.write(f"\n[exit] code={code}\n")
                     log_file.flush()
                 return code
+
+        def _read_log_lower() -> str:
+            if not log_path.exists():
+                return ""
+            try:
+                return log_path.read_text(encoding="utf-8", errors="ignore").lower()
+            except Exception:
+                return ""
+
+        def _log_contains_any(patterns: tuple[str, ...]) -> bool:
+            content = _read_log_lower()
+            if not content:
+                return False
+            return any(pattern in content for pattern in patterns)
+
+        def _log_contains_oom() -> bool:
+            return _log_contains_any(
+                (
+                    "out of memory",
+                    "cuda out of memory",
+                    "cublas_status_alloc_failed",
+                    "cuda error: out of memory",
+                )
+            )
+
+        def _log_contains_gpu_backend_unavailable() -> bool:
+            return _log_contains_any(
+                (
+                    "no supported gpu backend found",
+                    "misconfigurationexception: no supported gpu backend found",
+                    "trainer was configured to use `gpu` accelerator, but no gpu",
+                    "gpuaccelerator can not run",
+                    "cuda is not available",
+                )
+            )
+
+        def _log_contains_baseline_resume_failure() -> bool:
+            return _log_contains_any(
+                (
+                    "error(s) in loading state_dict",
+                    "missing key(s) in state_dict",
+                    "unexpected key(s) in state_dict",
+                    "size mismatch for",
+                    "invalid load key",
+                    "pytorchstreamreader failed",
+                    "failed finding central directory",
+                    "storage has wrong size",
+                    "cannot instantiate 'windowspath' on your system",
+                    "cannot instantiate 'posixpath' on your system",
+                )
+            )
+
+        accelerator = "gpu" if opts.device.lower() in {"cuda", "gpu"} else "cpu"
+        if progress:
+            progress("train", 0.0, "检查 Piper 训练环境...")
+        if accelerator == "gpu":
+            cuda_probe = _cuda_available(piper_python)
+            if cuda_probe is False:
+                warn = "未检测到 CUDA，自动切换为 CPU 训练。"
+                if progress:
+                    progress("train", 0.0, warn)
+                try:
+                    with log_path.open("a", encoding="utf-8") as log_file:
+                        log_file.write("[warn] " + warn + "\n")
+                        log_file.flush()
+                except Exception:
+                    pass
+                accelerator = "cpu"
+            elif cuda_probe is None:
+                warn = "CUDA 检测超时或失败，继续尝试 GPU 训练。"
+                if progress:
+                    progress("train", 0.0, warn)
+                try:
+                    with log_path.open("a", encoding="utf-8") as log_file:
+                        log_file.write("[warn] " + warn + "\n")
+                        log_file.flush()
+                except Exception:
+                    pass
 
         if progress:
             progress("train", 0.0, "启动 Piper 预处理")
@@ -709,6 +890,8 @@ def run_piper_training(
 
         def build_train_cmd(
             max_epochs: int,
+            batch_size: int,
+            accelerator_name: str,
             resume_single: Optional[Path],
             resume_full: Optional[Path],
         ) -> list[str]:
@@ -716,11 +899,11 @@ def run_piper_training(
                 "--dataset-dir",
                 str(prep_dir),
                 "--batch-size",
-                str(effective_batch),
+                str(batch_size),
                 "--max_epochs",
                 str(max_epochs),
                 "--accelerator",
-                accelerator,
+                accelerator_name,
                 "--devices",
                 "1",
                 "--precision",
@@ -738,7 +921,7 @@ def run_piper_training(
                 "--log_every_n_steps",
                 "1",
             ]
-            if accelerator == "cpu":
+            if accelerator_name == "cpu":
                 # Keep CPU training single-process on Windows; avoids lingering
                 # multiprocessing child that can block parent process exit.
                 args += ["--strategy", "single_device"]
@@ -751,49 +934,94 @@ def run_piper_training(
                 args += ["--resume_from_checkpoint", str(resume_full)]
             return _wrap_piper_train_args(args)
 
-        train_cmd = build_train_cmd(train_max_epochs, resume_single_ckpt, resume_ckpt)
+        train_batch = effective_batch
+        train_accelerator = accelerator
+        current_resume_single = resume_single_ckpt
+        current_resume_ckpt = resume_ckpt
+        current_max_epochs = train_max_epochs
+        baseline_retry_used = False
 
-        if progress:
-            progress("train", 0.2, "启动 Piper 训练")
-        try:
-            with log_path.open("a", encoding="utf-8") as log_file:
-                log_file.write("\n== Piper Train ==\n")
-                log_file.write("CMD: " + " ".join(train_cmd) + "\n")
-                log_file.flush()
-        except Exception:
-            pass
-        # Use a separate console for training to mimic legacy behavior.
-        train_code = run_blocking(
-            train_cmd,
-            "train",
-            0.2,
-            "Piper 训练中...",
-            creationflags=_new_console_flags(),
-        )
-        if train_code != 0 and (resume_single_ckpt or resume_ckpt):
-            retry_msg = (
-                "检测到基线恢复失败，自动改为不使用基线重试训练。"
+        while True:
+            train_cmd = build_train_cmd(
+                current_max_epochs,
+                train_batch,
+                train_accelerator,
+                current_resume_single,
+                current_resume_ckpt,
             )
             if progress:
-                progress("train", 0.2, retry_msg)
+                progress(
+                    "train",
+                    0.2,
+                    f"启动 Piper 训练（device={train_accelerator}, batch={train_batch}）",
+                )
             try:
                 with log_path.open("a", encoding="utf-8") as log_file:
-                    log_file.write(retry_msg + "\n")
-                    log_file.write("\n== Piper Train Retry (No Baseline) ==\n")
-                    retry_cmd = build_train_cmd(extra_epochs, None, None)
-                    log_file.write("CMD: " + " ".join(retry_cmd) + "\n")
+                    log_file.write("\n== Piper Train ==\n")
+                    log_file.write("CMD: " + " ".join(train_cmd) + "\n")
                     log_file.flush()
             except Exception:
-                retry_cmd = build_train_cmd(extra_epochs, None, None)
-            train_code = run_blocking(
-                retry_cmd,
-                "train",
-                0.25,
-                "Piper 训练重试中...",
-                creationflags=_new_console_flags(),
-            )
+                pass
 
-        if train_code != 0:
+            train_code = run_with_stream(
+                train_cmd,
+                "train",
+                0.2,
+                "Piper 训练中...",
+            )
+            if train_code == 0:
+                break
+
+            if train_accelerator == "gpu" and _log_contains_gpu_backend_unavailable():
+                train_accelerator = "cpu"
+                retry_msg = "未检测到可用的 Piper GPU 后端，自动切换到 CPU 训练。"
+                if progress:
+                    progress("train", 0.2, retry_msg)
+                try:
+                    with log_path.open("a", encoding="utf-8") as log_file:
+                        log_file.write(retry_msg + "\n")
+                        log_file.flush()
+                except Exception:
+                    pass
+                continue
+
+            if train_accelerator == "gpu" and _log_contains_oom():
+                if train_batch > 1:
+                    train_batch = max(1, train_batch // 2)
+                    retry_msg = f"检测到显存不足，自动降低训练 batch_size 到 {train_batch} 后重试。"
+                else:
+                    train_accelerator = "cpu"
+                    retry_msg = "检测到显存不足，自动切换到 CPU 训练。"
+                if progress:
+                    progress("train", 0.2, retry_msg)
+                try:
+                    with log_path.open("a", encoding="utf-8") as log_file:
+                        log_file.write(retry_msg + "\n")
+                    log_file.flush()
+                except Exception:
+                    pass
+                continue
+
+            if (
+                (current_resume_single or current_resume_ckpt)
+                and not baseline_retry_used
+                and _log_contains_baseline_resume_failure()
+            ):
+                baseline_retry_used = True
+                current_resume_single = None
+                current_resume_ckpt = None
+                current_max_epochs = extra_epochs
+                retry_msg = "检测到基线恢复失败，自动改为不使用基线重试训练。"
+                if progress:
+                    progress("train", 0.2, retry_msg)
+                try:
+                    with log_path.open("a", encoding="utf-8") as log_file:
+                        log_file.write(retry_msg + "\n")
+                        log_file.flush()
+                except Exception:
+                    pass
+                continue
+
             raise RuntimeError(f"Piper 训练失败，详见 {log_path}")
 
         ckpt = _latest_checkpoint(work_dir / "lightning_logs") or _latest_checkpoint(work_dir)
@@ -911,7 +1139,8 @@ def export_onnx(
                     return 124
                 time.sleep(0.2)
 
-    piper_python = _find_piper_python()
+    prefer_cuda = opts.device.lower() in {"cuda", "gpu"}
+    piper_python = _find_piper_python(prefer_cuda=prefer_cuda)
     if piper_python:
         env = _piper_env(piper_python)
         cmd = [
