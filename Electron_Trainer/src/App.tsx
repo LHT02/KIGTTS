@@ -47,6 +47,11 @@ import Cropper from 'react-easy-crop'
 import type { Area } from 'react-easy-crop'
 import logoBlack from '../../ARTS/LOGOBlack.svg'
 import logoWhite from '../../ARTS/LOGOWhite.svg'
+import avatarHuajiang from '../../ARTS/Avatar/huajiang.jpg'
+import avatarLht from '../../ARTS/Avatar/LHT.jpg'
+import avatarYuiLu from '../../ARTS/Avatar/YuiLu.jpg'
+import openSourceLicensesText from './legal/open_source_licenses.md?raw'
+import privacyPolicyText from './legal/privacy_policy.md?raw'
 
 type ProgressStage = Exclude<PipelineStage, 'idle' | 'preview' | 'runtime'>
 type ProgressMap = Record<ProgressStage, number>
@@ -117,6 +122,12 @@ type PendingDistillStart = {
   distillPayload: DistillOptions
 }
 
+type AboutCreator = {
+  name: string
+  homepage: string
+  avatar: string
+}
+
 type GsviAttributionFields = {
   gsvAuthor: string
   gsvTrainer: string
@@ -152,7 +163,8 @@ const TRAINING_MODE_LABELS: Record<string, string> = {
   voxcpm_distill: 'VoxCPM2 蒸馏',
   resume_project: '从旧项目继续训练',
 }
-type AppPage = 'prep' | 'settings' | 'preview' | 'logs'
+type AppPage = 'prep' | 'settings' | 'preview' | 'logs' | 'about'
+type AboutDialogKind = 'openSource' | 'privacy' | null
 const STAGE_LABEL: Record<ProgressStage, string> = {
   collect: '收集',
   distill: '蒸馏',
@@ -181,6 +193,26 @@ const NAV_ITEMS: Array<{ key: AppPage; label: string; icon: string }> = [
   { key: 'preview', label: '语音包试听', icon: 'record_voice_over' },
   { key: 'settings', label: '训练设置', icon: 'tune' },
   { key: 'logs', label: '日志', icon: 'article' },
+  { key: 'about', label: '关于', icon: 'info' },
+]
+const APP_VERSION = __APP_VERSION__
+
+const ABOUT_CREATORS: AboutCreator[] = [
+  {
+    name: 'LHT',
+    homepage: 'https://www.bilibili.com/space/87244951',
+    avatar: avatarLht,
+  },
+  {
+    name: 'Yui Lu',
+    homepage: 'https://www.bilibili.com/space/573842321',
+    avatar: avatarYuiLu,
+  },
+  {
+    name: '花酱',
+    homepage: 'https://www.bilibili.com/space/573842321',
+    avatar: avatarHuajiang,
+  },
 ]
 
 const MsIcon = ({
@@ -985,6 +1017,50 @@ const InlineAudioPlayer = ({
   )
 }
 
+const LegalDocumentDialog = ({
+  open,
+  title,
+  content,
+  onClose,
+  monospace = false,
+}: {
+  open: boolean
+  title: string
+  content: string
+  onClose: () => void
+  monospace?: boolean
+}) => (
+  <Dialog
+    open={open}
+    onClose={(_event, reason) => {
+      if (reason === 'backdropClick') return
+      onClose()
+    }}
+    maxWidth="lg"
+    fullWidth
+  >
+    <DialogTitle>{title}</DialogTitle>
+    <DialogContent dividers className="allow-text-select">
+      <Box
+        sx={{
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          lineHeight: 1.72,
+          fontSize: 13,
+          fontFamily: monospace ? 'Menlo, Consolas, monospace' : 'inherit',
+        }}
+      >
+        {content}
+      </Box>
+    </DialogContent>
+    <DialogActions sx={{ px: 3, pb: 2 }}>
+      <Button variant="contained" onClick={onClose}>
+        关闭
+      </Button>
+    </DialogActions>
+  </Dialog>
+)
+
 const safeSetSelectionRange = (target: HTMLInputElement | HTMLTextAreaElement, start: number, end: number) => {
   try {
     target.setSelectionRange(start, end)
@@ -1093,6 +1169,7 @@ function App() {
   const [resumeRebuildConfirmOpen, setResumeRebuildConfirmOpen] = useState(false)
   const [pendingResumeProjectDir, setPendingResumeProjectDir] = useState('')
   const [pendingResumeProjectStatus, setPendingResumeProjectStatus] = useState<TrainingProjectStatus | null>(null)
+  const [aboutDialog, setAboutDialog] = useState<AboutDialogKind>(null)
   const [audioFiles, setAudioFiles] = useState<string[]>([])
   const [quality, setQuality] = useState<'A' | 'B'>('A')
   const [denoise, setDenoise] = useState(false)
@@ -1346,6 +1423,21 @@ function App() {
 
   const showToast = (message: string, severity: ToastState['severity'] = 'info') => {
     setToast({ open: true, message, severity })
+  }
+
+  const openExternalLink = async (targetUrl: string, label = '链接') => {
+    if (!targetUrl) {
+      showToast(`${label}为空`, 'warning')
+      return
+    }
+    if (!window.paths?.openExternal) {
+      showToast(`当前版本不支持打开${label}`, 'error')
+      return
+    }
+    const result = await window.paths.openExternal(targetUrl)
+    if (!result?.ok) {
+      showToast(result?.message || `打开${label}失败`, 'error')
+    }
   }
 
   const persistGsviModeIntroSkipPreference = (checked: boolean) => {
@@ -5042,10 +5134,120 @@ function App() {
     </Paper>
   )
 
+  const aboutContent = (
+    <Stack spacing={2}>
+      <Paper
+        sx={{
+          ...cardPaperSx,
+          p: { xs: 3, md: 4 },
+          background:
+            resolvedThemeMode === 'dark'
+              ? 'linear-gradient(135deg, rgba(3,131,135,0.18), rgba(11,15,20,0.92))'
+              : 'linear-gradient(135deg, rgba(3,131,135,0.12), rgba(255,255,255,0.98))',
+        }}
+      >
+        <Stack spacing={2} alignItems="center" textAlign="center">
+          <Box
+            component="img"
+            src={resolvedThemeMode === 'dark' ? logoWhite : logoBlack}
+            alt="KIGTTS"
+            sx={{
+              height: { xs: 48, md: 62 },
+              width: 'auto',
+              maxWidth: '100%',
+              objectFit: 'contain',
+            }}
+          />
+          <Chip color="primary" variant="filled" label={`Version ${APP_VERSION}`} />
+        </Stack>
+      </Paper>
+
+      <Paper sx={cardPaperSx}>
+        <Stack spacing={1.5}>
+          <Typography variant="subtitle1" fontWeight={600}>
+            软件制作
+          </Typography>
+          <Box
+            sx={{
+              display: 'grid',
+              gap: 1.5,
+              gridTemplateColumns: { xs: '1fr', md: 'repeat(3, minmax(0, 1fr))' },
+            }}
+          >
+            {ABOUT_CREATORS.map((creator) => (
+              <Box
+                key={creator.name}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.5,
+                  minWidth: 0,
+                  p: 1.5,
+                  borderRadius: 2,
+                  bgcolor: 'action.hover',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                }}
+              >
+                <Avatar src={creator.avatar} alt={creator.name} sx={{ width: 64, height: 64 }} />
+                <Stack spacing={0.35} sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="body1" fontWeight={600} noWrap>
+                    {creator.name}
+                  </Typography>
+                  <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                    主页链接
+                  </Typography>
+                </Stack>
+                <Tooltip title={`打开 ${creator.name} 主页`} arrow>
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      void openExternalLink(creator.homepage, `${creator.name} 主页`)
+                    }}
+                  >
+                    <MsIcon name="open_in_new" size={18} />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+            ))}
+          </Box>
+        </Stack>
+      </Paper>
+
+      <Paper sx={cardPaperSx}>
+        <Stack spacing={1.5}>
+          <Typography variant="subtitle1" fontWeight={600}>
+            法律与政策
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+            <Button
+              variant="outlined"
+              startIcon={<MsIcon name="gavel" size={18} />}
+              onClick={() => setAboutDialog('openSource')}
+            >
+              开源许可证
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<MsIcon name="policy" size={18} />}
+              onClick={() => setAboutDialog('privacy')}
+            >
+              隐私政策
+            </Button>
+          </Stack>
+          <Typography variant="caption" sx={{ opacity: 0.72 }}>
+            两份文本已内置到应用，并同步存放在存储库的 `docs/legal` 目录中。
+          </Typography>
+        </Stack>
+      </Paper>
+    </Stack>
+  )
+
   const renderContent = (currentPage: AppPage) => {
     if (currentPage === 'prep') return prepContent
     if (currentPage === 'settings') return settingsContent
     if (currentPage === 'preview') return previewContent
+    if (currentPage === 'about') return aboutContent
     return logsContent
   }
 
@@ -5722,6 +5924,21 @@ function App() {
             </IconButton>
           </Stack>
         </Popover>
+
+        <LegalDocumentDialog
+          open={aboutDialog === 'openSource'}
+          title="开源许可证"
+          content={openSourceLicensesText}
+          onClose={() => setAboutDialog(null)}
+          monospace
+        />
+
+        <LegalDocumentDialog
+          open={aboutDialog === 'privacy'}
+          title="隐私政策"
+          content={privacyPolicyText}
+          onClose={() => setAboutDialog(null)}
+        />
 
         <Dialog
           open={resumeRebuildConfirmOpen}

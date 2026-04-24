@@ -1,6 +1,8 @@
 export {}
 
 declare global {
+  const __APP_VERSION__: string
+
   type TrainingMode = 'piper' | 'gsv_distill' | 'voxcpm_distill' | 'resume_project'
 
   type PipelineStage =
