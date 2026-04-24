@@ -26,9 +26,11 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Link,
   MenuItem,
   Popover,
   Paper,
+  Radio,
   Select,
   Slider,
   Snackbar,
@@ -45,6 +47,8 @@ import {
 } from '@mui/material'
 import Cropper from 'react-easy-crop'
 import type { Area } from 'react-easy-crop'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import logoBlack from '../../ARTS/LOGOBlack.svg'
 import logoWhite from '../../ARTS/LOGOWhite.svg'
 import avatarHuajiang from '../../ARTS/Avatar/huajiang.jpg'
@@ -128,6 +132,17 @@ type AboutCreator = {
   avatar: string
 }
 
+type DistillTextPresetOption = {
+  key: string
+  title: string
+  fileName: string
+  charCountLabel: string
+  description: string
+  expectedEffect: string
+  loadContent: () => Promise<string>
+  recommended?: boolean
+}
+
 type GsviAttributionFields = {
   gsvAuthor: string
   gsvTrainer: string
@@ -188,6 +203,7 @@ const GSVI_REQUIRED_NAMES = {
   gsvTrainer2: '白菜工厂1145号员工',
   gsviPacker: 'AI-Hobbyist',
 } as const
+const DISTILL_TEXT_SOURCE_EMPTY_HINT = '点击右上角 + 添加内置预设文本，或导入 / 拖入自定义 .txt、.csv、.jsonl 文本文件。'
 const NAV_ITEMS: Array<{ key: AppPage; label: string; icon: string }> = [
   { key: 'prep', label: '训练准备', icon: 'folder' },
   { key: 'preview', label: '语音包试听', icon: 'record_voice_over' },
@@ -212,6 +228,37 @@ const ABOUT_CREATORS: AboutCreator[] = [
     name: '花酱',
     homepage: 'https://www.bilibili.com/space/573842321',
     avatar: avatarHuajiang,
+  },
+]
+
+const DISTILL_TEXT_PRESET_OPTIONS: DistillTextPresetOption[] = [
+  {
+    key: '50k',
+    title: '5 万字版本',
+    fileName: '5万字文本库.txt',
+    charCountLabel: '约 5 万字',
+    description: '适合快速试跑流程、先验证蒸馏与训练链路。',
+    expectedEffect: '训练耗时较短，能较快得到可用结果，但长句、复杂语气和泛化稳定性通常弱于更大版本。',
+    loadContent: async () => (await import('../../SampleText/5万字文本库.txt?raw')).default,
+  },
+  {
+    key: '100k',
+    title: '10 万字版本',
+    fileName: '10万字文本库.txt',
+    charCountLabel: '约 10 万字',
+    description: '推荐默认选择，兼顾训练成本、稳定性和日常可用性。',
+    expectedEffect: '通常能在训练时长和效果之间取得较平衡表现，日常对话、常见台词和中等长度句子更稳。',
+    loadContent: async () => (await import('../../SampleText/10万字文本库.txt?raw')).default,
+    recommended: true,
+  },
+  {
+    key: '150k',
+    title: '15 万字版本',
+    fileName: '15万字文本库.txt',
+    charCountLabel: '约 15 万字',
+    description: '适合追求更高覆盖度的训练，建议在时间和算力更充足时使用。',
+    expectedEffect: '对长句、内容覆盖和整体稳定性更有帮助，但蒸馏与训练耗时更长，对整体流程耗时要求最高。',
+    loadContent: async () => (await import('../../SampleText/15万字文本库.txt?raw')).default,
   },
 ]
 
@@ -622,6 +669,13 @@ const mergeDistillSources = (current: DistillTextSource[], incoming: DistillText
 }
 
 const isDistillTextFile = (path: string) => /\.(txt|csv|jsonl)$/i.test(path)
+
+const getDistillSourcePrimaryText = (item: DistillTextSource) => item.label || item.path
+
+const getDistillSourceSecondaryText = (item: DistillTextSource) => {
+  if (item.description) return item.description
+  return item.kind === 'project_dir' ? '旧训练项目目录' : '文本语料文件'
+}
 
 const getCudaRuntimeChipColor = (status: PiperCudaRuntimeStatus | null): 'default' | 'success' | 'warning' | 'error' => {
   if (!status) return 'default'
@@ -1043,14 +1097,59 @@ const LegalDocumentDialog = ({
     <DialogContent dividers className="allow-text-select">
       <Box
         sx={{
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          lineHeight: 1.72,
           fontSize: 13,
-          fontFamily: monospace ? 'Menlo, Consolas, monospace' : 'inherit',
+          lineHeight: 1.8,
+          wordBreak: 'break-word',
+          '& > *:first-of-type': { mt: 0 },
+          '& > *:last-child': { mb: 0 },
+          '& h1, & h2, & h3, & h4, & h5, & h6': {
+            mt: 2.5,
+            mb: 1,
+            lineHeight: 1.45,
+          },
+          '& p': {
+            my: 1,
+          },
+          '& ul, & ol': {
+            my: 1,
+            pl: 3,
+          },
+          '& li': {
+            my: 0.5,
+          },
+          '& a': {
+            color: 'primary.main',
+          },
+          '& blockquote': {
+            m: 0,
+            my: 1.5,
+            px: 1.5,
+            py: 1,
+            borderLeft: '3px solid',
+            borderColor: 'divider',
+            bgcolor: 'action.hover',
+          },
+          '& pre': {
+            my: 1.5,
+            p: 1.5,
+            overflowX: 'auto',
+            borderRadius: 1,
+            bgcolor: 'action.hover',
+          },
+          '& code': {
+            fontSize: '0.92em',
+            fontFamily: 'Menlo, Consolas, monospace',
+          },
+          ...(monospace
+            ? {
+                '& pre, & code': {
+                  fontFamily: 'Menlo, Consolas, monospace',
+                },
+              }
+            : {}),
         }}
       >
-        {content}
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       </Box>
     </DialogContent>
     <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -1262,6 +1361,11 @@ function App() {
   const [audioDragActive, setAudioDragActive] = useState(false)
   const [distillSourcesDragActive, setDistillSourcesDragActive] = useState(false)
   const [distillAddAnchorEl, setDistillAddAnchorEl] = useState<HTMLElement | null>(null)
+  const [distillPresetDialogOpen, setDistillPresetDialogOpen] = useState(false)
+  const [distillPresetBusy, setDistillPresetBusy] = useState(false)
+  const [selectedDistillPresetKey, setSelectedDistillPresetKey] = useState<string>(
+    DISTILL_TEXT_PRESET_OPTIONS.find((item) => item.recommended)?.key ?? DISTILL_TEXT_PRESET_OPTIONS[0]?.key ?? '',
+  )
   const [avatarDragActive, setAvatarDragActive] = useState(false)
 
   const [progress, setProgress] = useState<ProgressMap>(emptyProgress)
@@ -1320,6 +1424,7 @@ function App() {
   const resolvedThemeMode: 'light' | 'dark' = themeMode === 'system' ? (systemDark ? 'dark' : 'light') : themeMode
   const drawerWidth = drawerExpanded ? DRAWER_WIDTH : MINI_DRAWER_WIDTH
   const displayTrainingMode = activeRunMode ?? trainingMode
+  const selectedDistillPreset = DISTILL_TEXT_PRESET_OPTIONS.find((item) => item.key === selectedDistillPresetKey) ?? DISTILL_TEXT_PRESET_OPTIONS[0]
   const activeProgressStages =
     displayTrainingMode === 'gsv_distill'
       ? DISTILL_PIPELINE_STAGES
@@ -1367,6 +1472,7 @@ function App() {
     const sep = base.includes('?') ? '&' : '?'
     return `${base}${sep}v=${previewAudioRev}`
   }, [previewAudioPath, previewAudioRev])
+  const activeDistillTextSources = trainingMode === 'voxcpm_distill' ? voxcpmOpts.text_sources : distillOpts.text_sources
   const gsvDistillPreviewAudioSrc = useMemo(() => {
     if (!gsvDistillPreviewAudioPath) return ''
     const base = toFileUrl(gsvDistillPreviewAudioPath)
@@ -1394,8 +1500,8 @@ function App() {
       ? gsvCatalog?.versions[distillOpts.version]?.speakers[distillOpts.speaker]?.languages[distillOpts.prompt_lang]?.emotions ?? []
       : []
   const selectedEmotion = catalogEmotions.find((item) => item.name === distillOpts.emotion) ?? null
-  const activeDistillTextSources = trainingMode === 'voxcpm_distill' ? voxcpmOpts.text_sources : distillOpts.text_sources
   const selectedVoxcpmVoiceMode = VOXCPM_VOICE_MODES.find((item) => item.value === voxcpmOpts.voice_mode) ?? VOXCPM_VOICE_MODES[0]
+  const trainingFabBlockedByBackgroundTask = cudaRuntimeBusy || voxcpmRuntimeBusy || voxcpmModelBusy
   const gsviFieldMismatch = {
     gsvAuthor: Boolean(gsviAttributionError) && gsviAttribution.gsvAuthor.trim() !== GSVI_REQUIRED_NAMES.gsvAuthor,
     gsvTrainer: Boolean(gsviAttributionError) && gsviAttribution.gsvTrainer.trim() !== GSVI_REQUIRED_NAMES.gsvTrainer,
@@ -2560,6 +2666,44 @@ function App() {
       return acc
     }, [])
 
+  const openDistillPresetDialog = () => {
+    setDistillAddAnchorEl(null)
+    setSelectedDistillPresetKey(DISTILL_TEXT_PRESET_OPTIONS.find((item) => item.recommended)?.key ?? DISTILL_TEXT_PRESET_OPTIONS[0]?.key ?? '')
+    setDistillPresetDialogOpen(true)
+  }
+
+  const closeDistillPresetDialog = () => {
+    if (distillPresetBusy) return
+    setDistillPresetDialogOpen(false)
+  }
+
+  const addSelectedDistillPreset = async () => {
+    if (!selectedDistillPreset) return
+    setDistillPresetBusy(true)
+    try {
+      const presetContent = await selectedDistillPreset.loadContent()
+      const presetPath =
+        (await window.fsBridge?.ensureTextPresetFile?.(selectedDistillPreset.fileName, presetContent)) || ''
+      if (!presetPath) {
+        throw new Error('写入内置预设文本失败')
+      }
+      addDistillSources([
+        {
+          kind: 'text_file',
+          path: presetPath,
+          label: selectedDistillPreset.title,
+          description: `${selectedDistillPreset.charCountLabel} · ${selectedDistillPreset.expectedEffect}`,
+        },
+      ])
+      setDistillPresetDialogOpen(false)
+      showToast(`已添加内置预设：${selectedDistillPreset.title}`, 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '添加内置预设失败', 'error')
+    } finally {
+      setDistillPresetBusy(false)
+    }
+  }
+
   const pickDistillTextFiles = async () => {
     const files = await window.dialogs?.openFiles({
       title: '添加蒸馏文本来源',
@@ -3176,6 +3320,11 @@ function App() {
       showToast('后端未连接', 'error')
       return
     }
+    if (trainingFabBlockedByBackgroundTask) {
+      setStatus('环境安装或模型下载中')
+      showToast('当前正在安装运行时或下载模型，请等待后台任务完成后再开始训练', 'warning')
+      return
+    }
     if (previewBusy) {
       showToast('正在生成试听，请稍后再开始训练', 'warning')
       return
@@ -3787,12 +3936,12 @@ function App() {
               onDrop={handleDistillSourcesDrop}
             >
               <List dense sx={{ maxHeight: 240, overflow: 'auto' }}>
-                {distillOpts.text_sources.length === 0 && (
+                {activeDistillTextSources.length === 0 && (
                   <ListItem>
-                    <ListItemText primary="暂无文本来源" secondary="点击添加或拖拽导入 .txt / .csv / .jsonl" />
+                    <ListItemText primary="暂无文本来源" secondary={DISTILL_TEXT_SOURCE_EMPTY_HINT} />
                   </ListItem>
                 )}
-                {distillOpts.text_sources.map((item) => (
+                {activeDistillTextSources.map((item) => (
                   <ListItem
                     key={`${item.kind}:${item.path}`}
                     divider
@@ -3805,10 +3954,7 @@ function App() {
                     <ListItemIcon sx={{ minWidth: 28 }}>
                       <MsIcon name={item.kind === 'project_dir' ? 'folder' : 'article'} size={18} />
                     </ListItemIcon>
-                    <ListItemText
-                      primary={item.path}
-                      secondary={item.kind === 'project_dir' ? '旧训练项目目录' : '文本语料文件'}
-                    />
+                    <ListItemText primary={getDistillSourcePrimaryText(item)} secondary={getDistillSourceSecondaryText(item)} />
                   </ListItem>
                 ))}
               </List>
@@ -3823,6 +3969,16 @@ function App() {
               <List dense sx={{ py: 0.5, minWidth: 180 }}>
                 <ListItemButton
                   onClick={() => {
+                    openDistillPresetDialog()
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <MsIcon name="library_books" size={18} />
+                  </ListItemIcon>
+                  <ListItemText primary="添加预设文件" secondary="内置 5 万 / 10 万 / 15 万字版本" />
+                </ListItemButton>
+                <ListItemButton
+                  onClick={() => {
                     setDistillAddAnchorEl(null)
                     void pickDistillTextFiles()
                   }}
@@ -3830,7 +3986,7 @@ function App() {
                   <ListItemIcon sx={{ minWidth: 32 }}>
                     <MsIcon name="article" size={18} />
                   </ListItemIcon>
-                  <ListItemText primary="添加语料文件" secondary=".txt / .csv / .jsonl" />
+                  <ListItemText primary="导入自定义文本文件" secondary=".txt / .csv / .jsonl" />
                 </ListItemButton>
               </List>
             </Popover>
@@ -4057,25 +4213,17 @@ function App() {
         <>
           <Paper sx={cardPaperSx}>
             <Stack spacing={1.5}>
-              <Stack spacing={1.25}>
-                <Box sx={{ minWidth: 0 }}>
-                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                    <Typography variant="subtitle1" fontWeight={600}>
-                      VoxCPM2 运行时
-                    </Typography>
-                    <Chip
-                      size="small"
-                      color={getRuntimeChipColor(voxcpmRuntimeStatus)}
-                      label={getRuntimeChipLabel(voxcpmRuntimeStatus)}
-                    />
-                  </Stack>
-                  <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.78 }}>
-                    首次使用会在线创建 voxcpm_env，并安装 PyTorch 2.5+ / CUDA 12 相关依赖。安装前会自动测速 Conda / PyPI / PyTorch CUDA wheel 镜像，优先使用当前最快可达源并自动换源。软件本体不内置 CUDA 运行时。
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between">
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Typography variant="subtitle1" fontWeight={600}>
+                    VoxCPM2 运行时
                   </Typography>
-                  <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
-                    候选源：Conda 含南科大/上交/清华/北外/中科大/南大/官方；PyPI 含阿里/北外/腾讯/上交/南科大等；PyTorch wheel 含阿里/上交/官方。
-                  </Typography>
-                </Box>
+                  <Chip
+                    size="small"
+                    color={getRuntimeChipColor(voxcpmRuntimeStatus)}
+                    label={getRuntimeChipLabel(voxcpmRuntimeStatus)}
+                  />
+                </Stack>
                 <Box sx={runtimeActionRowSx}>
                   <Button
                     variant="outlined"
@@ -4099,6 +4247,14 @@ function App() {
                   </Button>
                 </Box>
               </Stack>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="body2" sx={{ opacity: 0.78 }}>
+                  首次使用会在线创建 voxcpm_env，并安装 PyTorch 2.5+ / CUDA 12 相关依赖。安装前会自动测速 Conda / PyPI / PyTorch CUDA wheel 镜像，优先使用当前最快可达源并自动换源。软件本体不内置 CUDA 运行时。
+                </Typography>
+                <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
+                  候选源：Conda 含南科大/上交/清华/北外/中科大/南大/官方；PyPI 含阿里/北外/腾讯/上交/南科大等；PyTorch wheel 含阿里/上交/官方。
+                </Typography>
+              </Box>
 
               {(voxcpmRuntimeBusy || voxcpmRuntimeProgressMessage) && (
                 <Stack spacing={0.75}>
@@ -4169,27 +4325,17 @@ function App() {
 
           <Paper sx={cardPaperSx}>
             <Stack spacing={1.5}>
-              <Stack
-                direction={{ xs: 'column', md: 'row' }}
-                spacing={1.5}
-                alignItems={{ xs: 'flex-start', md: 'center' }}
-                justifyContent="space-between"
-              >
-                <Box sx={{ minWidth: 0 }}>
-                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                    <Typography variant="subtitle1" fontWeight={600}>
-                      VoxCPM2 模型
-                    </Typography>
-                    <Chip
-                      size="small"
-                      color={getVoxcpmModelChipColor(voxcpmModelStatus)}
-                      label={getVoxcpmModelChipLabel(voxcpmModelStatus)}
-                    />
-                  </Stack>
-                  <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.78 }}>
-                    主模型与 denoiser 从 ModelScope 下载到用户数据目录，打包产物不会包含这些权重。
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between">
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                  <Typography variant="subtitle1" fontWeight={600}>
+                    VoxCPM2 模型
                   </Typography>
-                </Box>
+                  <Chip
+                    size="small"
+                    color={getVoxcpmModelChipColor(voxcpmModelStatus)}
+                    label={getVoxcpmModelChipLabel(voxcpmModelStatus)}
+                  />
+                </Stack>
                 <Box sx={runtimeActionRowSx}>
                   <Button
                     variant="outlined"
@@ -4213,6 +4359,9 @@ function App() {
                   </Button>
                 </Box>
               </Stack>
+              <Typography variant="body2" sx={{ opacity: 0.78 }}>
+                主模型与 denoiser 从 ModelScope 下载到用户数据目录，打包产物不会包含这些权重。
+              </Typography>
 
               {(voxcpmModelBusy || voxcpmModelProgressMessage) && (
                 <Stack spacing={0.75}>
@@ -4368,7 +4517,7 @@ function App() {
               <List dense sx={{ maxHeight: 240, overflow: 'auto' }}>
                 {activeDistillTextSources.length === 0 && (
                   <ListItem>
-                    <ListItemText primary="暂无文本来源" secondary="点击添加或拖拽导入 .txt / .csv / .jsonl" />
+                    <ListItemText primary="暂无文本来源" secondary={DISTILL_TEXT_SOURCE_EMPTY_HINT} />
                   </ListItem>
                 )}
                 {activeDistillTextSources.map((item) => (
@@ -4384,10 +4533,7 @@ function App() {
                     <ListItemIcon sx={{ minWidth: 28 }}>
                       <MsIcon name={item.kind === 'project_dir' ? 'folder' : 'article'} size={18} />
                     </ListItemIcon>
-                    <ListItemText
-                      primary={item.path}
-                      secondary={item.kind === 'project_dir' ? '旧训练项目目录' : '文本语料文件'}
-                    />
+                    <ListItemText primary={getDistillSourcePrimaryText(item)} secondary={getDistillSourceSecondaryText(item)} />
                   </ListItem>
                 ))}
               </List>
@@ -4402,6 +4548,16 @@ function App() {
               <List dense sx={{ py: 0.5, minWidth: 180 }}>
                 <ListItemButton
                   onClick={() => {
+                    openDistillPresetDialog()
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 32 }}>
+                    <MsIcon name="library_books" size={18} />
+                  </ListItemIcon>
+                  <ListItemText primary="添加预设文件" secondary="内置 5 万 / 10 万 / 15 万字版本" />
+                </ListItemButton>
+                <ListItemButton
+                  onClick={() => {
                     setDistillAddAnchorEl(null)
                     void pickDistillTextFiles()
                   }}
@@ -4409,7 +4565,7 @@ function App() {
                   <ListItemIcon sx={{ minWidth: 32 }}>
                     <MsIcon name="article" size={18} />
                   </ListItemIcon>
-                  <ListItemText primary="添加语料文件" secondary=".txt / .csv / .jsonl" />
+                  <ListItemText primary="导入自定义文本文件" secondary=".txt / .csv / .jsonl" />
                 </ListItemButton>
               </List>
             </Popover>
@@ -4806,25 +4962,17 @@ function App() {
 
       <Paper sx={cardPaperSx}>
         <Stack spacing={1.5}>
-          <Stack spacing={1.25}>
-            <Box sx={{ minWidth: 0 }}>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                <Typography variant="subtitle1" fontWeight={600}>
-                  Piper CUDA 运行时
-                </Typography>
-                <Chip
-                  size="small"
-                  color={getCudaRuntimeChipColor(cudaRuntimeStatus)}
-                  label={getCudaRuntimeChipLabel(cudaRuntimeStatus)}
-                />
-              </Stack>
-              <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.78 }}>
-                使用内置 micromamba 在线创建 `piper_env_cuda`。安装前会自动测速 Conda / PyPI / PyTorch CUDA wheel 镜像，优先使用当前最快可达源并自动换源。
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+              <Typography variant="subtitle1" fontWeight={600}>
+                Piper CUDA 运行时
               </Typography>
-              <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
-                候选源：Conda 含南科大/上交/清华/北外/中科大/南大/官方；PyPI 含阿里/北外/腾讯/上交/南科大等；PyTorch wheel 含阿里/上交/官方。
-              </Typography>
-            </Box>
+              <Chip
+                size="small"
+                color={getCudaRuntimeChipColor(cudaRuntimeStatus)}
+                label={getCudaRuntimeChipLabel(cudaRuntimeStatus)}
+              />
+            </Stack>
             <Box sx={runtimeActionRowSx}>
               <Button
                 variant="outlined"
@@ -4848,6 +4996,14 @@ function App() {
               </Button>
             </Box>
           </Stack>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="body2" sx={{ opacity: 0.78 }}>
+              使用内置 micromamba 在线创建 `piper_env_cuda`。安装前会自动测速 Conda / PyPI / PyTorch CUDA wheel 镜像，优先使用当前最快可达源并自动换源。
+            </Typography>
+            <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
+              候选源：Conda 含南科大/上交/清华/北外/中科大/南大/官方；PyPI 含阿里/北外/腾讯/上交/南科大等；PyTorch wheel 含阿里/上交/官方。
+            </Typography>
+          </Box>
 
           {(cudaRuntimeBusy || cudaRuntimeProgressMessage) && (
             <Stack spacing={0.75}>
@@ -5148,17 +5304,55 @@ function App() {
       >
         <Stack spacing={2} alignItems="center" textAlign="center">
           <Box
-            component="img"
-            src={resolvedThemeMode === 'dark' ? logoWhite : logoBlack}
-            alt="KIGTTS"
+            component="span"
+            role="img"
+            aria-label="KIGTTS"
             sx={{
+              position: 'relative',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               height: { xs: 48, md: 62 },
-              width: 'auto',
+              width: { xs: 220, md: 280 },
               maxWidth: '100%',
-              objectFit: 'contain',
             }}
-          />
-          <Chip color="primary" variant="filled" label={`Version ${APP_VERSION}`} />
+          >
+            <Box
+              component="img"
+              src={logoBlack}
+              alt=""
+              aria-hidden
+              sx={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                opacity: resolvedThemeMode === 'dark' ? 0 : 1,
+                filter: resolvedThemeMode === 'dark' ? 'blur(1px)' : 'blur(0px)',
+                transition: 'opacity 220ms ease, filter 220ms ease',
+              }}
+            />
+            <Box
+              component="img"
+              src={logoWhite}
+              alt=""
+              aria-hidden
+              sx={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                opacity: resolvedThemeMode === 'dark' ? 1 : 0,
+                filter: resolvedThemeMode === 'dark' ? 'blur(0px)' : 'blur(1px)',
+                transition: 'opacity 220ms ease, filter 220ms ease',
+              }}
+            />
+          </Box>
+          <Typography variant="body2" sx={{ opacity: 0.72, letterSpacing: 0.5 }}>
+            Version {APP_VERSION}
+          </Typography>
         </Stack>
       </Paper>
 
@@ -5182,11 +5376,7 @@ function App() {
                   alignItems: 'center',
                   gap: 1.5,
                   minWidth: 0,
-                  p: 1.5,
-                  borderRadius: 2,
-                  bgcolor: 'action.hover',
-                  border: '1px solid',
-                  borderColor: 'divider',
+                  py: 0.5,
                 }}
               >
                 <Avatar src={creator.avatar} alt={creator.name} sx={{ width: 64, height: 64 }} />
@@ -5194,20 +5384,47 @@ function App() {
                   <Typography variant="body1" fontWeight={600} noWrap>
                     {creator.name}
                   </Typography>
-                  <Typography variant="caption" sx={{ opacity: 0.7 }}>
-                    主页链接
-                  </Typography>
+                  <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+                    <Link
+                      href={creator.homepage}
+                      underline="none"
+                      color="primary"
+                      sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        px: 0.5,
+                        py: 0.2,
+                        borderRadius: 1,
+                        fontSize: 12,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        transition: 'background-color 120ms ease',
+                        '&:hover': {
+                          bgcolor: 'action.hover',
+                          textDecoration: 'none',
+                        },
+                      }}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        void openExternalLink(creator.homepage, `${creator.name} 主页`)
+                      }}
+                    >
+                      {creator.homepage}
+                    </Link>
+                    <Tooltip title={`打开 ${creator.name} 主页`} arrow>
+                      <IconButton
+                        size="small"
+                        sx={{ flexShrink: 0 }}
+                        onClick={() => {
+                          void openExternalLink(creator.homepage, `${creator.name} 主页`)
+                        }}
+                      >
+                        <MsIcon name="open_in_new" size={18} />
+                      </IconButton>
+                    </Tooltip>
+                  </Stack>
                 </Stack>
-                <Tooltip title={`打开 ${creator.name} 主页`} arrow>
-                  <IconButton
-                    size="small"
-                    onClick={() => {
-                      void openExternalLink(creator.homepage, `${creator.name} 主页`)
-                    }}
-                  >
-                    <MsIcon name="open_in_new" size={18} />
-                  </IconButton>
-                </Tooltip>
               </Box>
             ))}
           </Box>
@@ -5217,27 +5434,38 @@ function App() {
       <Paper sx={cardPaperSx}>
         <Stack spacing={1.5}>
           <Typography variant="subtitle1" fontWeight={600}>
-            法律与政策
+            关于
           </Typography>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+          <Stack spacing={0.25} alignItems="flex-start">
             <Button
-              variant="outlined"
-              startIcon={<MsIcon name="gavel" size={18} />}
+              variant="text"
+              sx={{
+                px: 0.5,
+                py: 0.25,
+                minWidth: 0,
+                justifyContent: 'flex-start',
+                borderRadius: 1,
+                '&:hover': { bgcolor: 'action.hover' },
+              }}
               onClick={() => setAboutDialog('openSource')}
             >
               开源许可证
             </Button>
             <Button
-              variant="outlined"
-              startIcon={<MsIcon name="policy" size={18} />}
+              variant="text"
+              sx={{
+                px: 0.5,
+                py: 0.25,
+                minWidth: 0,
+                justifyContent: 'flex-start',
+                borderRadius: 1,
+                '&:hover': { bgcolor: 'action.hover' },
+              }}
               onClick={() => setAboutDialog('privacy')}
             >
               隐私政策
             </Button>
           </Stack>
-          <Typography variant="caption" sx={{ opacity: 0.72 }}>
-            两份文本已内置到应用，并同步存放在存储库的 `docs/legal` 目录中。
-          </Typography>
         </Stack>
       </Paper>
     </Stack>
@@ -5781,7 +6009,17 @@ function App() {
           </Box>
         </Box>
 
-        <Tooltip title={pipelineRunning ? '中止训练' : '开始训练语音包'} placement="left" arrow>
+        <Tooltip
+          title={
+            pipelineRunning
+              ? '中止训练'
+              : trainingFabBlockedByBackgroundTask
+                ? '环境安装或模型下载中'
+                : '开始训练语音包'
+          }
+          placement="left"
+          arrow
+        >
           <Fab
             color="secondary"
             sx={{
@@ -5797,7 +6035,7 @@ function App() {
               },
             }}
             onClick={pipelineRunning ? abortPipeline : startPipeline}
-            disabled={!pipelineRunning && previewBusy}
+            disabled={!pipelineRunning && (previewBusy || trainingFabBlockedByBackgroundTask)}
           >
             <MsIcon name={pipelineRunning ? 'stop' : 'play_arrow'} size={24} fill={1} />
           </Fab>
@@ -5924,6 +6162,95 @@ function App() {
             </IconButton>
           </Stack>
         </Popover>
+
+        <Dialog
+          open={distillPresetDialogOpen}
+          onClose={(_event, reason) => {
+            if ((reason === 'backdropClick' || reason === 'escapeKeyDown') && distillPresetBusy) return
+            closeDistillPresetDialog()
+          }}
+          maxWidth="sm"
+          fullWidth
+        >
+          <DialogTitle>添加预设文件</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={1.5}>
+              <Typography variant="body2" sx={{ opacity: 0.78 }}>
+                选择要添加的内置文本预设版本。推荐先使用 10 万字版本，通常更适合作为蒸馏训练的默认起点。
+              </Typography>
+              <List disablePadding>
+                {DISTILL_TEXT_PRESET_OPTIONS.map((option, index) => {
+                  const selected = option.key === selectedDistillPreset?.key
+                  return (
+                    <Box key={option.key}>
+                      {index > 0 && <Box sx={{ height: 12 }} />}
+                      <ListItemButton
+                        onClick={() => setSelectedDistillPresetKey(option.key)}
+                        alignItems="flex-start"
+                        sx={{
+                          gap: 1,
+                          px: 0,
+                          py: 0,
+                          borderRadius: 1,
+                          '&:hover': {
+                            bgcolor: 'action.hover',
+                          },
+                          '&:active': {
+                            bgcolor: 'action.selected',
+                          },
+                          '&.Mui-focusVisible': {
+                            bgcolor: 'action.hover',
+                          },
+                        }}
+                      >
+                        <Radio
+                          checked={selected}
+                          tabIndex={-1}
+                          disableRipple
+                          sx={{
+                            p: 0.5,
+                            mt: 0.15,
+                            mr: 0.25,
+                          }}
+                        />
+                        <Stack spacing={0.6} sx={{ minWidth: 0, flex: 1 }}>
+                          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+                            <Typography variant="subtitle2" fontWeight={600}>
+                              {option.title}
+                            </Typography>
+                            <Chip size="small" label={option.charCountLabel} />
+                            {option.recommended && <Chip size="small" color="primary" label="推荐" />}
+                          </Stack>
+                          <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                            {option.description}
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                            预期训练效果：{option.expectedEffect}
+                          </Typography>
+                        </Stack>
+                      </ListItemButton>
+                    </Box>
+                  )
+                })}
+              </List>
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2 }}>
+            <Button onClick={closeDistillPresetDialog} disabled={distillPresetBusy}>
+              取消
+            </Button>
+            <Button
+              variant="contained"
+              onClick={() => {
+                void addSelectedDistillPreset()
+              }}
+              disabled={distillPresetBusy || !selectedDistillPreset}
+              startIcon={distillPresetBusy ? <CircularProgress size={16} color="inherit" /> : <MsIcon name="library_add" size={18} />}
+            >
+              添加到文本来源
+            </Button>
+          </DialogActions>
+        </Dialog>
 
         <LegalDocumentDialog
           open={aboutDialog === 'openSource'}

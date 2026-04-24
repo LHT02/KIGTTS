@@ -32,6 +32,8 @@ declare global {
   type DistillTextSource = {
     kind: 'text_file' | 'project_dir'
     path: string
+    label?: string
+    description?: string
   }
 
   type VoxCpmVoiceMode = 'description' | 'controlled_clone' | 'high_fidelity'
@@ -304,6 +306,7 @@ declare global {
       saveDroppedFile: (name: string, data: ArrayBuffer) => Promise<string>
       copyFile: (src: string, dst: string) => Promise<boolean>
       writeTextFile: (filePath: string, text: string) => Promise<boolean>
+      ensureTextPresetFile: (name: string, text: string) => Promise<string>
       getPathForFile?: (file: File) => string
     }
     clipboardBridge?: {

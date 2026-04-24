@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('fsBridge', {
   saveDroppedFile: (name, data) => ipcRenderer.invoke('fs:saveDroppedFile', { name, data }),
   copyFile: (src, dst) => ipcRenderer.invoke('fs:copyFile', { src, dst }),
   writeTextFile: (filePath, text) => ipcRenderer.invoke('fs:writeTextFile', { path: filePath, text }),
+  ensureTextPresetFile: (name, text) => ipcRenderer.invoke('fs:ensureTextPresetFile', { name, text }),
   getPathForFile: (file) => {
     try {
       return webUtils.getPathForFile(file) || '';

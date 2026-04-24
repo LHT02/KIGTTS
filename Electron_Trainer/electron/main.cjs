@@ -606,6 +606,30 @@ app.whenReady().then(() => {
     }
   });
 
+  ipcMain.handle('fs:ensureTextPresetFile', async (_, payload) => {
+    try {
+      const inputName = payload?.name;
+      const text = payload?.text;
+      if (!inputName || typeof inputName !== 'string') {
+        return '';
+      }
+      if (text !== undefined && typeof text !== 'string') {
+        return '';
+      }
+      const safeName = path
+        .basename(inputName)
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .trim() || `preset-${Date.now()}.txt`;
+      const outDir = path.join(app.getPath('userData'), 'text_presets');
+      fs.mkdirSync(outDir, { recursive: true });
+      const outPath = path.join(outDir, safeName);
+      fs.writeFileSync(outPath, text || '', 'utf8');
+      return outPath;
+    } catch (err) {
+      return '';
+    }
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
