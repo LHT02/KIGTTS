@@ -18125,21 +18125,21 @@ fun SettingsScreen(
                             AboutContributorItem(
                                 avatarRes = R.drawable.avatar_lht,
                                 name = "LHT",
-                                homepage = "https://www.bilibili.com/space/87244951",
+                                homepage = "https://space.bilibili.com/87244951",
                                 modifier = Modifier.fillMaxWidth(),
                                 avatarSize = 60.dp
                             )
                             AboutContributorItem(
                                 avatarRes = R.drawable.avatar_yuilu,
                                 name = "Yui Lu",
-                                homepage = "https://www.bilibili.com/space/573842321",
+                                homepage = "https://space.bilibili.com/23208863",
                                 modifier = Modifier.fillMaxWidth(),
                                 avatarSize = 60.dp
                             )
                             AboutContributorItem(
                                 avatarRes = R.drawable.avatar_huajiang,
                                 name = "花酱",
-                                homepage = "https://www.bilibili.com/space/573842321",
+                                homepage = "https://space.bilibili.com/573842321",
                                 modifier = Modifier.fillMaxWidth(),
                                 avatarSize = 60.dp
                             )
@@ -18152,21 +18152,21 @@ fun SettingsScreen(
                             AboutContributorItem(
                                 avatarRes = R.drawable.avatar_lht,
                                 name = "LHT",
-                                homepage = "https://www.bilibili.com/space/87244951",
+                                homepage = "https://space.bilibili.com/87244951",
                                 modifier = Modifier.weight(1f),
                                 avatarSize = 48.dp
                             )
                             AboutContributorItem(
                                 avatarRes = R.drawable.avatar_yuilu,
                                 name = "Yui Lu",
-                                homepage = "https://www.bilibili.com/space/573842321",
+                                homepage = "https://space.bilibili.com/23208863",
                                 modifier = Modifier.weight(1f),
                                 avatarSize = 48.dp
                             )
                             AboutContributorItem(
                                 avatarRes = R.drawable.avatar_huajiang,
                                 name = "花酱",
-                                homepage = "https://www.bilibili.com/space/573842321",
+                                homepage = "https://space.bilibili.com/573842321",
                                 modifier = Modifier.weight(1f),
                                 avatarSize = 48.dp
                             )
