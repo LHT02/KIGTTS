@@ -1571,6 +1571,7 @@ class RealtimeController(
     private val queueLock = Any()
     private val ttsQueue = ArrayDeque<QueuedTts>()
     private var ttsJob: Job? = null
+    private val ttsPlaybackGeneration = AtomicLong(0L)
     private var nextUtteranceId = 1L
     @Volatile private var suppressWhilePlaying = initialSuppressWhilePlaying
     @Volatile private var useVoiceCommunication = initialUseVoiceCommunication
@@ -2162,6 +2163,7 @@ class RealtimeController(
     }
 
     private suspend fun stopTtsPlaybackLocked(clearQueue: Boolean) {
+        ttsPlaybackGeneration.incrementAndGet()
         val activeJob = ttsJob
         ttsJob = null
         if (clearQueue) {
@@ -2181,8 +2183,9 @@ class RealtimeController(
 
     private fun ensureTtsLoop() {
         if (ttsJob?.isActive == true) return
+        val loopGeneration = ttsPlaybackGeneration.get()
         ttsJob = scope.launch(Dispatchers.IO) {
-            while (isActive) {
+            while (isActive && loopGeneration == ttsPlaybackGeneration.get()) {
                 val next = synchronized(queueLock) {
                     if (ttsQueue.isNotEmpty()) ttsQueue.removeFirst() else null
                 } ?: break
@@ -2194,9 +2197,14 @@ class RealtimeController(
                     } else {
                         FloatArray(0)
                     }
+                    if (!isActive || loopGeneration != ttsPlaybackGeneration.get()) {
+                        break
+                    }
                     if (pcm.isNotEmpty()) {
                         player.play(pcm, tts?.sampleRate ?: 22050) { progress ->
-                            notifyProgress(next.id, progress)
+                            if (loopGeneration == ttsPlaybackGeneration.get()) {
+                                notifyProgress(next.id, progress)
+                            }
                         }
                         if (suppressDelayMs > 0L) {
                             suppressUntilMs = SystemClock.uptimeMillis() + suppressDelayMs
