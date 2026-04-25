@@ -26,6 +26,9 @@ private val Context.dataStore by preferencesDataStore(name = "user_prefs")
 object UserPrefs {
     const val DRAWER_MODE_HIDDEN = 0
     const val DRAWER_MODE_PERMANENT = 1
+    const val THEME_MODE_FOLLOW_SYSTEM = 0
+    const val THEME_MODE_LIGHT = 1
+    const val THEME_MODE_DARK = 2
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
     const val SILERO_VAD_MIN_THRESHOLD = 0.05f
     const val SILERO_VAD_MAX_THRESHOLD = 0.95f
@@ -66,6 +69,8 @@ object UserPrefs {
     private val KEY_NUMBER_REPLACE_MODE = intPreferencesKey("number_replace_mode")
     private val KEY_LANDSCAPE_DRAWER_MODE = intPreferencesKey("landscape_drawer_mode")
     private val KEY_SOLID_TOP_BAR = booleanPreferencesKey("solid_top_bar")
+    private val KEY_THEME_MODE = intPreferencesKey("theme_mode")
+    private val KEY_OVERLAY_THEME_MODE = intPreferencesKey("overlay_theme_mode")
     private val KEY_DRAWING_SAVE_RELATIVE_PATH = stringPreferencesKey("drawing_save_relative_path")
     private val KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT = booleanPreferencesKey("quick_card_auto_save_on_exit")
     private val KEY_USE_BUILTIN_FILE_MANAGER = booleanPreferencesKey("use_builtin_file_manager")
@@ -87,6 +92,8 @@ object UserPrefs {
     private val KEY_VOLUME_HOTKEY_ENABLE_WARNING_DISMISSED =
         booleanPreferencesKey("volume_hotkey_enable_warning_dismissed")
     private val KEY_FLOATING_OVERLAY_SHORTCUTS = stringPreferencesKey("floating_overlay_shortcuts")
+    private val KEY_FLOATING_OVERLAY_DEFAULT_SHORTCUTS_SEEDED =
+        booleanPreferencesKey("floating_overlay_default_shortcuts_seeded")
     private val KEY_FLOATING_OVERLAY_LAYOUT = stringPreferencesKey("floating_overlay_layout")
     private val KEY_FLOATING_OVERLAY_QUICK_SUBTITLE_FONT_SIZE = floatPreferencesKey("floating_overlay_quick_subtitle_font_size")
     private val KEY_QUICK_SUBTITLE_CONFIG = stringPreferencesKey("quick_subtitle_config")
@@ -95,6 +102,9 @@ object UserPrefs {
     private val KEY_TTS_DISABLED = booleanPreferencesKey("tts_disabled")
     private val KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED = booleanPreferencesKey("soundboard_keyword_trigger_enabled")
     private val KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD = booleanPreferencesKey("allow_quick_text_trigger_soundboard")
+    private val KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE = booleanPreferencesKey("quick_subtitle_interrupt_queue")
+    private val KEY_QUICK_SUBTITLE_AUTO_FIT = booleanPreferencesKey("quick_subtitle_auto_fit")
+    private val KEY_QUICK_SUBTITLE_COMPACT_CONTROLS = booleanPreferencesKey("quick_subtitle_compact_controls")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
@@ -132,6 +142,8 @@ object UserPrefs {
         val numberReplaceMode: Int = 0,
         val landscapeDrawerMode: Int = DRAWER_MODE_PERMANENT,
         val solidTopBar: Boolean = true,
+        val themeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
+        val overlayThemeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val quickCardAutoSaveOnExit: Boolean = false,
         val useBuiltinFileManager: Boolean = true,
@@ -154,12 +166,25 @@ object UserPrefs {
         val ttsDisabled: Boolean = false,
         val soundboardKeywordTriggerEnabled: Boolean = false,
         val allowQuickTextTriggerSoundboard: Boolean = false,
+        val quickSubtitleInterruptQueue: Boolean = true,
+        val quickSubtitleAutoFit: Boolean = true,
+        val quickSubtitleCompactControls: Boolean = false,
         val speakerVerifyEnabled: Boolean = false,
         val speakerVerifyThreshold: Float = 0.5f,
         val speakerVerifyProfileCsv: String = "",
         val speakerVerifyBackendVersion: Int = 0,
         val allowSystemAecWithAec3: Boolean = true
     )
+
+    fun normalizeThemeMode(mode: Int): Int =
+        mode.coerceIn(THEME_MODE_FOLLOW_SYSTEM, THEME_MODE_DARK)
+
+    fun resolveThemeMode(mode: Int, followSystemDark: Boolean): Boolean =
+        when (normalizeThemeMode(mode)) {
+            THEME_MODE_LIGHT -> false
+            THEME_MODE_DARK -> true
+            else -> followSystemDark
+        }
 
     suspend fun getLastAsrName(context: Context): String? {
         val prefs = context.dataStore.data.first()
@@ -270,6 +295,8 @@ object UserPrefs {
             landscapeDrawerMode = (this[KEY_LANDSCAPE_DRAWER_MODE] ?: DRAWER_MODE_PERMANENT)
                 .coerceIn(DRAWER_MODE_HIDDEN, DRAWER_MODE_PERMANENT),
             solidTopBar = this[KEY_SOLID_TOP_BAR] ?: true,
+            themeMode = normalizeThemeMode(this[KEY_THEME_MODE] ?: THEME_MODE_FOLLOW_SYSTEM),
+            overlayThemeMode = normalizeThemeMode(this[KEY_OVERLAY_THEME_MODE] ?: THEME_MODE_FOLLOW_SYSTEM),
             drawingSaveRelativePath = (this[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             quickCardAutoSaveOnExit = this[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
@@ -301,6 +328,9 @@ object UserPrefs {
             ttsDisabled = this[KEY_TTS_DISABLED] ?: false,
             soundboardKeywordTriggerEnabled = this[KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED] ?: false,
             allowQuickTextTriggerSoundboard = this[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] ?: false,
+            quickSubtitleInterruptQueue = this[KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE] ?: true,
+            quickSubtitleAutoFit = this[KEY_QUICK_SUBTITLE_AUTO_FIT] ?: true,
+            quickSubtitleCompactControls = this[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] ?: false,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
             speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
             speakerVerifyProfileCsv = this[KEY_SPEAKER_VERIFY_PROFILE] ?: "",
@@ -468,6 +498,18 @@ object UserPrefs {
         }
     }
 
+    suspend fun setThemeMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_THEME_MODE] = normalizeThemeMode(mode)
+        }
+    }
+
+    suspend fun setOverlayThemeMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_OVERLAY_THEME_MODE] = normalizeThemeMode(mode)
+        }
+    }
+
     suspend fun setDrawingSaveRelativePath(context: Context, path: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_DRAWING_SAVE_RELATIVE_PATH] =
@@ -592,6 +634,24 @@ object UserPrefs {
     suspend fun setAllowQuickTextTriggerSoundboard(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] = enabled
+        }
+    }
+
+    suspend fun setQuickSubtitleInterruptQueue(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE] = enabled
+        }
+    }
+
+    suspend fun setQuickSubtitleAutoFit(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_QUICK_SUBTITLE_AUTO_FIT] = enabled
+        }
+    }
+
+    suspend fun setQuickSubtitleCompactControls(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] = enabled
         }
     }
 
@@ -769,6 +829,17 @@ object UserPrefs {
     suspend fun setFloatingOverlayShortcuts(context: Context, json: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_FLOATING_OVERLAY_SHORTCUTS] = json
+        }
+    }
+
+    suspend fun isFloatingOverlayDefaultShortcutsSeeded(context: Context): Boolean {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_FLOATING_OVERLAY_DEFAULT_SHORTCUTS_SEEDED] ?: false
+    }
+
+    suspend fun setFloatingOverlayDefaultShortcutsSeeded(context: Context, seeded: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FLOATING_OVERLAY_DEFAULT_SHORTCUTS_SEEDED] = seeded
         }
     }
 

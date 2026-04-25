@@ -849,6 +849,9 @@ class AudioPlayer(private val context: Context) {
     @Volatile private var useCommunicationAttributes: Boolean = false
     @Volatile private var preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO
     @Volatile private var playbackGain: Float = 1.0f
+    @Volatile private var stopRequested: Boolean = false
+    private val trackLock = Any()
+    private var currentTrack: AudioTrack? = null
     private var onOutputDevice: ((String) -> Unit)? = null
     private var onRender: ((FloatArray, Int, Int, Int) -> Unit)? = null
 
@@ -872,8 +875,26 @@ class AudioPlayer(private val context: Context) {
         playbackGain = (percent.coerceIn(0, 1000) / 100.0f).coerceAtLeast(0f)
     }
 
+    fun stop() {
+        stopRequested = true
+        synchronized(trackLock) {
+            val track = currentTrack ?: return
+            try {
+                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    track.pause()
+                }
+            } catch (_: Exception) {
+            }
+            try {
+                track.flush()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun play(samples: FloatArray, sampleRate: Int, onProgress: ((Float) -> Unit)? = null) {
         if (samples.isEmpty()) return
+        stopRequested = false
         val gain = playbackGain
         val scaledSamples = if (kotlin.math.abs(gain - 1.0f) < 0.0001f) {
             samples
@@ -938,6 +959,9 @@ class AudioPlayer(private val context: Context) {
             }
         }
         onOutputDevice?.invoke(formatOutputDeviceLabel(if (Build.VERSION.SDK_INT >= 24) track.routedDevice else null))
+        synchronized(trackLock) {
+            currentTrack = track
+        }
 
         isPlaying = true
         try {
@@ -946,7 +970,7 @@ class AudioPlayer(private val context: Context) {
             val total = shorts.size
             var written = 0
             var lastReport = 0f
-            while (written < total) {
+            while (written < total && !stopRequested) {
                 val count = min(2048, total - written)
                 onRender?.invoke(scaledSamples, written, count, sampleRate)
                 val w = track.write(shorts, written, count)
@@ -967,6 +991,12 @@ class AudioPlayer(private val context: Context) {
                 track.release()
             } catch (_: Exception) {
             }
+            synchronized(trackLock) {
+                if (currentTrack === track) {
+                    currentTrack = null
+                }
+            }
+            stopRequested = false
             isPlaying = false
             onProgress?.invoke(1f)
         }
@@ -2131,6 +2161,24 @@ class RealtimeController(
         return id
     }
 
+    private suspend fun stopTtsPlaybackLocked(clearQueue: Boolean) {
+        val activeJob = ttsJob
+        ttsJob = null
+        if (clearQueue) {
+            synchronized(queueLock) {
+                ttsQueue.clear()
+            }
+        }
+        player.stop()
+        if (activeJob != null) {
+            try {
+                activeJob.cancel()
+                activeJob.join()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private fun ensureTtsLoop() {
         if (ttsJob?.isActive == true) return
         ttsJob = scope.launch(Dispatchers.IO) {
@@ -2209,11 +2257,7 @@ class RealtimeController(
         return recorderMutex.withLock {
             try {
                 if (tts == null || currentVoiceDir?.absolutePath != voiceDir.absolutePath) {
-                    ttsJob?.cancel()
-                    ttsJob = null
-                    synchronized(queueLock) {
-                        ttsQueue.clear()
-                    }
+                    stopTtsPlaybackLocked(clearQueue = true)
                     tts = moduleFactory.createTts(context, voiceDir)
                     applyTtsSynthesisTuning()
                     currentVoiceDir = voiceDir
@@ -2373,13 +2417,16 @@ class RealtimeController(
         }
     }
 
-    suspend fun enqueueSpeakText(text: String): Long? {
+    suspend fun enqueueSpeakText(text: String, interruptCurrent: Boolean = false): Long? {
         return recorderMutex.withLock {
             val normalized = text.trim()
             if (normalized.isEmpty()) return@withLock null
             if (tts == null) {
                 notifyError("TTS 未就绪，请先选择语音包")
                 return@withLock null
+            }
+            if (interruptCurrent) {
+                stopTtsPlaybackLocked(clearQueue = true)
             }
             val id = enqueueTts(normalized)
             notifyResult(id, normalized)
@@ -2409,11 +2456,7 @@ class RealtimeController(
     suspend fun stop() {
         recorderMutex.withLock {
             stopRecorderOnlyLocked()
-            ttsJob?.cancel()
-            ttsJob = null
-            synchronized(queueLock) {
-                ttsQueue.clear()
-            }
+            stopTtsPlaybackLocked(clearQueue = true)
             releaseNoiseProcessors()
             releaseSileroVadProcessor()
             SherpaSpeechEnhancer.release()

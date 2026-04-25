@@ -164,7 +164,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         }
     }
 
-    suspend fun speakText(text: String): Long? {
+    suspend fun speakText(text: String, interruptCurrent: Boolean = false): Long? {
         val message = text.trim()
         if (message.isEmpty()) return null
         if (currentSettings.ttsDisabled) return null
@@ -172,7 +172,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         return withContext(Dispatchers.IO) {
             val activeController = ensureController()
             if (!activeController.loadTts(voice)) return@withContext null
-            activeController.enqueueSpeakText(message)
+            activeController.enqueueSpeakText(message, interruptCurrent = interruptCurrent)
         }
     }
 
@@ -376,7 +376,11 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
                 if (normalized.isNotEmpty()) {
                     if (quickSubtitlePlayOnSend && !currentSettings.ttsDisabled) {
                         serviceScope.launch {
-                            enqueueSpeakAndAppendHistory(normalized, fromQuickText = true)
+                            enqueueSpeakAndAppendHistory(
+                                normalized,
+                                fromQuickText = true,
+                                interruptCurrent = currentSettings.quickSubtitleInterruptQueue
+                            )
                         }
                     } else {
                         appendRecognizedHistory(normalized, fromQuickText = true)
@@ -845,10 +849,14 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         }
     }
 
-    private suspend fun enqueueSpeakAndAppendHistory(text: String, fromQuickText: Boolean = false) {
+    private suspend fun enqueueSpeakAndAppendHistory(
+        text: String,
+        fromQuickText: Boolean = false,
+        interruptCurrent: Boolean = false
+    ) {
         val message = text.trim()
         if (message.isEmpty()) return
-        val queuedId = speakText(message)
+        val queuedId = speakText(message, interruptCurrent = interruptCurrent)
         if (queuedId != null) {
             appendRecognizedHistory(message, queuedId, fromQuickText = fromQuickText)
             updateStatus("已加入朗读队列")
