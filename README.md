@@ -19,6 +19,14 @@ KIGTTS 是一套面向 **Kigurumi 玩家、漫展用户和不方便说话场景*
 
 > 项目曾使用 `KGTTS` 作为旧称，当前统一使用 **KIGTTS**。
 
+## 制作与署名
+
+| 头像 | 名称 | 主页 |
+| --- | --- | --- |
+| <img src="./ARTS/Avatar/LHT.jpg" alt="LHT" width="72"> | LHT | [Bilibili](https://space.bilibili.com/87244951) |
+| <img src="./ARTS/Avatar/huajiang.jpg" alt="花酱" width="72"> | 花酱 | [Bilibili](https://space.bilibili.com/573842321) |
+| <img src="./ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="72"> | Yui Lu | [Bilibili](https://space.bilibili.com/23208863) |
+
 <p align="center">
   <img src="./ARTS/ScreenShoot/便捷字幕.jpg" alt="便捷字幕" width="180">
   <img src="./ARTS/ScreenShoot/快捷名片.jpg" alt="快捷名片" width="180">

@@ -216,17 +216,17 @@ const APP_VERSION = __APP_VERSION__
 const ABOUT_CREATORS: AboutCreator[] = [
   {
     name: 'LHT',
-    homepage: 'https://www.bilibili.com/space/87244951',
+    homepage: 'https://space.bilibili.com/87244951',
     avatar: avatarLht,
   },
   {
     name: 'Yui Lu',
-    homepage: 'https://www.bilibili.com/space/573842321',
+    homepage: 'https://space.bilibili.com/23208863',
     avatar: avatarYuiLu,
   },
   {
     name: '花酱',
-    homepage: 'https://www.bilibili.com/space/573842321',
+    homepage: 'https://space.bilibili.com/573842321',
     avatar: avatarHuajiang,
   },
 ]
