@@ -9,6 +9,10 @@
   面向 Kigurumi 玩家、漫展用户和不方便说话场景的现场交流辅助工具
 </p>
 
+<p align="center">
+  <img src="./ARTS/ScreenShoot/Design.png" alt="KIGTTS Android Design Preview" width="900">
+</p>
+
 # KIGTTS
 
 KIGTTS 是一套面向 **Kigurumi 玩家、漫展用户和不方便说话场景** 的现场交流辅助工具。项目以 Android 端为当前主线，围绕实时字幕、语音朗读、快捷文本、名片展示、音效互动和悬浮窗快捷操作，提供一套适合漫展跑场、角色互动和低负担交流的轻量工具箱。
@@ -169,14 +173,78 @@ Android 端内置二维码扫描，并针对常见国内使用场景做了联动
 
 ## Electron 训练端
 
-`Electron_Trainer/` 是配套的桌面训练端，用于制作和整理 Android 端可导入的语音包。
+`Electron_Trainer/` 是配套的桌面训练端，用于制作和整理 Android 端可导入的语音包。训练器的目标不是导出 GPT-SoVITS 或 VoxCPM2 模型本体，而是把 **语料整理、蒸馏、Piper 训练和语音包打包** 串成一条桌面流程，最终输出可被 Android 端直接导入的 `.kigvpk` 语音包。
 
-它基于 Electron + React + Python 后端，主要用于：
+它基于 Electron + React + Python 后端，适合这些工作流：
 
-- 管理训练素材
-- 调用本地训练 / 处理流程
-- 生成可供 Android 端导入的语音包
-- 打包输出 `.kigvpk` 或兼容格式
+- 从原始录音直接执行 `预处理 -> VAD -> ASR -> Piper 训练 -> 导出`
+- 调用外部 GSVI / GPT-SoVITS 模型批量生成蒸馏语料，再继续 Piper 训练
+- 调用 VoxCPM2 根据音色描述或参考音频生成蒸馏语料，再继续 Piper 训练
+- 读取旧训练项目的配置和中间文件，直接续训或补生成缺失素材
+- 生成语音包试听音频，并导出最终的 `voicepack.kigvpk`
+
+### 训练模式
+
+| 模式 | 适合场景 | 主要流程 |
+| --- | --- | --- |
+| `Piper 标准` | 已有自己的原始录音，想从头训练 | `preprocess -> vad -> asr -> train -> export` |
+| `GPT-SoVITS 蒸馏` | 已有 GSVI / GPT-SoVITS 说话人模型，希望批量生成教师语料 | `collect -> distill -> train -> export` |
+| `VoxCPM2 蒸馏` | 希望用音色描述、参考音频或高保真克隆快速生成训练语料 | `collect -> synth -> train -> export` |
+| `从旧项目继续训练` | 之前已经跑过项目，希望续训或补齐缺失素材 | 根据旧项目配置决定直接训练或补生成 |
+
+### 训练器项目结构
+
+训练器每次都会围绕一个项目目录工作，典型结构如下：
+
+```text
+你的项目目录/
+  work/
+    metadata.csv
+    kigtts_project.json
+    training.log
+    preview.txt
+    onnx/
+    processed/
+    segments/
+  export/
+    voicepack.kigvpk
+```
+
+其中 `work/kigtts_project.json` 会保存训练模式、训练参数、蒸馏参数、文本来源、原始音频归档路径和当时的 metadata 文本记录，是“从旧项目继续训练”的核心依据。
+
+### 蒸馏与续训能力
+
+GPT-SoVITS 蒸馏模式适合已经拥有兼容整合包和说话人模型的用户。训练器会调用整合包自带运行时批量合成 wav，写入 `work/distill_corpus/`，再生成自己的 `metadata.csv` 并继续 Piper 训练与导出。
+
+VoxCPM2 蒸馏模式适合通过音色描述、可控声音克隆或高保真克隆快速生成训练语料。它支持参考音频、风格描述、参考文本和 ASR 自动转写，并将生成素材写入 `work/voxcpm_corpus/` 后继续训练。
+
+旧项目继续训练模式会读取 `work/kigtts_project.json` 和 `work/metadata.csv`，判断音频是否完整、是否需要补素材、能否直接进入训练。标准项目可在原始音频仍存在时重跑预处理；蒸馏项目可在外部配置仍可用时补生成缺失音频。
+
+### 运行时与导出
+
+训练器内置 CPU 基线训练环境。需要 GPU/CUDA 时，可在训练设置中安装 Piper CUDA 运行时；VoxCPM2 运行时和模型也可由训练器在线安装 / 下载。
+
+Windows 下在线安装资源默认位于：
+
+```text
+%LOCALAPPDATA%\kgtts-trainer\
+```
+
+常见子目录包括：
+
+```text
+%LOCALAPPDATA%\kgtts-trainer\runtimes\piper_env_cuda
+%LOCALAPPDATA%\kgtts-trainer\runtimes\voxcpm_env
+%LOCALAPPDATA%\kgtts-trainer\models\voxcpm2
+```
+
+最终主导出文件为：
+
+```text
+export/voicepack.kigvpk
+```
+
+`.kigvpk` 本质上仍是 zip 结构，可由 KIGTTS Android 端直接识别和导入。训练器也提供语音包试听、GPT-SoVITS 蒸馏试听和 VoxCPM2 蒸馏试听，方便在正式训练或导入前检查声音效果。
 
 对于只使用系统 TTS 的用户，Electron 训练端不是必需项；对于希望制作自定义语音包、整理训练素材或进行本地训练流程的用户，它是 Android 端的配套工具。
 
