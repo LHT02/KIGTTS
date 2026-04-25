@@ -36,6 +36,9 @@ import android.os.IBinder
 import android.os.Process
 import android.provider.Settings
 import android.text.Editable
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.util.DisplayMetrics
@@ -349,6 +352,16 @@ class FloatingOverlayService : Service() {
         Subtitle,
         QuickCard
     }
+
+    private data class OverlayQuickSubtitleFitResult(
+        val fontSizeSp: Float,
+        val needsScroll: Boolean
+    )
+
+    private data class OverlayPreviewCardSize(
+        val width: Int,
+        val height: Int
+    )
 
     private enum class OverlayQuickCardRenderStyle {
         Panel,
@@ -1343,9 +1356,16 @@ class FloatingOverlayService : Service() {
         settingsJob?.cancel()
         settingsJob = scope.launch {
             UserPrefs.observeSettings(this@FloatingOverlayService).collectLatest { next ->
+                val previousDarkTheme = overlayDarkTheme
                 settings = next
                 if (!next.floatingOverlayEnabled) {
                     stopSelf()
+                    return@collectLatest
+                }
+                val darkNow = isOverlayDarkTheme()
+                if (darkNow != previousDarkTheme) {
+                    overlayDarkTheme = darkNow
+                    rebuildWindowsPreservingState()
                     return@collectLatest
                 }
                 refreshQuickSubtitleUi()
@@ -1561,6 +1581,10 @@ class FloatingOverlayService : Service() {
             addView(spaceView(dp(10), 1))
             addView(
                 FrameLayout(this@FloatingOverlayService).apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        foreground = selectableDrawable()
+                    }
+                    setOnClickListener { openMainAppAndCollapseOverlay(fromMiniPanel = false) }
                     addView(
                         panelStatusTextView,
                         FrameLayout.LayoutParams(
@@ -2032,6 +2056,10 @@ class FloatingOverlayService : Service() {
             addView(spaceView(dp(10), 1))
             addView(
                 FrameLayout(this@FloatingOverlayService).apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        foreground = selectableDrawable()
+                    }
+                    setOnClickListener { openMainAppAndCollapseOverlay(fromMiniPanel = true) }
                     addView(
                         miniStatusTextView,
                         FrameLayout.LayoutParams(
@@ -2059,13 +2087,17 @@ class FloatingOverlayService : Service() {
 
         miniSubtitleTextView = TextView(this).apply {
             setTextColor(overlayOnSurfaceColor())
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, quickSubtitleFontSizeSp)
-            typeface = if (quickSubtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            gravity = Gravity.START or Gravity.TOP
             maxLines = 5
             ellipsize = TextUtils.TruncateAt.END
-            text = quickSubtitleCurrentText
         }
+        applyOverlayQuickSubtitleTextAppearance(
+            textView = miniSubtitleTextView!!,
+            text = quickSubtitleCurrentText.ifBlank { defaultQuickSubtitleText },
+            maxFontSizeSp = quickSubtitleFontSizeSp,
+            minFontSizeSp = 18f,
+            maxLines = 5,
+            centerVerticallyWhenCentered = true
+        )
         miniSubtitleSeekBar = SeekBar(this).apply {
             max = 68
             progress = (quickSubtitleFontSizeSp - 28f).roundToInt().coerceIn(0, 68)
@@ -2076,10 +2108,7 @@ class FloatingOverlayService : Service() {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (!fromUser) return
                     quickSubtitleFontSizeSp = (28 + progress).toFloat().coerceIn(28f, 96f)
-                    miniSubtitleTextView?.setTextSize(
-                        TypedValue.COMPLEX_UNIT_SP,
-                        quickSubtitleFontSizeSp
-                    )
+                    refreshQuickSubtitleUi()
                     saveFloatingOverlayQuickSubtitleFontSize()
                 }
 
@@ -3257,6 +3286,15 @@ class FloatingOverlayService : Service() {
         launchQuickSubtitle(OverlayBridge.TARGET_OPEN, "")
     }
 
+    private fun openMainAppAndCollapseOverlay(fromMiniPanel: Boolean) {
+        if (fromMiniPanel) {
+            hideMiniPanel()
+        } else {
+            hidePanel()
+        }
+        launchAppPage(OverlayBridge.TARGET_OPEN)
+    }
+
     private fun launchQuickCardPage() {
         hideMiniPanel()
         launchAppPage(OverlayBridge.TARGET_OPEN_QUICK_CARD)
@@ -4370,6 +4408,132 @@ class FloatingOverlayService : Service() {
         }
     }
 
+    private fun applyOverlayQuickSubtitleTextAppearance(
+        textView: TextView,
+        text: CharSequence,
+        maxFontSizeSp: Float,
+        minFontSizeSp: Float,
+        maxLines: Int? = null,
+        viewportView: View = textView,
+        centerVerticallyWhenCentered: Boolean = false
+    ) {
+        textView.text = text
+        textView.typeface = if (quickSubtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        textView.gravity = if (quickSubtitleCentered) {
+            if (centerVerticallyWhenCentered) Gravity.CENTER else Gravity.CENTER_HORIZONTAL or Gravity.TOP
+        } else {
+            Gravity.START or Gravity.TOP
+        }
+        textView.textAlignment = if (quickSubtitleCentered) {
+            View.TEXT_ALIGNMENT_CENTER
+        } else {
+            View.TEXT_ALIGNMENT_VIEW_START
+        }
+        if (maxLines != null) {
+            textView.maxLines = maxLines
+            textView.ellipsize = TextUtils.TruncateAt.END
+        } else {
+            textView.maxLines = Int.MAX_VALUE
+            textView.ellipsize = null
+        }
+        if (!settings.quickSubtitleAutoFit) {
+            textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, maxFontSizeSp)
+            return
+        }
+
+        fun applyFitWhenReady(remainingRetries: Int) {
+            val availableWidth =
+                (viewportView.width - viewportView.paddingLeft - viewportView.paddingRight)
+                    .coerceAtLeast(0)
+            val availableHeight =
+                (viewportView.height - viewportView.paddingTop - viewportView.paddingBottom)
+                    .coerceAtLeast(0)
+            if (availableWidth <= 0 || availableHeight <= 0) {
+                if (remainingRetries > 0) {
+                    viewportView.postDelayed({ applyFitWhenReady(remainingRetries - 1) }, 16L)
+                    return
+                }
+                textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, maxFontSizeSp)
+                return
+            }
+            val fit = measureOverlayQuickSubtitleText(
+                text = text,
+                widthPx = availableWidth,
+                heightPx = availableHeight,
+                maxFontSizeSp = maxFontSizeSp,
+                minFontSizeSp = minFontSizeSp,
+                maxLines = maxLines
+            )
+            textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, fit.fontSizeSp)
+            if (maxLines != null) {
+                textView.maxLines = maxLines
+                textView.ellipsize = TextUtils.TruncateAt.END
+            } else {
+                textView.ellipsize = null
+            }
+        }
+        viewportView.post { applyFitWhenReady(6) }
+    }
+
+    private fun measureOverlayQuickSubtitleText(
+        text: CharSequence,
+        widthPx: Int,
+        heightPx: Int,
+        maxFontSizeSp: Float,
+        minFontSizeSp: Float,
+        maxLines: Int?
+    ): OverlayQuickSubtitleFitResult {
+        val boundedMaxSp = maxFontSizeSp.coerceAtLeast(minFontSizeSp)
+        val minSp = minFontSizeSp.roundToInt().coerceAtLeast(1)
+        val maxSp = boundedMaxSp.roundToInt().coerceAtLeast(minSp)
+        val layoutAlignment =
+            if (quickSubtitleCentered) Layout.Alignment.ALIGN_CENTER else Layout.Alignment.ALIGN_NORMAL
+        val textValue = text.ifEmpty { defaultQuickSubtitleText }
+
+        fun fits(sp: Int): Boolean {
+            val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = overlayOnSurfaceColor()
+                typeface = if (quickSubtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                textSize = TypedValue.applyDimension(
+                    TypedValue.COMPLEX_UNIT_SP,
+                    sp.toFloat(),
+                    resources.displayMetrics
+                )
+            }
+            val layout = StaticLayout.Builder
+                .obtain(textValue, 0, textValue.length, textPaint, widthPx)
+                .setAlignment(layoutAlignment)
+                .setIncludePad(false)
+                .build()
+            if (maxLines != null && layout.lineCount > maxLines) {
+                return false
+            }
+            val usedHeight = if (maxLines != null && layout.lineCount > 0) {
+                layout.getLineBottom(min(layout.lineCount, maxLines) - 1)
+            } else {
+                layout.height
+            }
+            return usedHeight <= heightPx
+        }
+
+        var bestSp = minSp
+        var low = minSp
+        var high = maxSp
+        while (low <= high) {
+            val mid = (low + high) ushr 1
+            if (fits(mid)) {
+                bestSp = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return OverlayQuickSubtitleFitResult(
+            fontSizeSp = bestSp.toFloat(),
+            needsScroll = !fits(bestSp)
+        )
+    }
+
     private fun selectedQuickSubtitleGroup(): QuickSubtitleGroupConfig {
         return quickSubtitleGroups.firstOrNull { it.id == quickSubtitleSelectedGroupId }
             ?: quickSubtitleGroups.firstOrNull()
@@ -4390,14 +4554,6 @@ class FloatingOverlayService : Service() {
         val group = selectedQuickSubtitleGroup()
         val landscapePhone = isPhoneLandscapeUi()
         miniSubtitleTextView?.apply {
-            text = quickSubtitleCurrentText.ifBlank { defaultQuickSubtitleText }
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, quickSubtitleFontSizeSp)
-            gravity = if (quickSubtitleCentered) {
-                Gravity.CENTER
-            } else {
-                Gravity.START or Gravity.TOP
-            }
-            typeface = if (quickSubtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
             layoutParams = (layoutParams as? LinearLayout.LayoutParams)?.apply {
                 height = when {
                     landscapePhone -> landscapeOverlayContentHeight()
@@ -4406,6 +4562,14 @@ class FloatingOverlayService : Service() {
                 }
             }
             requestLayout()
+            applyOverlayQuickSubtitleTextAppearance(
+                textView = this,
+                text = quickSubtitleCurrentText.ifBlank { defaultQuickSubtitleText },
+                maxFontSizeSp = quickSubtitleFontSizeSp,
+                minFontSizeSp = 18f,
+                maxLines = 5,
+                centerVerticallyWhenCentered = true
+            )
         }
         miniSubtitleSeekBar?.progress =
             (quickSubtitleFontSizeSp - 28f).roundToInt().coerceIn(0, 68)
@@ -4755,6 +4919,36 @@ class FloatingOverlayService : Service() {
         return cardHeight + dp(20)
     }
 
+    private fun miniSubtitlePreviewCardSize(): OverlayPreviewCardSize {
+        val availableWidth = (displayWidth() - dp(32)).coerceAtLeast(dp(240))
+        val availableHeight = (displayHeight() - dp(56)).coerceAtLeast(dp(220))
+        return if (isLandscapeUi()) {
+            val width =
+                min(
+                    availableWidth,
+                    (displayWidth() * if (isTabletLandscapeUi()) 0.64f else 0.76f).roundToInt()
+                ).coerceAtLeast(dp(320))
+            val height =
+                min(
+                    availableHeight,
+                    (displayHeight() * if (isTabletLandscapeUi()) 0.8f else 0.82f).roundToInt()
+                ).coerceAtLeast(dp(220))
+            OverlayPreviewCardSize(width = width, height = height)
+        } else {
+            val width =
+                min(
+                    availableWidth,
+                    (displayWidth() * 0.88f).roundToInt()
+                ).coerceAtLeast(dp(260))
+            val height =
+                min(
+                    availableHeight,
+                    (displayHeight() * 0.62f).roundToInt()
+                ).coerceAtLeast(dp(280))
+            OverlayPreviewCardSize(width = width, height = height)
+        }
+    }
+
     private fun measureMiniQuickCardPageHeight(contentWidth: Int, card: QuickCard?): Int {
         val previewContainer = miniQuickCardPreviewContainer ?: return miniQuickCardPortraitPreviewMinHeight()
         if (isPhoneLandscapeUi()) {
@@ -4913,8 +5107,9 @@ class FloatingOverlayService : Service() {
             host.addView(
                 previewView,
                 FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
                 )
             )
         } else {
@@ -4951,6 +5146,44 @@ class FloatingOverlayService : Service() {
         onCardClick: () -> Unit,
         onCardLongClick: () -> Unit
     ): View {
+        val previewCardSize = miniSubtitlePreviewCardSize()
+        val previewClickListener = View.OnClickListener { onCardClick() }
+        val previewLongClickListener = View.OnLongClickListener {
+            onCardLongClick()
+            true
+        }
+        val previewScrollView = ScrollView(this).apply {
+            isFillViewport = true
+            clipChildren = false
+            clipToPadding = false
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            isClickable = true
+            isLongClickable = true
+            setOnClickListener(previewClickListener)
+            setOnLongClickListener(previewLongClickListener)
+        }
+        val previewTextView = TextView(this).apply {
+            setTextColor(overlayOnSurfaceColor())
+            isClickable = true
+            isLongClickable = true
+            setOnClickListener(previewClickListener)
+            setOnLongClickListener(previewLongClickListener)
+        }
+        applyOverlayQuickSubtitleTextAppearance(
+            textView = previewTextView,
+            text = quickSubtitleCurrentText.ifBlank { defaultQuickSubtitleText },
+            maxFontSizeSp = (quickSubtitleFontSizeSp * 1.25f).coerceIn(36f, 140f),
+            minFontSizeSp = 18f,
+            maxLines = null,
+            viewportView = previewScrollView
+        )
+        previewScrollView.addView(
+            previewTextView,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
         return FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
@@ -4967,46 +5200,10 @@ class FloatingOverlayService : Service() {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                                 foreground = selectableDrawable()
                             }
-                            setOnClickListener { onCardClick() }
-                            setOnLongClickListener {
-                                onCardLongClick()
-                                true
-                            }
+                            setOnClickListener(previewClickListener)
+                            setOnLongClickListener(previewLongClickListener)
                             addView(
-                                ScrollView(this@FloatingOverlayService).apply {
-                                    isFillViewport = true
-                                    clipChildren = false
-                                    clipToPadding = false
-                                    setPadding(dp(16), dp(16), dp(16), dp(16))
-                                    addView(
-                                        TextView(this@FloatingOverlayService).apply {
-                                            setTextColor(overlayOnSurfaceColor())
-                                            setTextSize(
-                                                TypedValue.COMPLEX_UNIT_SP,
-                                                (quickSubtitleFontSizeSp * 1.25f).coerceIn(36f, 140f)
-                                            )
-                                            typeface =
-                                                if (quickSubtitleBold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-                                            gravity =
-                                                if (quickSubtitleCentered) {
-                                                    Gravity.CENTER_HORIZONTAL or Gravity.TOP
-                                                } else {
-                                                    Gravity.START or Gravity.TOP
-                                                }
-                                            textAlignment =
-                                                if (quickSubtitleCentered) {
-                                                    View.TEXT_ALIGNMENT_CENTER
-                                                } else {
-                                                    View.TEXT_ALIGNMENT_VIEW_START
-                                                }
-                                            text = quickSubtitleCurrentText.ifBlank { defaultQuickSubtitleText }
-                                        },
-                                        FrameLayout.LayoutParams(
-                                            ViewGroup.LayoutParams.MATCH_PARENT,
-                                            ViewGroup.LayoutParams.WRAP_CONTENT
-                                        )
-                                    )
-                                },
+                                previewScrollView,
                                 FrameLayout.LayoutParams(
                                     ViewGroup.LayoutParams.MATCH_PARENT,
                                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -5014,14 +5211,14 @@ class FloatingOverlayService : Service() {
                             )
                         },
                         FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
+                            previewCardSize.width,
+                            previewCardSize.height
                         )
                     )
                 },
                 FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
         }
@@ -8529,8 +8726,11 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun isOverlayDarkTheme(): Boolean =
-        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    private fun isOverlayDarkTheme(): Boolean {
+        val systemDark =
+            (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        return UserPrefs.resolveThemeMode(settings.overlayThemeMode, systemDark)
+    }
 
     private fun overlayPrimaryColor(): Int = 0xFF038387.toInt()
 

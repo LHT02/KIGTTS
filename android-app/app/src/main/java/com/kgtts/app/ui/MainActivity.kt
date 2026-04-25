@@ -168,6 +168,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -306,6 +307,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -571,6 +573,8 @@ data class UiState(
     val numberReplaceMode: Int = 0,
     val landscapeDrawerMode: Int = UserPrefs.DRAWER_MODE_PERMANENT,
     val solidTopBar: Boolean = true,
+    val themeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
+    val overlayThemeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val quickCardAutoSaveOnExit: Boolean = false,
     val useBuiltinFileManager: Boolean = true,
@@ -593,6 +597,9 @@ data class UiState(
     val ttsDisabled: Boolean = false,
     val soundboardKeywordTriggerEnabled: Boolean = false,
     val allowQuickTextTriggerSoundboard: Boolean = false,
+    val quickSubtitleInterruptQueue: Boolean = true,
+    val quickSubtitleAutoFit: Boolean = true,
+    val quickSubtitleCompactControls: Boolean = false,
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
     val speakerVerifyEnabled: Boolean = false,
@@ -846,6 +853,12 @@ class MainViewModel(
     private val repo: ModelRepository,
     private val appContext: ComponentActivity
 ) : ViewModel() {
+    private data class OverlayShortcutSeedEntry(
+        val packageName: String,
+        val className: String,
+        val label: String
+    )
+
     var uiState by mutableStateOf(UiState())
         private set
     var realtimeRecognized by mutableStateOf<List<RecognizedItem>>(emptyList())
@@ -894,6 +907,7 @@ class MainViewModel(
     private var manualRecognizedIdSeed: Long = -1L
     private var pttSessionCommitConsumed: Boolean = false
     private var lastHandledQuickSubtitleLaunchRequestId: Long = Long.MIN_VALUE
+    private val quickSubtitleInterruptRequestSerial = AtomicLong(0L)
 
     private fun mergePttTranscript(existing: String, incoming: String): String {
         val a = existing.trim()
@@ -1003,6 +1017,10 @@ class MainViewModel(
         private set
     var quickSubtitleCentered by mutableStateOf(false)
         private set
+    var quickSubtitleRotated180 by mutableStateOf(false)
+        private set
+    var quickSubtitleShowActionButtons by mutableStateOf(true)
+        private set
     var quickSubtitleFontSizeSp by mutableFloatStateOf(56f)
         private set
     var quickSubtitlePreviewVisible by mutableStateOf(false)
@@ -1044,6 +1062,33 @@ class MainViewModel(
         loadQuickCardConfig()
         observeSoundboardPlayback()
         observeSettingsChanges()
+    }
+
+    fun ensureInitialFloatingOverlayShortcuts() {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (UserPrefs.isFloatingOverlayDefaultShortcutsSeeded(appContext)) return@launch
+            val existing = UserPrefs.getFloatingOverlayShortcuts(appContext)
+            if (!existing.isNullOrBlank()) {
+                UserPrefs.setFloatingOverlayDefaultShortcutsSeeded(appContext, true)
+                return@launch
+            }
+            val seeded = buildInitialFloatingOverlayShortcuts()
+            if (seeded.isNotEmpty()) {
+                val payload = JSONArray().apply {
+                    seeded.forEach { item ->
+                        put(
+                            JSONObject().apply {
+                                put("packageName", item.packageName)
+                                put("className", item.className)
+                                put("label", item.label)
+                            }
+                        )
+                    }
+                }.toString()
+                UserPrefs.setFloatingOverlayShortcuts(appContext, payload)
+            }
+            UserPrefs.setFloatingOverlayDefaultShortcutsSeeded(appContext, true)
+        }
     }
 
     fun attachRealtimeHost(service: RealtimeHostService) {
@@ -1114,6 +1159,70 @@ class MainViewModel(
         return null
     }
 
+    private fun buildInitialFloatingOverlayShortcuts(): List<OverlayShortcutSeedEntry> {
+        val shortcuts = buildList {
+            resolveLauncherShortcutForPackage("com.tencent.mobileqq")?.let(::add)
+            resolveLauncherShortcutForPackage("com.tencent.mm")?.let(::add)
+            resolveLauncherShortcutForPackage("com.eg.android.AlipayGphone")?.let(::add)
+            resolveCameraLauncherShortcut()?.let(::add)
+        }
+        return shortcuts.distinctBy { "${it.packageName}/${it.className}" }
+    }
+
+    private fun resolveLauncherShortcutForPackage(packageName: String): OverlayShortcutSeedEntry? {
+        val pm = appContext.packageManager
+        val launchIntent = pm.getLaunchIntentForPackage(packageName) ?: return null
+        val component = launchIntent.component ?: return null
+        val label = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getApplicationInfo(packageName, 0)
+            }
+        }.mapCatching { info ->
+            pm.getApplicationLabel(info).toString().trim()
+        }.getOrDefault("")
+        return OverlayShortcutSeedEntry(
+            packageName = component.packageName,
+            className = component.className,
+            label = label.ifBlank { component.className.substringAfterLast('.') }
+        )
+    }
+
+    private fun resolveCameraLauncherShortcut(): OverlayShortcutSeedEntry? {
+        val pm = appContext.packageManager
+        val cameraIntent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.resolveActivity(cameraIntent, PackageManager.ResolveInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.resolveActivity(cameraIntent, 0)
+        } ?: return null
+        val packageName = resolved.activityInfo?.packageName?.takeIf { it.isNotBlank() } ?: return null
+        val launchIntent = pm.getLaunchIntentForPackage(packageName)
+        val component = launchIntent?.component ?: ComponentName(
+            packageName,
+            resolved.activityInfo?.name?.takeIf { it.isNotBlank() } ?: return null
+        )
+        val label = resolved.loadLabel(pm)?.toString()?.trim().orEmpty().ifBlank {
+            runCatching {
+                val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getApplicationInfo(packageName, 0)
+                }
+                pm.getApplicationLabel(info).toString().trim()
+            }.getOrDefault("")
+        }
+        return OverlayShortcutSeedEntry(
+            packageName = component.packageName,
+            className = component.className,
+            label = label.ifBlank { component.className.substringAfterLast('.') }
+        )
+    }
+
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
         SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
         val needsSpeakerBackendReset =
@@ -1169,6 +1278,8 @@ class MainViewModel(
             numberReplaceMode = settings.numberReplaceMode,
             landscapeDrawerMode = settings.landscapeDrawerMode,
             solidTopBar = settings.solidTopBar,
+            themeMode = settings.themeMode,
+            overlayThemeMode = settings.overlayThemeMode,
             drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
             quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
             useBuiltinFileManager = settings.useBuiltinFileManager,
@@ -1190,6 +1301,9 @@ class MainViewModel(
             ttsDisabled = settings.ttsDisabled,
             soundboardKeywordTriggerEnabled = settings.soundboardKeywordTriggerEnabled,
             allowQuickTextTriggerSoundboard = settings.allowQuickTextTriggerSoundboard,
+            quickSubtitleInterruptQueue = settings.quickSubtitleInterruptQueue,
+            quickSubtitleAutoFit = settings.quickSubtitleAutoFit,
+            quickSubtitleCompactControls = settings.quickSubtitleCompactControls,
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
             speakerProfileReady = hasProfiles,
@@ -1261,6 +1375,8 @@ class MainViewModel(
         val playOnSend = root.optBoolean("playOnSend", true)
         val fontBold = root.optBoolean("fontBold", true)
         val textCentered = root.optBoolean("textCentered", false)
+        val textRotated180 = root.optBoolean("textRotated180", false)
+        val showActionButtons = root.optBoolean("showActionButtons", true)
         quickSubtitleGroups = finalGroups
         quickSubtitleSelectedGroupId =
             finalGroups.firstOrNull { it.id == selectedId }?.id ?: finalGroups.first().id
@@ -1270,6 +1386,8 @@ class MainViewModel(
         quickSubtitlePlayOnSend = playOnSend
         quickSubtitleBold = fontBold
         quickSubtitleCentered = textCentered
+        quickSubtitleRotated180 = textRotated180
+        quickSubtitleShowActionButtons = showActionButtons
         quickSubtitleNextGroupId = maxOf(maxId + 1L, (finalGroups.maxOfOrNull { it.id } ?: 0L) + 1L)
     }
 
@@ -1284,6 +1402,8 @@ class MainViewModel(
             put("playOnSend", quickSubtitlePlayOnSend)
             put("fontBold", quickSubtitleBold)
             put("textCentered", quickSubtitleCentered)
+            put("textRotated180", quickSubtitleRotated180)
+            put("showActionButtons", quickSubtitleShowActionButtons)
             val groupsArr = JSONArray()
             quickSubtitleGroups.forEach { g ->
                 groupsArr.put(
@@ -1326,19 +1446,31 @@ class MainViewModel(
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
         if (enqueueSpeak) {
-            speakText(message, fromQuickText = true)
+            speakText(
+                message,
+                fromQuickText = true,
+                interruptCurrent = uiState.quickSubtitleInterruptQueue
+            )
         } else {
             maybeTriggerSoundboardFromText(message, fromQuickText = true)
         }
         saveQuickSubtitleConfig()
     }
 
-    fun submitQuickSubtitlePreset(text: String, hasVoice: Boolean = true) {
+    fun submitQuickSubtitlePreset(
+        text: String,
+        hasVoice: Boolean = true,
+        interruptCurrent: Boolean = uiState.quickSubtitleInterruptQueue
+    ) {
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
         if (quickSubtitlePlayOnSend && hasVoice) {
-            speakText(message, fromQuickText = true)
+            speakText(
+                message,
+                fromQuickText = true,
+                interruptCurrent = interruptCurrent
+            )
         } else {
             maybeTriggerSoundboardFromText(message, fromQuickText = true)
             uiState = uiState.copy(status = "已更新字幕文本")
@@ -1356,7 +1488,11 @@ class MainViewModel(
         quickSubtitleCurrentText = message
         quickSubtitleInputText = ""
         if (playVoice) {
-            speakText(message, fromQuickText = true)
+            speakText(
+                message,
+                fromQuickText = true,
+                interruptCurrent = uiState.quickSubtitleInterruptQueue
+            )
         } else {
             maybeTriggerSoundboardFromText(message, fromQuickText = true)
             uiState = uiState.copy(status = "已更新字幕文本")
@@ -1543,6 +1679,16 @@ class MainViewModel(
 
     fun updateQuickSubtitleCentered(enabled: Boolean) {
         quickSubtitleCentered = enabled
+        saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitleRotated180(enabled: Boolean) {
+        quickSubtitleRotated180 = enabled
+        saveQuickSubtitleConfig()
+    }
+
+    fun updateQuickSubtitleShowActionButtons(showActionButtons: Boolean) {
+        quickSubtitleShowActionButtons = showActionButtons
         saveQuickSubtitleConfig()
     }
 
@@ -3108,6 +3254,27 @@ class MainViewModel(
         }
     }
 
+    fun setQuickSubtitleInterruptQueue(enabled: Boolean) {
+        uiState = uiState.copy(quickSubtitleInterruptQueue = enabled)
+        viewModelScope.launch {
+            UserPrefs.setQuickSubtitleInterruptQueue(appContext, enabled)
+        }
+    }
+
+    fun setQuickSubtitleAutoFit(enabled: Boolean) {
+        uiState = uiState.copy(quickSubtitleAutoFit = enabled)
+        viewModelScope.launch {
+            UserPrefs.setQuickSubtitleAutoFit(appContext, enabled)
+        }
+    }
+
+    fun setQuickSubtitleCompactControls(enabled: Boolean) {
+        uiState = uiState.copy(quickSubtitleCompactControls = enabled)
+        viewModelScope.launch {
+            UserPrefs.setQuickSubtitleCompactControls(appContext, enabled)
+        }
+    }
+
     fun setPushToTalkPressed(pressed: Boolean) {
         if (uiState.pushToTalkPressed == pressed) return
         uiState = uiState.copy(
@@ -3357,6 +3524,22 @@ class MainViewModel(
         uiState = uiState.copy(solidTopBar = enabled)
         viewModelScope.launch {
             UserPrefs.setSolidTopBar(appContext, enabled)
+        }
+    }
+
+    fun setThemeMode(mode: Int) {
+        val normalized = UserPrefs.normalizeThemeMode(mode)
+        uiState = uiState.copy(themeMode = normalized)
+        viewModelScope.launch {
+            UserPrefs.setThemeMode(appContext, normalized)
+        }
+    }
+
+    fun setOverlayThemeMode(mode: Int) {
+        val normalized = UserPrefs.normalizeThemeMode(mode)
+        uiState = uiState.copy(overlayThemeMode = normalized)
+        viewModelScope.launch {
+            UserPrefs.setOverlayThemeMode(appContext, normalized)
         }
     }
 
@@ -3680,7 +3863,11 @@ class MainViewModel(
         audioTest.clear()
     }
 
-    fun speakText(text: String, fromQuickText: Boolean = false) {
+    fun speakText(
+        text: String,
+        fromQuickText: Boolean = false,
+        interruptCurrent: Boolean = false
+    ) {
         val message = text.trim()
         if (message.isEmpty()) return
         if (uiState.ttsDisabled) {
@@ -3692,9 +3879,23 @@ class MainViewModel(
             uiState = uiState.copy(status = "请先选择语音包")
             return
         }
+        val interruptSerial = if (fromQuickText && interruptCurrent) {
+            quickSubtitleInterruptRequestSerial.incrementAndGet()
+        } else {
+            null
+        }
         viewModelScope.launch {
+            if (interruptSerial != null && interruptSerial != quickSubtitleInterruptRequestSerial.get()) {
+                return@launch
+            }
             val host = requestRealtimeHost("音频宿主初始化中")
-            val queuedId = host?.speakText(message)
+            if (interruptSerial != null && interruptSerial != quickSubtitleInterruptRequestSerial.get()) {
+                return@launch
+            }
+            val queuedId = host?.speakText(message, interruptCurrent = interruptCurrent)
+            if (interruptSerial != null && interruptSerial != quickSubtitleInterruptRequestSerial.get()) {
+                return@launch
+            }
             if (queuedId != null) {
                 // 便捷字幕的快速文本/输入框触发朗读时，也要进入历史记录。
                 // 使用队列ID绑定，避免与 onResult 回调重复插入。
@@ -5909,7 +6110,7 @@ private fun QuickCardBrandLogo(
     modifier: Modifier = Modifier,
     light: Boolean? = null
 ) {
-    val logoRes = if (light ?: isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
+    val logoRes = if (light ?: currentAppDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
     Image(
         painter = androidx.compose.ui.res.painterResource(id = logoRes),
         contentDescription = "KIGTTS",
@@ -6224,73 +6425,97 @@ private fun QuickCardLandscapeContent(
     onShare: (QuickCard) -> Unit
 ) {
     val theme = quickCardThemeColor(card.themeColor)
-    Row(
+    val density = LocalDensity.current
+    val designHeight = 180.dp
+    val heroWidth = designHeight * QUICK_CARD_ASPECT_LANDSCAPE
+    val detailsWidth = 132.dp
+    val groupWidth = heroWidth + 10.dp + detailsWidth + 8.dp + 4.dp
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(8.dp)
+            .padding(8.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .aspectRatio(QUICK_CARD_CONTENT_ASPECT_LANDSCAPE, matchHeightConstraintsFirst = true)
-                .clip(RoundedCornerShape(UiTokens.Radius))
-        ) {
-            QuickCardHeroArea(
-                card = card,
-                landscape = true,
-                modifier = Modifier.fillMaxSize(),
-                onShare = onShare
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .padding(vertical = 2.dp)
-        ) {
-            if (card.title.isNotBlank()) {
-                Text(
-                    card.title.trim(),
-                    style = MaterialTheme.typography.h6,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            if (card.note.isNotBlank()) {
-                Text(
-                    card.note.trim(),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Start
-            ) {
-                Md2IconButton(
-                    icon = "edit",
-                    contentDescription = "编辑名片",
-                    onClick = { onEdit(card) }
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                QuickCardBrandLogo()
-            }
-        }
-        Spacer(Modifier.width(8.dp))
-        Box(
-            modifier = Modifier
-                .width(4.dp)
-                .fillMaxHeight()
-                .background(theme)
+        val scale = minOf(
+            with(density) { maxWidth.toPx() / groupWidth.toPx() },
+            with(density) { maxHeight.toPx() / designHeight.toPx() }
         )
+        Box(
+            modifier = Modifier.size(groupWidth * scale, designHeight * scale),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                modifier = Modifier
+                    .size(groupWidth, designHeight)
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        transformOrigin = TransformOrigin.Center
+                    )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = heroWidth, height = designHeight)
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                ) {
+                    QuickCardHeroArea(
+                        card = card,
+                        landscape = true,
+                        modifier = Modifier.fillMaxSize(),
+                        onShare = onShare
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(
+                    modifier = Modifier
+                        .width(detailsWidth)
+                        .fillMaxHeight()
+                        .padding(vertical = 2.dp)
+                ) {
+                    if (card.title.isNotBlank()) {
+                        Text(
+                            card.title.trim(),
+                            style = MaterialTheme.typography.h6,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (card.note.isNotBlank()) {
+                        Text(
+                            card.note.trim(),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Start
+                    ) {
+                        Md2IconButton(
+                            icon = "edit",
+                            contentDescription = "编辑名片",
+                            onClick = { onEdit(card) }
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        QuickCardBrandLogo()
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .width(4.dp)
+                        .fillMaxHeight()
+                        .background(theme)
+                )
+            }
+        }
     }
 }
 
@@ -7175,8 +7400,11 @@ private fun HslGradientSlider(
 }
 
 @Composable
+private fun currentAppDarkTheme(): Boolean = !MaterialTheme.colors.isLight
+
+@Composable
 private fun md2CardContainerColor(): Color {
-    return if (isSystemInDarkTheme()) UiTokens.DarkCard else UiTokens.LightCard
+    return if (currentAppDarkTheme()) UiTokens.DarkCard else UiTokens.LightCard
 }
 
 @Composable
@@ -7396,11 +7624,13 @@ class MainActivity : ComponentActivity() {
             Context.BIND_AUTO_CREATE
         )
         viewModel.loadSettings()
+        viewModel.ensureInitialFloatingOverlayShortcuts()
         lifecycleScope.launch(Dispatchers.Default) {
             LauncherMenuShortcuts.syncAppShortcuts(applicationContext)
         }
         setContent {
-            val dark = isSystemInDarkTheme()
+            val systemDark = isSystemInDarkTheme()
+            val dark = UserPrefs.resolveThemeMode(viewModel.uiState.themeMode, systemDark)
             val colors = if (dark) KgtDarkColors else KgtLightColors
             val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
             val textToolbarState = remember { KigttsTextToolbarState() }
@@ -7943,7 +8173,7 @@ private fun Md2Switch(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = currentAppDarkTheme()
     val uncheckedTrack = if (dark) Color(0xFF697378) else Color(0xFFB3C1C6)
     val uncheckedThumb = if (dark) Color(0xFFE6EFF2) else Color.White
     // Disabled state should look clearly gray, not transparent/faded-out.
@@ -8388,7 +8618,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     val miuiFloatingTopCompensation = 0.dp
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val isDarkTheme = isSystemInDarkTheme()
+    val isDarkTheme = currentAppDarkTheme()
     val topBarColor = if (state.solidTopBar) md2CardContainerColor() else MaterialTheme.colorScheme.primary
     val topBarContentColor = if (state.solidTopBar) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary
     val hiddenDrawerScrimColor = MaterialTheme.colorScheme.onSurface.copy(
@@ -9118,6 +9348,10 @@ fun AppScaffold(viewModel: MainViewModel) {
                     val quickCardActions = quickCardTopBarActions
                     val showQuickSubtitleActions =
                         basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Main
+                    val showQuickSubtitleCompactEditorAction =
+                        showQuickSubtitleActions &&
+                            !isLandscape &&
+                            state.quickSubtitleCompactControls
                     val showQuickSubtitleEditorActions =
                         basePage == pageQuickSubtitle && quickSubtitleRoute == QuickSubtitleRoutes.Editor
                     val showSoundboardEditorActions =
@@ -9199,6 +9433,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                     val actionsWidthTarget = when {
                         showSettingsLogActions -> 144.dp
                         showQuickSubtitleEditorActions || showSoundboardEditorActions -> 96.dp
+                        showQuickSubtitleCompactEditorAction -> 96.dp
                         showQuickCardMainActions || showQuickCardEditorActions -> 96.dp
                         showQuickCardSortActions -> 48.dp
                         showQuickCardWebActions -> 48.dp
@@ -9224,6 +9459,19 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.End
                             ) {
+                                if (showQuickSubtitleCompactEditorAction) {
+                                    IconButton(
+                                        onClick = {
+                                            quickSubtitleNavController.navigate(QuickSubtitleRoutes.Editor)
+                                        },
+                                        enabled = showQuickSubtitleActions
+                                    ) {
+                                        MsIcon(
+                                            name = "edit",
+                                            contentDescription = "编辑快捷文本"
+                                        )
+                                    }
+                                }
                                 IconButton(
                                     onClick = { quickSubtitleFullscreen = !quickSubtitleFullscreen },
                                     enabled = showQuickSubtitleActions
@@ -9985,7 +10233,7 @@ private fun AppDrawerContent(
     horizontalStartInset: Dp = 0.dp,
     onSelect: (Int) -> Unit
 ) {
-    val drawerLogoRes = if (isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
+    val drawerLogoRes = if (currentAppDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
     val animatedItemStartPadding by animateDpAsState(
         targetValue = if (expanded) 16.dp else 27.dp,
         animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
@@ -11234,10 +11482,7 @@ private fun SoundboardScreen(
 ) {
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val layoutDirection = LocalLayoutDirection.current
     val navBarsPadding = WindowInsets.navigationBars.asPaddingValues()
-    val navBarsStartInset = navBarsPadding.calculateStartPadding(layoutDirection)
-    val navBarsEndInset = navBarsPadding.calculateEndPadding(layoutDirection)
     val navBarsBottomInset = navBarsPadding.calculateBottomPadding()
     val groups = viewModel.soundboardGroups
     val selectedGroupIndex = viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
@@ -11438,8 +11683,8 @@ private fun SoundboardScreen(
         val pageModifier = Modifier
             .fillMaxSize()
             .padding(
-                start = 10.dp + navBarsStartInset,
-                end = 10.dp + navBarsEndInset,
+                start = 10.dp,
+                end = 10.dp,
                 top = 12.dp,
                 bottom = 12.dp + navBarsBottomInset
             )
@@ -11700,6 +11945,7 @@ private fun SoundboardEditorScreen(
     state: UiState,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val groups = viewModel.soundboardGroups
@@ -11716,6 +11962,29 @@ private fun SoundboardEditorScreen(
     }
     val landscapeLayoutOptions = remember { SoundboardLayoutMode.entries.toList() }
     val iconChoices = remember { SoundboardGroupIconChoices }
+    val listState = rememberLazyListState()
+    val groupTabsScrollState = rememberScrollState()
+    val groupTabsScrollScope = rememberCoroutineScope()
+    var pendingScrollToNewGroup by remember { mutableIntStateOf(0) }
+
+    suspend fun scrollGroupTabsToEndWhenReady(request: Int) {
+        repeat(12) {
+            delay(16)
+            val maxScroll = groupTabsScrollState.maxValue
+            if (maxScroll > 0) {
+                groupTabsScrollState.scrollTo(maxScroll)
+                if (pendingScrollToNewGroup == request) pendingScrollToNewGroup = 0
+                return
+            }
+        }
+        groupTabsScrollState.scrollTo(groupTabsScrollState.maxValue)
+        if (pendingScrollToNewGroup == request) pendingScrollToNewGroup = 0
+    }
+
+    LaunchedEffect(groups.size, pendingScrollToNewGroup) {
+        if (pendingScrollToNewGroup <= 0 || groups.isEmpty()) return@LaunchedEffect
+        scrollGroupTabsToEndWhenReady(pendingScrollToNewGroup)
+    }
 
     CenteredPageBox(
         maxWidth = UiTokens.WideContentMaxWidth,
@@ -11725,6 +11994,7 @@ private fun SoundboardEditorScreen(
     ) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
+            state = listState,
             contentPadding = PaddingValues(top = UiTokens.PageTopBlank, bottom = UiTokens.PageBottomBlank),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -11795,39 +12065,54 @@ private fun SoundboardEditorScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Md2CardTitleText("分组", modifier = Modifier.weight(1f))
-                            Md2TextButton(onClick = { viewModel.addSoundboardGroup() }) {
+                            Md2TextButton(onClick = {
+                                pendingScrollToNewGroup += 1
+                                viewModel.addSoundboardGroup()
+                                toast(context, "已新增分组")
+                            }) {
                                 MsIcon("add", contentDescription = "新增分组")
                                 Spacer(Modifier.width(4.dp))
                                 Text("新增")
                             }
                         }
-                        Row(
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                .horizontalScroll(groupTabsScrollState)
                         ) {
-                            groups.forEachIndexed { idx, group ->
-                                val selected = idx == selectedGroupIndex
-                                Row(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(UiTokens.Radius))
-                                        .background(
-                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                                        )
-                                        .clickable {
-                                            selectedGroupIndex = idx
-                                            viewModel.selectSoundboardGroup(idx)
+                            Row(
+                                modifier = Modifier.onSizeChanged {
+                                    val request = pendingScrollToNewGroup
+                                    if (request > 0) {
+                                        groupTabsScrollScope.launch {
+                                            scrollGroupTabsToEndWhenReady(request)
                                         }
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    val displayTitle = group.title.ifBlank { "未命名分组" }
-                                    MsIcon(group.icon, contentDescription = displayTitle)
-                                    Text(displayTitle)
-                                    Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                },
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                groups.forEachIndexed { idx, group ->
+                                    val selected = idx == selectedGroupIndex
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(UiTokens.Radius))
+                                            .background(
+                                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                            )
+                                            .clickable {
+                                                selectedGroupIndex = idx
+                                                viewModel.selectSoundboardGroup(idx)
+                                            }
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        val displayTitle = group.title.ifBlank { "未命名分组" }
+                                        MsIcon(group.icon, contentDescription = displayTitle)
+                                        Text(displayTitle)
+                                        Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
+                                    }
                                 }
                             }
                         }
@@ -11942,7 +12227,10 @@ private fun SoundboardEditorScreen(
                                 state = viewModel.uiState,
                                 groupIndex = targetIndex,
                                 items = targetGroup.items,
-                                onAdd = { viewModel.addSoundboardItem(targetIndex) },
+                                onAdd = {
+                                    viewModel.addSoundboardItem(targetIndex)
+                                    toast(context, "已新增音效条目")
+                                },
                                 onItemsChanged = { reordered -> viewModel.setSoundboardItems(targetIndex, reordered) },
                                 onItemChanged = { itemIndex, updated ->
                                     viewModel.updateSoundboardItem(targetIndex, itemIndex) { updated }
@@ -12958,7 +13246,7 @@ private fun QuickSubtitleMicFab(
 }
 
 @Composable
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterialApi::class)
 fun QuickSubtitleScreen(
     viewModel: MainViewModel,
     state: UiState,
@@ -12978,13 +13266,12 @@ fun QuickSubtitleScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val groups = viewModel.quickSubtitleGroups
     val selectedGroupIndex = viewModel.currentQuickSubtitleGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
-    val selectedGroup = groups.getOrNull(selectedGroupIndex)
-    val quickItems = selectedGroup?.items ?: emptyList()
     val quickItemsScrollState = rememberScrollState()
     val subtitleText = viewModel.quickSubtitleCurrentText
     val subtitleSize = viewModel.quickSubtitleFontSizeSp
     val subtitleBold = viewModel.quickSubtitleBold
     val subtitleCentered = viewModel.quickSubtitleCentered
+    val subtitleRotated180 = viewModel.quickSubtitleRotated180
     val subtitleTextColor = if (subtitleText == QUICK_SUBTITLE_CLEARED_HINT) {
         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
     } else {
@@ -12995,6 +13282,17 @@ fun QuickSubtitleScreen(
     val playOnSend = viewModel.quickSubtitlePlayOnSend
     val quickInputCollapsed = viewModel.quickSubtitleInputCollapsed
     val subtitleFullscreenDialogVisible = viewModel.quickSubtitlePreviewVisible
+    val quickSubtitleAutoFit = state.quickSubtitleAutoFit
+    val useCompactQuickTextControls = state.quickSubtitleCompactControls && !isLandscape
+    val showQuickSubtitleActionButtons = viewModel.quickSubtitleShowActionButtons
+    val actionPanelToggleIcon =
+        if (showQuickSubtitleActionButtons) {
+            "search"
+        } else if (isLandscape) {
+            "more_vert"
+        } else {
+            "more_horiz"
+        }
     val copySubtitleText = {
         val content = subtitleText.trim()
         if (content.isNotEmpty()) {
@@ -13002,59 +13300,108 @@ fun QuickSubtitleScreen(
             toast(context, "已复制")
         }
     }
-    val orangeActionButtons: @Composable (Boolean) -> Unit = { vertical ->
-        if (vertical) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Md2IconButton(
-                    icon = "format_bold",
-                    contentDescription = if (subtitleBold) "关闭粗体" else "开启粗体",
-                    onClick = { viewModel.updateQuickSubtitleBold(!subtitleBold) }
+    val addCurrentTextToQuickItems: (Int) -> Unit = { groupIndex ->
+        viewModel.addQuickSubtitleItem(groupIndex = groupIndex, value = subtitleText)
+        toast(context, "已新增快捷文本")
+    }
+    val actionPanelToggleDescription =
+        if (showQuickSubtitleActionButtons) "切换到字体缩放" else "切换到快捷操作"
+    val portraitSubtitleControlAreaHeight = 48.dp
+    val portraitSubtitleControlBaselineOffset = (-6).dp
+    val compactQuickGroupSwipeThresholdPx = with(LocalDensity.current) { 18.dp.toPx() }
+    var compactQuickGroupSuppressAnimation by remember { mutableStateOf(false) }
+    val currentCompactSelectedGroupIndex by rememberUpdatedState(selectedGroupIndex)
+    val rotatedSubtitleText: @Composable (
+        text: String,
+        color: Color,
+        maxFontSizeSp: Float,
+        minFontSizeSp: Float,
+        lineHeightMultiplier: Float,
+        modifier: Modifier
+    ) -> Unit = { text, color, maxFontSizeSp, minFontSizeSp, lineHeightMultiplier, modifier ->
+        Crossfade(
+            targetState = subtitleRotated180,
+            animationSpec = tween(160),
+            label = "quick_subtitle_rotation_fade"
+        ) { rotated ->
+            QuickSubtitleAdaptiveText(
+                text = text,
+                color = color,
+                textAlign = subtitleAlign,
+                fontWeight = if (subtitleBold) FontWeight.Bold else FontWeight.Normal,
+                maxFontSizeSp = maxFontSizeSp,
+                minFontSizeSp = minFontSizeSp,
+                lineHeightMultiplier = lineHeightMultiplier,
+                autoFitEnabled = quickSubtitleAutoFit,
+                modifier = modifier.then(
+                    if (rotated) Modifier.graphicsLayer(rotationZ = 180f) else Modifier
                 )
-                Md2IconButton(
-                    icon = if (subtitleCentered) "format_align_left" else "format_align_center",
-                    contentDescription = if (subtitleCentered) "左对齐文本" else "居中文本",
-                    onClick = { viewModel.updateQuickSubtitleCentered(!subtitleCentered) }
-                )
-                Md2IconButton(
-                    icon = "cleaning_services",
-                    contentDescription = "清屏",
-                    onClick = { viewModel.clearQuickSubtitleText() }
-                )
-                Md2IconButton(
-                    icon = "history",
-                    contentDescription = "历史记录",
-                    onClick = onOpenHistory
-                )
-            }
-        } else {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Md2IconButton(
-                    icon = "format_bold",
-                    contentDescription = if (subtitleBold) "关闭粗体" else "开启粗体",
-                    onClick = { viewModel.updateQuickSubtitleBold(!subtitleBold) }
-                )
-                Md2IconButton(
-                    icon = if (subtitleCentered) "format_align_left" else "format_align_center",
-                    contentDescription = if (subtitleCentered) "左对齐文本" else "居中文本",
-                    onClick = { viewModel.updateQuickSubtitleCentered(!subtitleCentered) }
-                )
-                Md2IconButton(
-                    icon = "cleaning_services",
-                    contentDescription = "清屏",
-                    onClick = { viewModel.clearQuickSubtitleText() }
-                )
-                Md2IconButton(
-                    icon = "history",
-                    contentDescription = "历史记录",
-                    onClick = onOpenHistory
-                )
-            }
+            )
+        }
+    }
+    val subtitleActionButtonsColumn: @Composable (Modifier) -> Unit = { modifier ->
+        Column(
+            modifier = modifier,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Md2IconButton(
+                icon = "format_bold",
+                contentDescription = if (subtitleBold) "关闭粗体" else "开启粗体",
+                onClick = { viewModel.updateQuickSubtitleBold(!subtitleBold) }
+            )
+            Md2IconButton(
+                icon = if (subtitleCentered) "format_align_left" else "format_align_center",
+                contentDescription = if (subtitleCentered) "左对齐文本" else "居中文本",
+                onClick = { viewModel.updateQuickSubtitleCentered(!subtitleCentered) }
+            )
+            Md2IconButton(
+                icon = "swap_vert",
+                contentDescription = if (subtitleRotated180) "恢复字幕方向" else "倒置字幕",
+                onClick = { viewModel.updateQuickSubtitleRotated180(!subtitleRotated180) }
+            )
+            Md2IconButton(
+                icon = "cleaning_services",
+                contentDescription = "清屏",
+                onClick = { viewModel.clearQuickSubtitleText() }
+            )
+            Md2IconButton(
+                icon = "history",
+                contentDescription = "历史记录",
+                onClick = onOpenHistory
+            )
+        }
+    }
+    val subtitleActionButtonsRow: @Composable (Modifier) -> Unit = { modifier ->
+        Row(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.Start
+        ) {
+            Md2IconButton(
+                icon = "format_bold",
+                contentDescription = if (subtitleBold) "关闭粗体" else "开启粗体",
+                onClick = { viewModel.updateQuickSubtitleBold(!subtitleBold) }
+            )
+            Md2IconButton(
+                icon = if (subtitleCentered) "format_align_left" else "format_align_center",
+                contentDescription = if (subtitleCentered) "左对齐文本" else "居中文本",
+                onClick = { viewModel.updateQuickSubtitleCentered(!subtitleCentered) }
+            )
+            Md2IconButton(
+                icon = "swap_vert",
+                contentDescription = if (subtitleRotated180) "恢复字幕方向" else "倒置字幕",
+                onClick = { viewModel.updateQuickSubtitleRotated180(!subtitleRotated180) }
+            )
+            Md2IconButton(
+                icon = "cleaning_services",
+                contentDescription = "清屏",
+                onClick = { viewModel.clearQuickSubtitleText() }
+            )
+            Md2IconButton(
+                icon = "history",
+                contentDescription = "历史记录",
+                onClick = onOpenHistory
+            )
         }
     }
     var pttDragTarget by remember { mutableStateOf(PttConfirmDragTarget.DefaultSend) }
@@ -13137,10 +13484,7 @@ fun QuickSubtitleScreen(
     }
     val hasVoice = state.voiceDir != null
     val statusBarInsetTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val layoutDirection = LocalLayoutDirection.current
     val navBarsPadding = WindowInsets.navigationBars.asPaddingValues()
-    val navBarsStartInset = navBarsPadding.calculateStartPadding(layoutDirection)
-    val navBarsEndInset = navBarsPadding.calculateEndPadding(layoutDirection)
     val navBarsBottomInset = navBarsPadding.calculateBottomPadding()
     val quickSubtitleTopBlankTarget =
         if (fullscreenMode) (statusBarInsetTop + UiTokens.PageTopBlank) else UiTokens.PageTopBlank
@@ -13189,7 +13533,6 @@ fun QuickSubtitleScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = navBarsStartInset, end = navBarsEndInset)
         ) {
             Spacer(Modifier.height(quickSubtitleTopBlank))
             if (isLandscape) {
@@ -13236,9 +13579,7 @@ fun QuickSubtitleScreen(
                                         )
                                 ) {
                                     Box(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .verticalScroll(rememberScrollState())
+                                        modifier = Modifier.fillMaxSize()
                                     ) {
                                         AnimatedContent(
                                             targetState = subtitleText,
@@ -13260,16 +13601,13 @@ fun QuickSubtitleScreen(
                                             } else {
                                                 MaterialTheme.colorScheme.onSurface
                                             }
-                                            Text(
-                                                text = text,
-                                                style = MaterialTheme.typography.bodyLarge.copy(
-                                                    fontWeight = if (subtitleBold) FontWeight.Bold else FontWeight.Normal,
-                                                    fontSize = subtitleSize.sp,
-                                                    lineHeight = (subtitleSize * 1.15f).sp
-                                                ),
-                                                color = textColor,
-                                                textAlign = subtitleAlign,
-                                                modifier = Modifier.fillMaxWidth()
+                                            rotatedSubtitleText(
+                                                text,
+                                                textColor,
+                                                subtitleSize,
+                                                14f,
+                                                1.15f,
+                                                Modifier.fillMaxSize()
                                             )
                                         }
                                     }
@@ -13283,38 +13621,68 @@ fun QuickSubtitleScreen(
                                 ) {
                                     Column(
                                         modifier = Modifier
-                                            .width(38.dp)
-                                            .fillMaxHeight(),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Top
-                                    ) {
-                                        Spacer(Modifier.height(4.dp))
-                                        orangeActionButtons(true)
-                                    }
-                                    Column(
-                                        modifier = Modifier
-                                            .width(32.dp)
+                                            .width(40.dp)
                                             .fillMaxHeight(),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        MsIcon("search", contentDescription = "字体大小")
-                                        Spacer(Modifier.height(4.dp))
                                         Box(
                                             modifier = Modifier
-                                                .padding(top = 4.dp, bottom = 4.dp)
                                                 .weight(1f)
-                                                .fillMaxWidth(),
-                                            contentAlignment = Alignment.Center
+                                                .fillMaxWidth()
                                         ) {
-                                            Md2VerticalSlider(
-                                                value = subtitleSize,
-                                                onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
-                                                valueRange = 28f..96f,
-                                                modifier = Modifier
-                                                    .fillMaxHeight()
-                                                    .width(28.dp)
-                                            )
+                                            Crossfade(
+                                                targetState = showQuickSubtitleActionButtons,
+                                                animationSpec = tween(180),
+                                                label = "quick_subtitle_controls_landscape"
+                                            ) { showButtons ->
+                                                if (showButtons) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxSize(),
+                                                        contentAlignment = Alignment.TopCenter
+                                                    ) {
+                                                        subtitleActionButtonsColumn(
+                                                            Modifier
+                                                                .fillMaxWidth()
+                                                                .verticalScroll(rememberScrollState())
+                                                                .padding(top = 4.dp, bottom = 4.dp)
+                                                        )
+                                                    }
+                                                } else {
+                                                    Column(
+                                                        modifier = Modifier
+                                                            .fillMaxSize(),
+                                                        horizontalAlignment = Alignment.CenterHorizontally
+                                                    ) {
+                                                        MsIcon("search", contentDescription = "字体大小")
+                                                        Spacer(Modifier.height(4.dp))
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .padding(top = 4.dp, bottom = 4.dp)
+                                                                .weight(1f)
+                                                                .fillMaxWidth(),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Md2VerticalSlider(
+                                                                value = subtitleSize,
+                                                                onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                                                valueRange = 28f..96f,
+                                                                modifier = Modifier
+                                                                    .fillMaxHeight()
+                                                                    .width(28.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
+                                        Md2IconButton(
+                                    icon = actionPanelToggleIcon,
+                                    contentDescription = actionPanelToggleDescription,
+                                    onClick = {
+                                        viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
+                                    }
+                                )
                                     }
                                 }
                             }
@@ -13430,12 +13798,7 @@ fun QuickSubtitleScreen(
                                                             shape = RoundedCornerShape(UiTokens.Radius),
                                                             shadowStyle = MdCardShadowStyle
                                                         )
-                                                        .clickable {
-                                                            viewModel.addQuickSubtitleItem(
-                                                                groupIndex = groupIndex,
-                                                                value = subtitleText
-                                                            )
-                                                        },
+                                                        .clickable { addCurrentTextToQuickItems(groupIndex) },
                                                     shape = RoundedCornerShape(UiTokens.Radius),
                                                     backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
                                                     elevation = 0.dp
@@ -13543,9 +13906,7 @@ fun QuickSubtitleScreen(
                                     )
                             ) {
                                 Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .verticalScroll(rememberScrollState())
+                                    modifier = Modifier.fillMaxSize()
                                 ) {
                                     AnimatedContent(
                                         targetState = subtitleText,
@@ -13567,36 +13928,82 @@ fun QuickSubtitleScreen(
                                         } else {
                                             MaterialTheme.colorScheme.onSurface
                                         }
-                                        Text(
-                                            text = text,
-                                            style = MaterialTheme.typography.bodyLarge.copy(
-                                                fontWeight = if (subtitleBold) FontWeight.Bold else FontWeight.Normal,
-                                                fontSize = subtitleSize.sp,
-                                                lineHeight = (subtitleSize * 1.15f).sp
-                                            ),
-                                            color = textColor,
-                                            textAlign = subtitleAlign,
-                                            modifier = Modifier.fillMaxWidth()
+                                        rotatedSubtitleText(
+                                            text,
+                                            textColor,
+                                            subtitleSize,
+                                            14f,
+                                            1.15f,
+                                            Modifier.fillMaxSize()
                                         )
                                     }
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
-                            orangeActionButtons(false)
-                            Spacer(Modifier.height(4.dp))
-                            Row(
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    .height(portraitSubtitleControlAreaHeight)
                             ) {
-                                MsIcon("search", contentDescription = "字体大小")
-                                Slider(
-                                    value = subtitleSize,
-                                    onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
-                                    valueRange = 28f..96f,
-                                    modifier = Modifier.weight(1f)
+                                Crossfade(
+                                    targetState = showQuickSubtitleActionButtons,
+                                    animationSpec = tween(180),
+                                    label = "quick_subtitle_controls_portrait"
+                                ) { showButtons ->
+                                    if (showButtons) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize(),
+                                            contentAlignment = Alignment.BottomStart
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(end = 44.dp)
+                                                    .offset(y = portraitSubtitleControlBaselineOffset),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                subtitleActionButtonsRow(Modifier.weight(1f))
+                                            }
+                                        }
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize(),
+                                            contentAlignment = Alignment.BottomStart
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(start = 4.dp, end = 44.dp)
+                                                    .offset(y = portraitSubtitleControlBaselineOffset),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                MsIcon("search", contentDescription = "字体大小")
+                                                CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+                                                    Slider(
+                                                        value = subtitleSize,
+                                                        onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                                        valueRange = 28f..96f,
+                                                        modifier = Modifier
+                                                            .weight(1f)
+                                                            .height(36.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Md2IconButton(
+                                    icon = actionPanelToggleIcon,
+                                    contentDescription = actionPanelToggleDescription,
+                                    onClick = {
+                                        viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
+                                    },
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .offset(y = portraitSubtitleControlBaselineOffset)
                                 )
                             }
                         }
@@ -13613,143 +14020,20 @@ fun QuickSubtitleScreen(
                         shrinkVertically(animationSpec = tween(160, easing = FastOutSlowInEasing))
                 ) {
                     Column {
-                    Spacer(Modifier.height(8.dp))
-                    Md2StaggeredFloatIn(index = 1, enabled = false) {
-                        if (isLandscape) {
-                            Column(
-                                modifier = Modifier
-                                    .padding(horizontal = 16.dp)
-                                    .fillMaxWidth()
-                                    .heightIn(max = 220.dp)
-                                    .verticalScroll(rememberScrollState()),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                quickItems.forEach { text ->
-                                    Card(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(72.dp)
-                                            .clickable {
-                                                viewModel.submitQuickSubtitlePreset(
-                                                    text = text,
-                                                    hasVoice = hasVoice
-                                                )
-                                            },
-                                        shape = RoundedCornerShape(UiTokens.Radius),
-                                        backgroundColor = md2CardContainerColor(),
-                                        elevation = UiTokens.CardElevation
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                                            contentAlignment = Alignment.CenterStart
-                                        ) {
-                                            Text(
-                                                text = text,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                                style = MaterialTheme.typography.bodyLarge
-                                            )
-                                        }
-                                    }
-                                }
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(56.dp)
-                                        .clickable {
-                                            viewModel.addQuickSubtitleItem(
-                                                groupIndex = selectedGroupIndex,
-                                                value = subtitleText
-                                            )
-                                        },
-                                    shape = RoundedCornerShape(UiTokens.Radius),
-                                    backgroundColor = md2CardContainerColor(),
-                                    elevation = UiTokens.CardElevation
-                                ) {
-                                    Box(
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        MsIcon("add", contentDescription = "添加当前文本")
-                                    }
-                                }
-                            }
-                        } else {
-                            AnimatedContent(
-                                targetState = selectedGroupIndex,
-                                transitionSpec = {
-                                    val forward = targetState >= initialState
-                                    ContentTransform(
-                                        targetContentEnter = fadeIn(animationSpec = tween(200)) +
-                                            slideInHorizontally(
-                                                initialOffsetX = { full -> if (forward) full / 3 else -full / 3 },
-                                                animationSpec = tween(250, easing = FastOutSlowInEasing)
-                                            ),
-                                        initialContentExit = fadeOut(animationSpec = tween(170)) +
-                                            slideOutHorizontally(
-                                                targetOffsetX = { full -> if (forward) -full / 4 else full / 4 },
-                                                animationSpec = tween(210, easing = FastOutSlowInEasing)
-                                            ),
-                                        sizeTransform = null
-                                    )
-                                },
-                                label = "quick_subtitle_items_switch_portrait"
-                            ) { groupIndex ->
-                                val animatedQuickItems = groups.getOrNull(groupIndex)?.items.orEmpty()
+                        Spacer(Modifier.height(8.dp))
+                        Md2StaggeredFloatIn(index = 1, enabled = false) {
+                            if (useCompactQuickTextControls) {
                                 Row(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(100.dp)
-                                        .horizontalScroll(rememberScrollState()),
+                                        .padding(horizontal = 16.dp, vertical = 3.dp)
+                                        .fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    // Keep frame edges flush; reserve shadow space inside scroll content.
-                                    Spacer(Modifier.width(8.dp))
-                                    animatedQuickItems.forEach { text ->
-                                        Card(
-                                            modifier = Modifier
-                                                .padding(vertical = 3.dp)
-                                                .width(148.dp)
-                                                .height(94.dp)
-                                                .clickable {
-                                                    viewModel.submitQuickSubtitlePreset(
-                                                        text = text,
-                                                        hasVoice = hasVoice
-                                                    )
-                                                },
-                                            shape = RoundedCornerShape(UiTokens.Radius),
-                                            backgroundColor = md2CardContainerColor(),
-                                            elevation = UiTokens.CardElevation
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                                contentAlignment = Alignment.CenterStart
-                                            ) {
-                                                Text(
-                                                    text = text,
-                                                    maxLines = 2,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    style = MaterialTheme.typography.bodyLarge
-                                                )
-                                            }
-                                        }
-                                    }
                                     Card(
                                         modifier = Modifier
-                                            .padding(vertical = 3.dp)
-                                            .width(86.dp)
-                                            .height(94.dp)
-                                            .clickable {
-                                                viewModel.addQuickSubtitleItem(
-                                                    groupIndex = groupIndex,
-                                                    value = subtitleText
-                                                )
-                                            },
+                                            .weight(1f)
+                                            .height(110.dp),
                                         shape = RoundedCornerShape(UiTokens.Radius),
                                         backgroundColor = md2CardContainerColor(),
                                         elevation = UiTokens.CardElevation
@@ -13757,142 +14041,403 @@ fun QuickSubtitleScreen(
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxSize()
-                                                .padding(horizontal = 8.dp, vertical = 8.dp),
-                                            contentAlignment = Alignment.Center
+                                                .padding(vertical = 8.dp)
                                         ) {
-                                            MsIcon("add", contentDescription = "添加当前文本")
-                                        }
-                                    }
-                                    Spacer(Modifier.width(8.dp))
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-                    Md2StaggeredFloatIn(
-                        index = 2,
-                        enabled = false,
-                        modifier = Modifier
-                            .padding(horizontal = 16.dp, vertical = 3.dp)
-                            .fillMaxWidth()
-                    ) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(UiTokens.Radius),
-                            backgroundColor = md2CardContainerColor(),
-                            elevation = UiTokens.CardElevation
-                        ) {
-                            if (isLandscape) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 220.dp)
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxWidth()
-                                            .verticalScroll(rememberScrollState())
-                                            .padding(horizontal = 4.dp, vertical = 4.dp),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        groups.forEachIndexed { index, group ->
-                                            val selected = selectedGroupIndex == index
-                                            val tabBg = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(44.dp)
-                                                    .clip(RoundedCornerShape(UiTokens.Radius))
-                                                    .background(tabBg)
-                                                    .clickable { viewModel.selectQuickSubtitleGroup(index) }
-                                                    .padding(horizontal = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                val displayTitle = group.title.ifBlank { "未命名分组" }
-                                                MsIcon(group.icon, contentDescription = displayTitle)
-                                                Text(displayTitle, maxLines = 1)
-                                            }
-                                        }
-                                    }
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(44.dp),
-                                        color = MaterialTheme.colorScheme.primary
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            IconButton(onClick = onOpenEditor) {
-                                                MsIcon(
-                                                    "edit",
-                                                    contentDescription = "编辑快捷文本",
-                                                    tint = MaterialTheme.colorScheme.onPrimary
+                                            AnimatedContent(
+                                                targetState = selectedGroupIndex,
+                                                transitionSpec = {
+                                                    if (compactQuickGroupSuppressAnimation || groups.size <= 1) {
+                                                        ContentTransform(
+                                                            targetContentEnter = fadeIn(animationSpec = tween(0)),
+                                                            initialContentExit = fadeOut(animationSpec = tween(0)),
+                                                            sizeTransform = null
+                                                        )
+                                                    } else {
+                                                        val forward = targetState == if (initialState < groups.lastIndex) initialState + 1 else 0
+                                                        ContentTransform(
+                                                            targetContentEnter = fadeIn(animationSpec = tween(200)) +
+                                                                slideInVertically(
+                                                                    initialOffsetY = { full -> if (forward) full / 3 else -full / 3 },
+                                                                    animationSpec = tween(250, easing = FastOutSlowInEasing)
+                                                                ),
+                                                            initialContentExit = fadeOut(animationSpec = tween(170)) +
+                                                                slideOutVertically(
+                                                                    targetOffsetY = { full -> if (forward) -full / 4 else full / 4 },
+                                                                    animationSpec = tween(210, easing = FastOutSlowInEasing)
+                                                                ),
+                                                            sizeTransform = null
+                                                        )
+                                                    }
+                                                },
+                                                label = "quick_subtitle_items_switch_portrait_compact"
+                                            ) { groupIndex ->
+                                                val animatedQuickItems = groups.getOrNull(groupIndex)?.items.orEmpty()
+                                                val compactScrollState = rememberScrollState()
+                                                val compactLeftFadeAlpha by animateFloatAsState(
+                                                    targetValue = if (
+                                                        compactScrollState.maxValue > 0 &&
+                                                        compactScrollState.value > 0
+                                                    ) 1f else 0f,
+                                                    animationSpec = tween(140),
+                                                    label = "quick_subtitle_compact_left_fade"
                                                 )
+                                                val compactRightFadeAlpha by animateFloatAsState(
+                                                    targetValue = if (
+                                                        compactScrollState.maxValue > 0 &&
+                                                        compactScrollState.value < compactScrollState.maxValue
+                                                    ) 1f else 0f,
+                                                    animationSpec = tween(140),
+                                                    label = "quick_subtitle_compact_right_fade"
+                                                )
+                                                Box(
+                                                    modifier = Modifier.fillMaxSize()
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .horizontalScroll(compactScrollState),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Spacer(Modifier.width(10.dp))
+                                                        animatedQuickItems.forEach { text ->
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .width(148.dp)
+                                                                    .height(94.dp)
+                                                                    .clickable {
+                                                                        viewModel.submitQuickSubtitlePreset(
+                                                                            text = text,
+                                                                            hasVoice = hasVoice,
+                                                                            interruptCurrent = state.quickSubtitleInterruptQueue
+                                                                        )
+                                                                    }
+                                                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                                                contentAlignment = Alignment.CenterStart
+                                                            ) {
+                                                                Text(
+                                                                    text = text,
+                                                                    maxLines = 2,
+                                                                    overflow = TextOverflow.Ellipsis,
+                                                                    style = MaterialTheme.typography.bodyLarge
+                                                                )
+                                                            }
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .height(58.dp)
+                                                                    .width(1.dp)
+                                                                    .background(
+                                                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.18f)
+                                                                    )
+                                                            )
+                                                        }
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(86.dp)
+                                                                .height(94.dp)
+                                                                .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            MsIcon("add", contentDescription = "添加当前文本")
+                                                        }
+                                                        Spacer(Modifier.width(10.dp))
+                                                    }
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .align(Alignment.CenterStart)
+                                                            .fillMaxHeight()
+                                                            .width(18.dp)
+                                                            .background(
+                                                                Brush.horizontalGradient(
+                                                                    listOf(
+                                                                        md2CardContainerColor(),
+                                                                        md2CardContainerColor().copy(alpha = 0f)
+                                                                    )
+                                                                )
+                                                            )
+                                                            .graphicsLayer { alpha = compactLeftFadeAlpha }
+                                                    )
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .align(Alignment.CenterEnd)
+                                                            .fillMaxHeight()
+                                                            .width(18.dp)
+                                                            .background(
+                                                                Brush.horizontalGradient(
+                                                                    listOf(
+                                                                        md2CardContainerColor().copy(alpha = 0f),
+                                                                        md2CardContainerColor()
+                                                                    )
+                                                                )
+                                                            )
+                                                            .graphicsLayer { alpha = compactRightFadeAlpha }
+                                                    )
+                                                }
                                             }
+                                        }
+                                    }
+                                    val compactDisplayGroup = groups.getOrNull(selectedGroupIndex)
+                                    Card(
+                                        modifier = Modifier
+                                            .width(56.dp)
+                                            .height(110.dp)
+                                            .pointerInput(groups.size) {
+                                                var accumulatedDrag = 0f
+                                                detectDragGestures(
+                                                    onDragStart = {
+                                                        accumulatedDrag = 0f
+                                                        compactQuickGroupSuppressAnimation = true
+                                                    },
+                                                    onDragEnd = {
+                                                        accumulatedDrag = 0f
+                                                        compactQuickGroupSuppressAnimation = false
+                                                    },
+                                                    onDragCancel = {
+                                                        accumulatedDrag = 0f
+                                                        compactQuickGroupSuppressAnimation = false
+                                                    }
+                                                ) { change, dragAmount ->
+                                                    if (groups.isEmpty()) return@detectDragGestures
+                                                    change.consume()
+                                                    accumulatedDrag += dragAmount.y
+                                                    if (kotlin.math.abs(accumulatedDrag) >= compactQuickGroupSwipeThresholdPx) {
+                                                        val target = if (accumulatedDrag > 0f) {
+                                                            if (currentCompactSelectedGroupIndex > 0) currentCompactSelectedGroupIndex - 1 else groups.lastIndex
+                                                        } else {
+                                                            if (currentCompactSelectedGroupIndex < groups.lastIndex) currentCompactSelectedGroupIndex + 1 else 0
+                                                        }
+                                                        viewModel.selectQuickSubtitleGroup(target)
+                                                        accumulatedDrag = 0f
+                                                    }
+                                                }
+                                            },
+                                        shape = RoundedCornerShape(UiTokens.Radius),
+                                        backgroundColor = md2CardContainerColor(),
+                                        elevation = UiTokens.CardElevation
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .padding(vertical = 4.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Center
+                                        ) {
+                                            Md2IconButton(
+                                                icon = "keyboard_arrow_up",
+                                                contentDescription = "上一分组",
+                                                onClick = {
+                                                    if (groups.isNotEmpty()) {
+                                                        compactQuickGroupSuppressAnimation = false
+                                                        val target = if (selectedGroupIndex > 0) {
+                                                            selectedGroupIndex - 1
+                                                        } else {
+                                                            groups.lastIndex
+                                                        }
+                                                        viewModel.selectQuickSubtitleGroup(target)
+                                                    }
+                                                }
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxWidth(),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                if (compactDisplayGroup != null) {
+                                                    Column(
+                                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                    ) {
+                                                        MsIcon(
+                                                            compactDisplayGroup.icon,
+                                                            contentDescription = compactDisplayGroup.title.ifBlank { "当前分组" }
+                                                        )
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .width(18.dp)
+                                                                .height(2.dp)
+                                                                .clip(RoundedCornerShape(999.dp))
+                                                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Md2IconButton(
+                                                icon = "keyboard_arrow_down",
+                                                contentDescription = "下一分组",
+                                                onClick = {
+                                                    if (groups.isNotEmpty()) {
+                                                        compactQuickGroupSuppressAnimation = false
+                                                        val target = if (selectedGroupIndex < groups.lastIndex) {
+                                                            selectedGroupIndex + 1
+                                                        } else {
+                                                            0
+                                                        }
+                                                        viewModel.selectQuickSubtitleGroup(target)
+                                                    }
+                                                }
+                                            )
                                         }
                                     }
                                 }
                             } else {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
+                                Column {
+                                    AnimatedContent(
+                                        targetState = selectedGroupIndex,
+                                        transitionSpec = {
+                                            val forward = targetState >= initialState
+                                            ContentTransform(
+                                                targetContentEnter = fadeIn(animationSpec = tween(200)) +
+                                                    slideInHorizontally(
+                                                        initialOffsetX = { full -> if (forward) full / 3 else -full / 3 },
+                                                        animationSpec = tween(250, easing = FastOutSlowInEasing)
+                                                    ),
+                                                initialContentExit = fadeOut(animationSpec = tween(170)) +
+                                                    slideOutHorizontally(
+                                                        targetOffsetX = { full -> if (forward) -full / 4 else full / 4 },
+                                                        animationSpec = tween(210, easing = FastOutSlowInEasing)
+                                                    ),
+                                                sizeTransform = null
+                                            )
+                                        },
+                                        label = "quick_subtitle_items_switch_portrait"
+                                    ) { groupIndex ->
+                                        val animatedQuickItems = groups.getOrNull(groupIndex)?.items.orEmpty()
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(100.dp)
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Spacer(Modifier.width(8.dp))
+                                            animatedQuickItems.forEach { text ->
+                                                Card(
+                                                    modifier = Modifier
+                                                        .padding(vertical = 3.dp)
+                                                        .width(148.dp)
+                                                        .height(94.dp)
+                                                        .clickable {
+                                                            viewModel.submitQuickSubtitlePreset(
+                                                                text = text,
+                                                                hasVoice = hasVoice
+                                                            )
+                                                        },
+                                                    shape = RoundedCornerShape(UiTokens.Radius),
+                                                    backgroundColor = md2CardContainerColor(),
+                                                    elevation = UiTokens.CardElevation
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .fillMaxSize()
+                                                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                        contentAlignment = Alignment.CenterStart
+                                                    ) {
+                                                        Text(
+                                                            text = text,
+                                                            maxLines = 2,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            style = MaterialTheme.typography.bodyLarge
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Card(
+                                                modifier = Modifier
+                                                    .padding(vertical = 3.dp)
+                                                    .width(86.dp)
+                                                    .height(94.dp)
+                                                    .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                shape = RoundedCornerShape(UiTokens.Radius),
+                                                backgroundColor = md2CardContainerColor(),
+                                                elevation = UiTokens.CardElevation
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    MsIcon("add", contentDescription = "添加当前文本")
+                                                }
+                                            }
+                                            Spacer(Modifier.width(8.dp))
+                                        }
+                                    }
+
+                                    Spacer(Modifier.height(8.dp))
+                                    Md2StaggeredFloatIn(
+                                        index = 2,
+                                        enabled = false,
                                         modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .horizontalScroll(rememberScrollState()),
-                                        verticalAlignment = Alignment.CenterVertically
+                                            .padding(horizontal = 16.dp, vertical = 3.dp)
+                                            .fillMaxWidth()
                                     ) {
-                                        groups.forEachIndexed { index, group ->
-                                            val selected = selectedGroupIndex == index
-                                            val tabBg = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+                                        Card(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            shape = RoundedCornerShape(UiTokens.Radius),
+                                            backgroundColor = md2CardContainerColor(),
+                                            elevation = UiTokens.CardElevation
+                                        ) {
                                             Row(
                                                 modifier = Modifier
-                                                    .height(48.dp)
-                                                    .clip(RoundedCornerShape(UiTokens.Radius))
-                                                    .background(tabBg)
-                                                    .clickable { viewModel.selectQuickSubtitleGroup(index) }
-                                                    .padding(horizontal = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    .fillMaxWidth()
+                                                    .height(48.dp),
+                                                verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                val displayTitle = group.title.ifBlank { "未命名分组" }
-                                                MsIcon(group.icon, contentDescription = displayTitle)
-                                                Text(displayTitle, maxLines = 1)
-                                            }
-                                            if (index != groups.lastIndex) {
-                                                Spacer(Modifier.width(2.dp))
+                                                Row(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .fillMaxHeight()
+                                                        .horizontalScroll(rememberScrollState()),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    groups.forEachIndexed { index, group ->
+                                                        val selected = selectedGroupIndex == index
+                                                        val tabBg =
+                                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f) else Color.Transparent
+                                                        Row(
+                                                            modifier = Modifier
+                                                                .height(48.dp)
+                                                                .clip(RoundedCornerShape(UiTokens.Radius))
+                                                                .background(tabBg)
+                                                                .clickable { viewModel.selectQuickSubtitleGroup(index) }
+                                                                .padding(horizontal = 10.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            val displayTitle = group.title.ifBlank { "未命名分组" }
+                                                            MsIcon(group.icon, contentDescription = displayTitle)
+                                                            Text(displayTitle, maxLines = 1)
+                                                        }
+                                                        if (index != groups.lastIndex) {
+                                                            Spacer(Modifier.width(2.dp))
+                                                        }
+                                                    }
+                                                }
+                                                Surface(
+                                                    modifier = Modifier
+                                                        .fillMaxHeight()
+                                                        .width(52.dp),
+                                                    color = MaterialTheme.colorScheme.primary
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        IconButton(onClick = onOpenEditor) {
+                                                            MsIcon(
+                                                                "edit",
+                                                                contentDescription = "编辑快捷文本",
+                                                                tint = MaterialTheme.colorScheme.onPrimary
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }
-                                    Surface(
-                                        modifier = Modifier
-                                            .fillMaxHeight()
-                                            .width(52.dp),
-                                        color = MaterialTheme.colorScheme.primary
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center) {
-                                            IconButton(onClick = onOpenEditor) {
-                                                MsIcon(
-                                                    "edit",
-                                                    contentDescription = "编辑快捷文本",
-                                                    tint = MaterialTheme.colorScheme.onPrimary
-                                                )
-                                            }
-                                        }
-                                    }
+                                    Spacer(Modifier.height(3.dp))
                                 }
                             }
                         }
-                    }
-                    // Reserve a tiny shadow gutter so tab card elevation won't be clipped
-                    // during expand/collapse in portrait mode.
-                    Spacer(Modifier.height(3.dp))
                     }
                 }
             }
@@ -13959,7 +14504,7 @@ fun QuickSubtitleScreen(
             }
             Column(
                 modifier = Modifier
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                     .padding(
                         start = 10.dp,
                         end = 10.dp,
@@ -14126,7 +14671,7 @@ fun QuickSubtitleScreen(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .imePadding()
-                .navigationBarsPadding()
+                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                 .padding(
                     start = pttStatusStripStartInset,
                     end = pttStatusStripAnimatedEndInsetWithBleed,
@@ -14165,7 +14710,7 @@ fun QuickSubtitleScreen(
                     .zIndex(7f)
                     .align(Alignment.BottomEnd)
                     .imePadding()
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                     // Keep same visual slot as the inline landscape FAB (before the send button).
                     .padding(end = pttFabEndInset, bottom = pttFabBottomOffset)
                     .size(pttFabSize)
@@ -14174,7 +14719,7 @@ fun QuickSubtitleScreen(
                     .zIndex(7f)
                     .align(Alignment.BottomEnd)
                     .imePadding()
-                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                     .padding(end = pttFabEndInset, bottom = pttFabBottomOffset)
                     .size(pttFabSize)
             }
@@ -14210,27 +14755,126 @@ fun QuickSubtitleScreen(
                         backgroundColor = md2CardContainerColor(),
                         elevation = UiTokens.MenuElevation
                     ) {
-                        Box(
-                            modifier = Modifier
+                        rotatedSubtitleText(
+                            subtitleText,
+                            subtitleTextColor,
+                            (subtitleSize * 1.25f).coerceIn(36f, 140f),
+                            18f,
+                            1.36f,
+                            Modifier
                                 .fillMaxSize()
                                 .padding(16.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            Text(
-                                text = subtitleText,
-                                style = MaterialTheme.typography.bodyLarge.copy(
-                                    fontWeight = if (subtitleBold) FontWeight.Bold else FontWeight.Normal,
-                                    fontSize = (subtitleSize * 1.25f).coerceIn(36f, 140f).sp,
-                                    lineHeight = (subtitleSize * 1.36f).coerceIn(40f, 152f).sp
-                                ),
-                                color = subtitleTextColor,
-                                textAlign = subtitleAlign,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+private data class QuickSubtitleFitResult(
+    val fontSizeSp: Float,
+    val needsScroll: Boolean
+)
+
+@Composable
+private fun QuickSubtitleAdaptiveText(
+    text: String,
+    color: Color,
+    textAlign: TextAlign,
+    fontWeight: FontWeight,
+    maxFontSizeSp: Float,
+    minFontSizeSp: Float,
+    lineHeightMultiplier: Float,
+    autoFitEnabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    BoxWithConstraints(modifier = modifier) {
+        val density = LocalDensity.current
+        val scrollState = rememberScrollState()
+        val textMeasurer = rememberTextMeasurer()
+        val maxWidthPx = remember(maxWidth, density) { with(density) { maxWidth.roundToPx() }.coerceAtLeast(1) }
+        val maxHeightPx = remember(maxHeight, density) { with(density) { maxHeight.roundToPx() }.coerceAtLeast(1) }
+        val boundedMaxFont = maxFontSizeSp.coerceAtLeast(minFontSizeSp)
+        val fitResult = remember(
+            text,
+            color,
+            textAlign,
+            fontWeight,
+            boundedMaxFont,
+            minFontSizeSp,
+            lineHeightMultiplier,
+            autoFitEnabled,
+            maxWidthPx,
+            maxHeightPx,
+            density
+        ) {
+            if (!autoFitEnabled) {
+                QuickSubtitleFitResult(fontSizeSp = boundedMaxFont, needsScroll = true)
+            } else {
+                fun overflows(sizeSp: Float): Boolean {
+                    val lineHeightSp = (sizeSp * lineHeightMultiplier).coerceAtLeast(sizeSp)
+                    val result = textMeasurer.measure(
+                        text = AnnotatedString(text),
+                        style = TextStyle(
+                            fontWeight = fontWeight,
+                            fontSize = sizeSp.sp,
+                            lineHeight = lineHeightSp.sp,
+                            textAlign = textAlign,
+                            color = color
+                        ),
+                        overflow = TextOverflow.Clip,
+                        softWrap = true,
+                        maxLines = Int.MAX_VALUE,
+                        constraints = Constraints(
+                            maxWidth = maxWidthPx,
+                            maxHeight = maxHeightPx
+                        )
+                    )
+                    return result.hasVisualOverflow || result.didOverflowHeight || result.didOverflowWidth
+                }
+
+                val minSize = minFontSizeSp.coerceAtMost(boundedMaxFont)
+                if (!overflows(boundedMaxFont)) {
+                    QuickSubtitleFitResult(fontSizeSp = boundedMaxFont, needsScroll = false)
+                } else if (overflows(minSize)) {
+                    QuickSubtitleFitResult(fontSizeSp = minSize, needsScroll = true)
+                } else {
+                    var low = minSize
+                    var high = boundedMaxFont
+                    var best = minSize
+                    repeat(12) {
+                        val mid = (low + high) / 2f
+                        if (overflows(mid)) {
+                            high = mid
+                        } else {
+                            best = mid
+                            low = mid
+                        }
+                    }
+                    QuickSubtitleFitResult(fontSizeSp = best, needsScroll = false)
+                }
+            }
+        }
+        val contentModifier = if (fitResult.needsScroll) {
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+        } else {
+            Modifier.fillMaxSize()
+        }
+        Box(modifier = contentModifier) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = fontWeight,
+                    fontSize = fitResult.fontSizeSp.sp,
+                    lineHeight = (fitResult.fontSizeSp * lineHeightMultiplier).sp
+                ),
+                color = color,
+                textAlign = textAlign,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
@@ -14278,7 +14922,7 @@ private fun QuickSubtitlePttConfirmOverlay(
                     .imePadding()
                     .then(
                         if (applyNavigationBarsPadding) {
-                            Modifier.navigationBarsPadding()
+                            Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                         } else {
                             Modifier
                         }
@@ -14294,7 +14938,7 @@ private fun QuickSubtitlePttConfirmOverlay(
                         .imePadding()
                         .then(
                             if (applyNavigationBarsPadding) {
-                                Modifier.navigationBarsPadding()
+                                Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                             } else {
                                 Modifier
                             }
@@ -14415,7 +15059,7 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
                         .imePadding()
                         .then(
                             if (applyNavigationBarsPadding) {
-                                Modifier.navigationBarsPadding()
+                                Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                             } else {
                                 Modifier
                             }
@@ -14446,7 +15090,7 @@ private fun QuickSubtitlePttCompactSideButtonsOverlay(
                     .imePadding()
                     .then(
                         if (applyNavigationBarsPadding) {
-                            Modifier.navigationBarsPadding()
+                            Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                         } else {
                             Modifier
                         }
@@ -14542,7 +15186,9 @@ private fun QuickSubtitleEditorScreen(
     viewModel: MainViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val groups = viewModel.quickSubtitleGroups
+    val compactControls = viewModel.uiState.quickSubtitleCompactControls
     var selectedGroupIndex by remember(groups, viewModel.quickSubtitleSelectedGroupId) {
         mutableIntStateOf(
             viewModel.currentQuickSubtitleGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
@@ -14552,6 +15198,29 @@ private fun QuickSubtitleEditorScreen(
     val iconChoices = remember { QuickSubtitleGroupIconChoices }
     val groupNameBringIntoViewRequester = remember { BringIntoViewRequester() }
     val bringIntoViewScope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val groupTabsScrollState = rememberScrollState()
+    val groupTabsScrollScope = rememberCoroutineScope()
+    var pendingScrollToNewGroup by remember { mutableIntStateOf(0) }
+
+    suspend fun scrollGroupTabsToEndWhenReady(request: Int) {
+        repeat(12) {
+            delay(16)
+            val maxScroll = groupTabsScrollState.maxValue
+            if (maxScroll > 0) {
+                groupTabsScrollState.scrollTo(maxScroll)
+                if (pendingScrollToNewGroup == request) pendingScrollToNewGroup = 0
+                return
+            }
+        }
+        groupTabsScrollState.scrollTo(groupTabsScrollState.maxValue)
+        if (pendingScrollToNewGroup == request) pendingScrollToNewGroup = 0
+    }
+
+    LaunchedEffect(groups.size, pendingScrollToNewGroup) {
+        if (pendingScrollToNewGroup <= 0 || groups.isEmpty()) return@LaunchedEffect
+        scrollGroupTabsToEndWhenReady(pendingScrollToNewGroup)
+    }
 
     CenteredPageBox(
         maxWidth = UiTokens.WideContentMaxWidth,
@@ -14563,12 +15232,35 @@ private fun QuickSubtitleEditorScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .fillMaxWidth(),
+            state = listState,
             contentPadding = PaddingValues(
                 top = UiTokens.PageTopBlank,
                 bottom = UiTokens.PageBottomBlank
             ),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            item(key = "quick_subtitle_editor_settings_card") {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.CardElevation
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2SettingSwitchRow(
+                            title = "使用更紧凑的快捷文本控件",
+                            checked = compactControls,
+                            onCheckedChange = { viewModel.setQuickSubtitleCompactControls(it) },
+                            supportingText = "仅影响主界面竖屏便捷字幕。开启后会压缩快捷文本区高度，并把编辑入口移到顶栏。"
+                        )
+                    }
+                }
+            }
             item(key = "groups_card") {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -14587,39 +15279,54 @@ private fun QuickSubtitleEditorScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Md2CardTitleText("分组", modifier = Modifier.weight(1f))
-                        Md2TextButton(onClick = { viewModel.addQuickSubtitleGroup() }) {
+                        Md2TextButton(onClick = {
+                            pendingScrollToNewGroup += 1
+                            viewModel.addQuickSubtitleGroup()
+                            toast(context, "已新增分组")
+                        }) {
                             MsIcon("add", contentDescription = "新增分组")
                             Spacer(Modifier.width(4.dp))
                             Text("新增")
                         }
                     }
-                    Row(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            .horizontalScroll(groupTabsScrollState)
                     ) {
-                        groups.forEachIndexed { idx, group ->
-                            val selected = idx == selectedGroupIndex
-                            Row(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(UiTokens.Radius))
-                                    .background(
-                                        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                                    )
-                                    .clickable {
-                                        selectedGroupIndex = idx
-                                        viewModel.selectQuickSubtitleGroup(idx)
+                        Row(
+                            modifier = Modifier.onSizeChanged {
+                                val request = pendingScrollToNewGroup
+                                if (request > 0) {
+                                    groupTabsScrollScope.launch {
+                                        scrollGroupTabsToEndWhenReady(request)
                                     }
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                val displayTitle = group.title.ifBlank { "未命名分组" }
-                                MsIcon(group.icon, contentDescription = displayTitle)
-                                Text(displayTitle)
-                                Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
+                                }
+                            },
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            groups.forEachIndexed { idx, group ->
+                                val selected = idx == selectedGroupIndex
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(UiTokens.Radius))
+                                        .background(
+                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                        )
+                                        .clickable {
+                                            selectedGroupIndex = idx
+                                            viewModel.selectQuickSubtitleGroup(idx)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    val displayTitle = group.title.ifBlank { "未命名分组" }
+                                    MsIcon(group.icon, contentDescription = displayTitle)
+                                    Text(displayTitle)
+                                    Text("(${group.items.size})", style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
@@ -14718,7 +15425,10 @@ private fun QuickSubtitleEditorScreen(
             item(key = "items_card") {
                 QuickSubtitleItemsRecyclerCard(
                     items = selectedGroup.items,
-                    onAdd = { viewModel.addQuickSubtitleItem(selectedGroupIndex) },
+                    onAdd = {
+                        viewModel.addQuickSubtitleItem(selectedGroupIndex)
+                        toast(context, "已新增快捷文本")
+                    },
                     onItemsChanged = { reordered ->
                         viewModel.setQuickSubtitleItems(selectedGroupIndex, reordered)
                     },
@@ -16255,7 +16965,7 @@ fun DrawingBoardScreen(
     val context = LocalContext.current
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val isDark = isSystemInDarkTheme()
+    val isDark = currentAppDarkTheme()
     val rotationDegrees = when (context.display?.rotation ?: Surface.ROTATION_0) {
         Surface.ROTATION_90 -> 90f
         Surface.ROTATION_180 -> 180f
@@ -16593,7 +17303,6 @@ fun DrawingBoardScreen(
         val toolbarAnchorModifier = if (isLandscape) {
             Modifier
                 .align(Alignment.CenterEnd)
-                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.End))
                 .padding(end = 10.dp)
         } else {
             Modifier
@@ -17140,7 +17849,14 @@ fun SettingsScreen(
         AudioDenoiserMode.RNNOISE to "RNNoise 噪声抑制",
         AudioDenoiserMode.SPEEX to "Speex 噪声抑制"
     )
+    val themeModeOptions = listOf(
+        UserPrefs.THEME_MODE_FOLLOW_SYSTEM to "跟随系统",
+        UserPrefs.THEME_MODE_LIGHT to "亮色",
+        UserPrefs.THEME_MODE_DARK to "暗色"
+    )
     var drawerModeExpanded by remember { mutableStateOf(false) }
+    var themeModeExpanded by remember { mutableStateOf(false) }
+    var overlayThemeModeExpanded by remember { mutableStateOf(false) }
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
     var denoiserModeExpanded by remember { mutableStateOf(false) }
@@ -17377,7 +18093,7 @@ fun SettingsScreen(
                     backgroundColor = md2CardContainerColor(),
                     elevation = UiTokens.CardElevation
                 ) {
-                    val logoRes = if (isSystemInDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
+                    val logoRes = if (currentAppDarkTheme()) R.drawable.logo_white else R.drawable.logo_black
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -17508,6 +18224,12 @@ fun SettingsScreen(
                         checked = state.allowQuickTextTriggerSoundboard,
                         onCheckedChange = { viewModel.setAllowQuickTextTriggerSoundboard(it) },
                         supportingText = "关闭后：便捷字幕的快捷文本与输入框只更新字幕/TTS，不触发音效板关键词。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "快捷文本打断当前语音",
+                        checked = state.quickSubtitleInterruptQueue,
+                        onCheckedChange = { viewModel.setQuickSubtitleInterruptQueue(it) },
+                        supportingText = "开启后：便捷字幕和迷你便捷字幕点按快捷文本时，会打断当前朗读并优先播放新条目。"
                     )
                     Md2SettingSwitchRow(
                         title = "按下输入文本确认",
@@ -17994,6 +18716,40 @@ fun SettingsScreen(
             Md2StaggeredFloatIn(index = 0) {
                 Md2SettingsCard(title = "系统与布局") {
                     Md2SettingDropdownRow(
+                        title = "主题模式",
+                        value = themeModeOptions.firstOrNull { it.first == state.themeMode }?.second
+                            ?: themeModeOptions.first().second,
+                        expanded = themeModeExpanded,
+                        onExpandedChange = { themeModeExpanded = it },
+                        supportingText = "默认跟随系统，仅影响主软件界面。"
+                    ) {
+                        themeModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    themeModeExpanded = false
+                                    viewModel.setThemeMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Md2SettingDropdownRow(
+                        title = "悬浮窗主题模式",
+                        value = themeModeOptions.firstOrNull { it.first == state.overlayThemeMode }?.second
+                            ?: themeModeOptions.first().second,
+                        expanded = overlayThemeModeExpanded,
+                        onExpandedChange = { overlayThemeModeExpanded = it },
+                        supportingText = "默认跟随系统，可单独控制悬浮窗亮暗色。"
+                    ) {
+                        themeModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    overlayThemeModeExpanded = false
+                                    viewModel.setOverlayThemeMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Md2SettingDropdownRow(
                         title = "横屏抽屉模式",
                         value = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second
                             ?: drawerModeOptions.first().second,
@@ -18015,6 +18771,18 @@ fun SettingsScreen(
                         checked = state.solidTopBar,
                         onCheckedChange = { viewModel.setSolidTopBar(it) },
                         supportingText = "开启后顶栏与状态栏颜色改为卡片同款自适应配色。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "便捷字幕字体大小自适应",
+                        checked = state.quickSubtitleAutoFit,
+                        onCheckedChange = { viewModel.setQuickSubtitleAutoFit(it) },
+                        supportingText = "开启后：主界面与悬浮窗的便捷字幕大字幕和弹窗预览会在内容过多时自动缩小字号，尽量避免需要上下滑动。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "使用更紧凑的快捷文本控件",
+                        checked = state.quickSubtitleCompactControls,
+                        onCheckedChange = { viewModel.setQuickSubtitleCompactControls(it) },
+                        supportingText = "仅影响主界面竖屏便捷字幕。开启后会改为类似迷你快捷字幕的紧凑快捷文本区，并把编辑入口移到顶栏。"
                     )
                     Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
                     Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
@@ -18370,11 +19138,15 @@ fun LogScreen(
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     var logs by remember { mutableStateOf<List<File>>(emptyList()) }
     var selected by remember { mutableStateOf<File?>(null) }
-    var content by remember { mutableStateOf("加载中...") }
+    val logLines = remember { mutableStateListOf<String>() }
+    var isLoading by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
-    val scroll = rememberScrollState()
+    var refreshToken by remember { mutableIntStateOf(0) }
+    val listState = rememberLazyListState()
+    val logBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 8.dp
     val onTopBarActionsChangeState = rememberUpdatedState(onTopBarActionsChange)
 
     fun refreshLogs() {
@@ -18382,21 +19154,46 @@ fun LogScreen(
         if (selected == null || selected !in logs) {
             selected = logs.firstOrNull()
         }
+        refreshToken++
     }
 
     LaunchedEffect(Unit) {
         refreshLogs()
     }
 
-    LaunchedEffect(selected) {
+    LaunchedEffect(selected?.absolutePath, refreshToken) {
         val file = selected
-        content = if (file == null) {
-            "暂无日志"
-        } else {
-            withContext(Dispatchers.IO) {
-                AppLogger.readLog(file)
-            }.ifEmpty { "日志为空" }
+        listState.scrollToItem(0)
+        logLines.clear()
+        if (file == null) {
+            logLines += "暂无日志"
+            isLoading = false
+            return@LaunchedEffect
         }
+        isLoading = true
+        val rawContent = withContext(Dispatchers.IO) {
+            AppLogger.readLog(file)
+        }.removePrefix("\uFEFF")
+        withContext(Dispatchers.Default) {
+            val normalizedLines = rawContent
+                .ifEmpty { "日志为空" }
+                .lineSequence()
+                .map { it.ifEmpty { " " } }
+                .toList()
+            if (normalizedLines.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    logLines += "日志为空"
+                }
+            } else {
+                normalizedLines.chunked(200).forEach { chunk ->
+                    withContext(Dispatchers.Main) {
+                        logLines.addAll(chunk)
+                    }
+                    yield()
+                }
+            }
+        }
+        isLoading = false
     }
 
     SideEffect {
@@ -18404,8 +19201,15 @@ fun LogScreen(
             LogTopBarActions(
                 onRefresh = { refreshLogs() },
                 onCopy = {
-                    clipboard.setText(AnnotatedString(content))
-                    toast(context, "已复制")
+                    scope.launch {
+                        val text = selected?.let { file ->
+                            withContext(Dispatchers.IO) {
+                                AppLogger.readLog(file).ifEmpty { "日志为空" }
+                            }
+                        } ?: "暂无日志"
+                        clipboard.setText(AnnotatedString(text))
+                        toast(context, "已复制")
+                    }
                 },
                 onShare = {
                     val file = selected
@@ -18415,7 +19219,7 @@ fun LogScreen(
                         toast(context, "暂无可分享日志")
                     }
                 },
-                canCopy = content.isNotBlank(),
+                canCopy = selected != null,
                 canShare = selected != null
             )
         )
@@ -18466,19 +19270,57 @@ fun LogScreen(
                 .fillMaxWidth()
                 .weight(1f)
         ) {
-            SelectionContainer(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scroll)
+            Card(
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2CardContainerColor(),
+                elevation = UiTokens.CardElevation
             ) {
-                Text(
-                    content,
-                    fontFamily = FontFamily.Monospace,
-                    style = MaterialTheme.typography.bodySmall
-                )
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    if (logLines.isEmpty() && isLoading) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                    itemsIndexed(logLines) { _, line ->
+                        Text(
+                            text = line,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (isLoading && logLines.isNotEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    strokeWidth = 2.5.dp,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(UiTokens.PageBottomBlank))
+        Spacer(Modifier.height(logBottomPadding))
     }
 }
 
@@ -18847,7 +19689,7 @@ private fun MarkdownBlockView(
     block: MarkdownBlock,
     onOpenUrl: (String) -> Unit
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = currentAppDarkTheme()
     val colors = remember(dark) {
         MarkdownColors(
             text = if (dark) Color(0xFFE5ECEF) else Color(0xFF1B1F22),
