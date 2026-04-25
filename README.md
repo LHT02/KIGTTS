@@ -21,11 +21,43 @@ KIGTTS 是一套面向 **Kigurumi 玩家、漫展用户和不方便说话场景*
 
 ## 制作与署名
 
-| 头像 | 名称 | 主页 |
-| --- | --- | --- |
-| <img src="./ARTS/Avatar/LHT.jpg" alt="LHT" width="72"> | LHT | [Bilibili](https://space.bilibili.com/87244951) |
-| <img src="./ARTS/Avatar/huajiang.jpg" alt="花酱" width="72"> | 花酱 | [Bilibili](https://space.bilibili.com/573842321) |
-| <img src="./ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="72"> | Yui Lu | [Bilibili](https://space.bilibili.com/23208863) |
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/87244951">
+        <img src="./ARTS/Avatar/LHT.jpg" alt="LHT" width="96">
+      </a>
+      <br>
+      <strong>LHT</strong>
+      <br>
+      <a href="https://space.bilibili.com/87244951">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="LHT Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/573842321">
+        <img src="./ARTS/Avatar/huajiang.jpg" alt="花酱" width="96">
+      </a>
+      <br>
+      <strong>花酱</strong>
+      <br>
+      <a href="https://space.bilibili.com/573842321">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="花酱 Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/23208863">
+        <img src="./ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="96">
+      </a>
+      <br>
+      <strong>Yui Lu</strong>
+      <br>
+      <a href="https://space.bilibili.com/23208863">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="Yui Lu Bilibili">
+      </a>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
   <img src="./ARTS/ScreenShoot/便捷字幕.jpg" alt="便捷字幕" width="180">
