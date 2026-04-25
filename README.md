@@ -180,6 +180,11 @@ Android 端内置二维码扫描，并针对常见国内使用场景做了联动
 
 对于只使用系统 TTS 的用户，Electron 训练端不是必需项；对于希望制作自定义语音包、整理训练素材或进行本地训练流程的用户，它是 Android 端的配套工具。
 
+训练器使用文档：
+
+- [训练器使用文档](./docs/trainer/ELECTRON_TRAINER_USAGE.md)
+- [Electron_Trainer 说明](./Electron_Trainer/README.md)
+
 ## 仓库结构
 
 ```text
