@@ -6224,73 +6224,97 @@ private fun QuickCardLandscapeContent(
     onShare: (QuickCard) -> Unit
 ) {
     val theme = quickCardThemeColor(card.themeColor)
-    Row(
+    val density = LocalDensity.current
+    val designHeight = 180.dp
+    val heroWidth = designHeight * QUICK_CARD_ASPECT_LANDSCAPE
+    val detailsWidth = 132.dp
+    val groupWidth = heroWidth + 10.dp + detailsWidth + 8.dp + 4.dp
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .padding(8.dp)
+            .padding(8.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .aspectRatio(QUICK_CARD_CONTENT_ASPECT_LANDSCAPE, matchHeightConstraintsFirst = true)
-                .clip(RoundedCornerShape(UiTokens.Radius))
-        ) {
-            QuickCardHeroArea(
-                card = card,
-                landscape = true,
-                modifier = Modifier.fillMaxSize(),
-                onShare = onShare
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .padding(vertical = 2.dp)
-        ) {
-            if (card.title.isNotBlank()) {
-                Text(
-                    card.title.trim(),
-                    style = MaterialTheme.typography.h6,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            if (card.note.isNotBlank()) {
-                Text(
-                    card.note.trim(),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Spacer(Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Start
-            ) {
-                Md2IconButton(
-                    icon = "edit",
-                    contentDescription = "编辑名片",
-                    onClick = { onEdit(card) }
-                )
-            }
-            Spacer(Modifier.weight(1f))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                QuickCardBrandLogo()
-            }
-        }
-        Spacer(Modifier.width(8.dp))
-        Box(
-            modifier = Modifier
-                .width(4.dp)
-                .fillMaxHeight()
-                .background(theme)
+        val scale = minOf(
+            with(density) { maxWidth.toPx() / groupWidth.toPx() },
+            with(density) { maxHeight.toPx() / designHeight.toPx() }
         )
+        Box(
+            modifier = Modifier.size(groupWidth * scale, designHeight * scale),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(
+                modifier = Modifier
+                    .size(groupWidth, designHeight)
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        transformOrigin = TransformOrigin.Center
+                    )
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = heroWidth, height = designHeight)
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                ) {
+                    QuickCardHeroArea(
+                        card = card,
+                        landscape = true,
+                        modifier = Modifier.fillMaxSize(),
+                        onShare = onShare
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(
+                    modifier = Modifier
+                        .width(detailsWidth)
+                        .fillMaxHeight()
+                        .padding(vertical = 2.dp)
+                ) {
+                    if (card.title.isNotBlank()) {
+                        Text(
+                            card.title.trim(),
+                            style = MaterialTheme.typography.h6,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (card.note.isNotBlank()) {
+                        Text(
+                            card.note.trim(),
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Start
+                    ) {
+                        Md2IconButton(
+                            icon = "edit",
+                            contentDescription = "编辑名片",
+                            onClick = { onEdit(card) }
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        QuickCardBrandLogo()
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .width(4.dp)
+                        .fillMaxHeight()
+                        .background(theme)
+                )
+            }
+        }
     }
 }
 
