@@ -4,6 +4,75 @@ KIGTTS 桌面训练器，基于 `Electron + React + Python 后端`，用于整�
 
 > 命名说明：`KIGTTS` 为当前主名称，`KGTTS` 为旧称。
 
+## 下载入口
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <strong>ModelScope</strong>
+      <br>
+      <span>国内下载镜像</span>
+      <br><br>
+      <a href="https://modelscope.cn/models/LHTSTUDIO/KIGTTS_TRAINER/files">
+        <img src="https://img.shields.io/badge/ModelScope-下载-624AFF?style=for-the-badge" alt="ModelScope Download">
+      </a>
+    </td>
+    <td align="center" width="50%">
+      <strong>Hugging Face</strong>
+      <br>
+      <span>海外下载镜像</span>
+      <br><br>
+      <a href="https://huggingface.co/LHT02/kigtts-trainer/tree/main">
+        <img src="https://img.shields.io/badge/Hugging%20Face-下载-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="Hugging Face Download">
+      </a>
+    </td>
+  </tr>
+</table>
+
+Android 软件发行版：
+
+- [APP0.1.0](https://github.com/LHT02/KIGTTS/releases/tag/APP0.1.0)
+
+## 制作与署名
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/87244951">
+        <img src="../ARTS/Avatar/LHT.jpg" alt="LHT" width="88">
+      </a>
+      <br>
+      <strong>LHT</strong>
+      <br>
+      <a href="https://space.bilibili.com/87244951">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="LHT Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/573842321">
+        <img src="../ARTS/Avatar/huajiang.jpg" alt="花酱" width="88">
+      </a>
+      <br>
+      <strong>花酱</strong>
+      <br>
+      <a href="https://space.bilibili.com/573842321">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="花酱 Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/23208863">
+        <img src="../ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="88">
+      </a>
+      <br>
+      <strong>Yui Lu</strong>
+      <br>
+      <a href="https://space.bilibili.com/23208863">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="Yui Lu Bilibili">
+      </a>
+    </td>
+  </tr>
+</table>
+
 ## 文档入口
 
 - 详细使用文档：[`../docs/trainer/ELECTRON_TRAINER_USAGE.md`](../docs/trainer/ELECTRON_TRAINER_USAGE.md)
