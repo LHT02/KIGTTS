@@ -34,17 +34,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
-import androidx.compose.material.DropdownMenu
 import androidx.compose.material.DropdownMenuItem
 import androidx.compose.material.Card
 import androidx.compose.material.Checkbox
@@ -65,8 +57,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -92,6 +84,7 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
 import com.lhtstudio.kigtts.app.R
+import com.lhtstudio.kigtts.app.data.UserPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -178,6 +171,12 @@ private fun BuiltinMsIcon(
     modifier: Modifier = Modifier,
     tint: Color? = null
 ) {
+    val fontScaleBlockMode = LocalFontScaleBlockMode.current
+    val iconTextSize = if (fontScaleBlockMode == UserPrefs.FONT_SCALE_BLOCK_NONE) {
+        22.sp
+    } else {
+        with(LocalDensity.current) { 22.dp.toSp() }
+    }
     val a11yModifier = if (contentDescription != null) {
         modifier.semantics { this.contentDescription = contentDescription }
     } else {
@@ -190,8 +189,8 @@ private fun BuiltinMsIcon(
         style = TextStyle(
             fontFamily = BuiltinMaterialSymbolsSharp,
             fontWeight = FontWeight.W500,
-            fontSize = 22.sp,
-            lineHeight = 22.sp,
+            fontSize = iconTextSize,
+            lineHeight = iconTextSize,
             letterSpacing = 0.sp,
             fontFeatureSettings = "'liga' 1"
         )
@@ -261,24 +260,26 @@ private fun BuiltinAnimatedDropdownMenu(
         onDismissRequest = onDismissRequest,
         properties = PopupProperties(focusable = true)
     ) {
-        Box(
-            modifier = Modifier
-                .padding(8.dp)
-                .graphicsLayer {
-                    alpha = menuAlpha
-                    scaleX = menuScale
-                    scaleY = menuScale
-                    transformOrigin = TransformOrigin(1f, 0f)
-                    clip = false
-                },
-        ) {
-            Card(
-                modifier = Modifier.widthIn(min = 196.dp, max = 216.dp),
-                shape = RoundedCornerShape(4.dp),
-                backgroundColor = MaterialTheme.colors.surface,
-                elevation = 8.dp
+        KigttsFontScaleProvider {
+            Box(
+                modifier = Modifier
+                    .padding(8.dp)
+                    .graphicsLayer {
+                        alpha = menuAlpha
+                        scaleX = menuScale
+                        scaleY = menuScale
+                        transformOrigin = TransformOrigin(1f, 0f)
+                        clip = false
+                    }
             ) {
-                Column(content = content)
+                Card(
+                    modifier = Modifier.widthIn(min = 196.dp, max = 216.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    backgroundColor = MaterialTheme.colors.surface,
+                    elevation = 8.dp
+                ) {
+                    Column(content = content)
+                }
             }
         }
     }
@@ -379,13 +380,14 @@ fun BuiltinFilePickerDialog(
     }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colors.surface, RoundedCornerShape(4.dp))
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        KigttsFontScaleProvider {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colors.surface, RoundedCornerShape(4.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
             Text(title, style = MaterialTheme.typography.h6)
 
             if (readPermission != null && !hasReadPermission) {
@@ -538,6 +540,7 @@ fun BuiltinFilePickerDialog(
                     Text("关闭")
                 }
             }
+            }
         }
     }
 }
@@ -587,13 +590,14 @@ fun BuiltinGalleryPickerDialog(
     }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colors.surface, RoundedCornerShape(4.dp))
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+        KigttsFontScaleProvider {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colors.surface, RoundedCornerShape(4.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
             Text(title, style = MaterialTheme.typography.h6)
 
             if (!hasPermission) {
@@ -655,6 +659,7 @@ fun BuiltinGalleryPickerDialog(
                         Text("关闭")
                     }
                 }
+            }
             }
         }
     }

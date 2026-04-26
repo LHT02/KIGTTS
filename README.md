@@ -21,6 +21,8 @@ KIGTTS 是一套面向 **Kigurumi 玩家、漫展用户和不方便说话场景*
 
 ## 下载入口
 
+<div align="center">
+
 <table>
   <tr>
     <td align="center" width="50%">
@@ -47,45 +49,7 @@ KIGTTS 是一套面向 **Kigurumi 玩家、漫展用户和不方便说话场景*
   </tr>
 </table>
 
-## 制作与署名
-
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <a href="https://space.bilibili.com/87244951">
-        <img src="./ARTS/Avatar/LHT.jpg" alt="LHT" width="96">
-      </a>
-      <br>
-      <strong>LHT</strong>
-      <br>
-      <a href="https://space.bilibili.com/87244951">
-        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="LHT Bilibili">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://space.bilibili.com/573842321">
-        <img src="./ARTS/Avatar/huajiang.jpg" alt="花酱" width="96">
-      </a>
-      <br>
-      <strong>花酱</strong>
-      <br>
-      <a href="https://space.bilibili.com/573842321">
-        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="花酱 Bilibili">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://space.bilibili.com/23208863">
-        <img src="./ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="96">
-      </a>
-      <br>
-      <strong>Yui Lu</strong>
-      <br>
-      <a href="https://space.bilibili.com/23208863">
-        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="Yui Lu Bilibili">
-      </a>
-    </td>
-  </tr>
-</table>
+</div>
 
 <p align="center">
   <img src="./ARTS/ScreenShoot/便捷字幕.jpg" alt="便捷字幕" width="180">
@@ -417,3 +381,47 @@ KIGTTS 的 Android 端以本地处理为核心。语音识别、语音增强、�
 - [THIRD_PARTY_LICENSES.md](./THIRD_PARTY_LICENSES.md)
 
 第三方模型、训练资源、系统组件和依赖库可能具有各自的许可证或使用条件，请在分发、商用或二次开发前分别确认。
+
+## 制作与署名
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/87244951">
+        <img src="./ARTS/Avatar/LHT.jpg" alt="LHT" width="96">
+      </a>
+      <br>
+      <strong>LHT</strong>
+      <br>
+      <a href="https://space.bilibili.com/87244951">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="LHT Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/573842321">
+        <img src="./ARTS/Avatar/huajiang.jpg" alt="花酱" width="96">
+      </a>
+      <br>
+      <strong>花酱</strong>
+      <br>
+      <a href="https://space.bilibili.com/573842321">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="花酱 Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/23208863">
+        <img src="./ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="96">
+      </a>
+      <br>
+      <strong>Yui Lu</strong>
+      <br>
+      <a href="https://space.bilibili.com/23208863">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="Yui Lu Bilibili">
+      </a>
+    </td>
+  </tr>
+</table>
+
+</div>

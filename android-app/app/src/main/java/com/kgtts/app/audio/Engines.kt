@@ -2797,6 +2797,7 @@ class RealtimeController(
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun applyOutputRoutePreference() {
         val manager = audioManager ?: return
         try {
@@ -2835,6 +2836,7 @@ class RealtimeController(
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun restoreOutputRoutePreference() {
         val manager = audioManager ?: return
         val prev = previousSpeakerOn

@@ -6,6 +6,8 @@ KIGTTS 桌面训练器，基于 `Electron + React + Python 后端`，用于整�
 
 ## 下载入口
 
+<div align="center">
+
 <table>
   <tr>
     <td align="center" width="50%">
@@ -29,49 +31,15 @@ KIGTTS 桌面训练器，基于 `Electron + React + Python 后端`，用于整�
   </tr>
 </table>
 
-Android 软件发行版：
+<p>
+  Android 软件发行版：
+  <br>
+  <a href="https://github.com/LHT02/KIGTTS/releases/tag/APP0.1.0">
+    <img src="https://img.shields.io/badge/GitHub%20Release-APP0.1.0-038387?style=for-the-badge&logo=github&logoColor=white" alt="Android App Release">
+  </a>
+</p>
 
-- [APP0.1.0](https://github.com/LHT02/KIGTTS/releases/tag/APP0.1.0)
-
-## 制作与署名
-
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <a href="https://space.bilibili.com/87244951">
-        <img src="../ARTS/Avatar/LHT.jpg" alt="LHT" width="88">
-      </a>
-      <br>
-      <strong>LHT</strong>
-      <br>
-      <a href="https://space.bilibili.com/87244951">
-        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="LHT Bilibili">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://space.bilibili.com/573842321">
-        <img src="../ARTS/Avatar/huajiang.jpg" alt="花酱" width="88">
-      </a>
-      <br>
-      <strong>花酱</strong>
-      <br>
-      <a href="https://space.bilibili.com/573842321">
-        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="花酱 Bilibili">
-      </a>
-    </td>
-    <td align="center" width="33%">
-      <a href="https://space.bilibili.com/23208863">
-        <img src="../ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="88">
-      </a>
-      <br>
-      <strong>Yui Lu</strong>
-      <br>
-      <a href="https://space.bilibili.com/23208863">
-        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="Yui Lu Bilibili">
-      </a>
-    </td>
-  </tr>
-</table>
+</div>
 
 ## 文档入口
 
@@ -141,3 +109,47 @@ npm run dist:inno
 
 - 项目源码：`GNU GPL v3.0`
 - 第三方许可证：[`../THIRD_PARTY_LICENSES.md`](../THIRD_PARTY_LICENSES.md)
+
+## 制作与署名
+
+<div align="center">
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/87244951">
+        <img src="../ARTS/Avatar/LHT.jpg" alt="LHT" width="88">
+      </a>
+      <br>
+      <strong>LHT</strong>
+      <br>
+      <a href="https://space.bilibili.com/87244951">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="LHT Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/573842321">
+        <img src="../ARTS/Avatar/huajiang.jpg" alt="花酱" width="88">
+      </a>
+      <br>
+      <strong>花酱</strong>
+      <br>
+      <a href="https://space.bilibili.com/573842321">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="花酱 Bilibili">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://space.bilibili.com/23208863">
+        <img src="../ARTS/Avatar/YuiLu.jpg" alt="Yui Lu" width="88">
+      </a>
+      <br>
+      <strong>Yui Lu</strong>
+      <br>
+      <a href="https://space.bilibili.com/23208863">
+        <img src="https://img.shields.io/badge/Bilibili-主页-00A1D6?style=flat-square&logo=bilibili&logoColor=white" alt="Yui Lu Bilibili">
+      </a>
+    </td>
+  </tr>
+</table>
+
+</div>

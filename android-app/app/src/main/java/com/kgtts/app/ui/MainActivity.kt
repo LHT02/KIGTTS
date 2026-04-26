@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+
 package com.lhtstudio.kigtts.app.ui
 
 import android.annotation.SuppressLint
@@ -11,9 +13,9 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.res.Configuration
+import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.BlurMaskFilter
 import android.graphics.Paint
 import android.graphics.RectF
 import android.media.MediaMetadataRetriever
@@ -139,6 +141,9 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.pointer.PointerButtons
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
@@ -186,6 +191,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -575,6 +581,7 @@ data class UiState(
     val solidTopBar: Boolean = true,
     val themeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val overlayThemeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
+    val fontScaleBlockMode: Int = UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val quickCardAutoSaveOnExit: Boolean = false,
     val useBuiltinFileManager: Boolean = true,
@@ -1224,6 +1231,7 @@ class MainViewModel(
     }
 
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
+        FontScaleBlockRuntime.mode = settings.fontScaleBlockMode
         SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
         val needsSpeakerBackendReset =
             settings.speakerVerifyBackendVersion != UserPrefs.SPEAKER_VERIFY_BACKEND_SHERPA_V1 &&
@@ -1280,6 +1288,7 @@ class MainViewModel(
             solidTopBar = settings.solidTopBar,
             themeMode = settings.themeMode,
             overlayThemeMode = settings.overlayThemeMode,
+            fontScaleBlockMode = settings.fontScaleBlockMode,
             drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
             quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
             useBuiltinFileManager = settings.useBuiltinFileManager,
@@ -3543,6 +3552,15 @@ class MainViewModel(
         }
     }
 
+    fun setFontScaleBlockMode(mode: Int) {
+        val normalized = UserPrefs.normalizeFontScaleBlockMode(mode)
+        FontScaleBlockRuntime.mode = normalized
+        uiState = uiState.copy(fontScaleBlockMode = normalized)
+        viewModelScope.launch {
+            UserPrefs.setFontScaleBlockMode(appContext, normalized)
+        }
+    }
+
     fun setDrawingSaveRelativePath(path: String) {
         val normalized = normalizeDrawingSaveRelativePath(path)
         uiState = uiState.copy(
@@ -3614,15 +3632,16 @@ class MainViewModel(
         drawStrokes.clear()
     }
 
-    fun appendDrawingStroke(points: List<DrawPoint>) {
+    fun appendDrawingStroke(points: List<DrawPoint>, eraserOverride: Boolean? = null) {
         if (points.size < 2) return
-        val effectiveWidth = if (drawEraser) drawEraserSize * 5f else drawBrushSize
+        val useEraser = eraserOverride ?: drawEraser
+        val effectiveWidth = if (useEraser) drawEraserSize * 5f else drawBrushSize
         drawStrokes.add(
             DrawStrokeData(
                 points = points,
                 color = drawColor,
                 width = effectiveWidth,
-                eraser = drawEraser
+                eraser = useEraser
             )
         )
     }
@@ -5133,11 +5152,13 @@ private class QuickCardSortRecyclerAdapter(
             onStartDrag: () -> Unit
         ) {
             composeView.setContent {
-                QuickCardSortRow(
-                    card = card,
-                    isDragged = isDragged,
-                    onStartDrag = onStartDrag
-                )
+                KigttsFontScaleProvider {
+                    QuickCardSortRow(
+                        card = card,
+                        isDragged = isDragged,
+                        onStartDrag = onStartDrag
+                    )
+                }
             }
         }
     }
@@ -5965,36 +5986,38 @@ private class QuickCardPagerAdapter : RecyclerView.Adapter<QuickCardPagerAdapter
         val edit = onEdit
         val share = onShare
         holder.composeView.setContent {
-            val cardAspect = if (isLandscape) QUICK_CARD_ASPECT_LANDSCAPE else QUICK_CARD_ASPECT_PORTRAIT
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                val maxCardWidth = if (isLandscape) {
-                    maxWidth * QUICK_CARD_LANDSCAPE_CARD_WIDTH_FRACTION
-                } else {
-                    maxWidth
-                }
-                val maxCardHeight = maxHeight
-                val widthByHeight = maxCardHeight * cardAspect
-                val finalWidth = minOf(maxCardWidth, widthByHeight)
-                val finalHeight = finalWidth / cardAspect
-
-                QuickCardPreviewCard(
-                    card = card,
-                    landscape = isLandscape,
-                    modifier = if (isLandscape) {
-                        Modifier.size(width = finalWidth, height = finalHeight)
+            KigttsFontScaleProvider {
+                val cardAspect = if (isLandscape) QUICK_CARD_ASPECT_LANDSCAPE else QUICK_CARD_ASPECT_PORTRAIT
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val maxCardWidth = if (isLandscape) {
+                        maxWidth * QUICK_CARD_LANDSCAPE_CARD_WIDTH_FRACTION
                     } else {
-                        Modifier.width(finalWidth)
-                    },
-                    onClick = { click(card) },
-                    onLongClick = { longPress(card) },
-                    onEdit = { target -> edit(target) },
-                    onShare = { target -> share(target) }
-                )
+                        maxWidth
+                    }
+                    val maxCardHeight = maxHeight
+                    val widthByHeight = maxCardHeight * cardAspect
+                    val finalWidth = minOf(maxCardWidth, widthByHeight)
+                    val finalHeight = finalWidth / cardAspect
+
+                    QuickCardPreviewCard(
+                        card = card,
+                        landscape = isLandscape,
+                        modifier = if (isLandscape) {
+                            Modifier.size(width = finalWidth, height = finalHeight)
+                        } else {
+                            Modifier.width(finalWidth)
+                        },
+                        onClick = { click(card) },
+                        onLongClick = { longPress(card) },
+                        onEdit = { target -> edit(target) },
+                        onShare = { target -> share(target) }
+                    )
+                }
             }
         }
     }
@@ -7420,6 +7443,33 @@ private val MaterialSymbolsSharp = FontFamily(
     )
 )
 
+internal object FontScaleBlockRuntime {
+    var mode by mutableIntStateOf(UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY)
+}
+
+internal val LocalFontScaleBlockMode = staticCompositionLocalOf {
+    UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY
+}
+
+@Composable
+internal fun KigttsFontScaleProvider(
+    mode: Int = FontScaleBlockRuntime.mode,
+    content: @Composable () -> Unit
+) {
+    val normalized = UserPrefs.normalizeFontScaleBlockMode(mode)
+    val density = LocalDensity.current
+    val providedDensity = if (normalized == UserPrefs.FONT_SCALE_BLOCK_ALL) {
+        Density(density = density.density, fontScale = 1f)
+    } else {
+        density
+    }
+    CompositionLocalProvider(
+        LocalFontScaleBlockMode provides normalized,
+        LocalDensity provides providedDensity,
+        content = content
+    )
+}
+
 @Composable
 private fun MsIcon(
     name: String,
@@ -7427,6 +7477,12 @@ private fun MsIcon(
     modifier: Modifier = Modifier,
     tint: Color = LocalContentColor.current
 ) {
+    val fontScaleBlockMode = LocalFontScaleBlockMode.current
+    val iconTextSize = if (fontScaleBlockMode == UserPrefs.FONT_SCALE_BLOCK_NONE) {
+        24.sp
+    } else {
+        with(LocalDensity.current) { 24.dp.toSp() }
+    }
     val a11yModifier = if (contentDescription != null) {
         modifier.semantics { this.contentDescription = contentDescription }
     } else {
@@ -7439,8 +7495,8 @@ private fun MsIcon(
         style = TextStyle(
             fontFamily = MaterialSymbolsSharp,
             fontWeight = FontWeight.W500,
-            fontSize = 24.sp,
-            lineHeight = 24.sp,
+            fontSize = iconTextSize,
+            lineHeight = iconTextSize,
             letterSpacing = 0.sp,
             fontFeatureSettings = "'liga' 1"
         )
@@ -7605,6 +7661,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun getResources(): Resources {
+        val base = super.getResources()
+        if (FontScaleBlockRuntime.mode != UserPrefs.FONT_SCALE_BLOCK_ALL) return base
+        val config = Configuration(base.configuration)
+        if (config.fontScale == 1f) return base
+        config.fontScale = 1f
+        return createConfigurationContext(config).resources
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
@@ -7629,25 +7694,28 @@ class MainActivity : ComponentActivity() {
             LauncherMenuShortcuts.syncAppShortcuts(applicationContext)
         }
         setContent {
-            val systemDark = isSystemInDarkTheme()
-            val dark = UserPrefs.resolveThemeMode(viewModel.uiState.themeMode, systemDark)
-            val colors = if (dark) KgtDarkColors else KgtLightColors
-            val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
-            val textToolbarState = remember { KigttsTextToolbarState() }
-            val textToolbar = remember(textToolbarState) { KigttsTextToolbar(textToolbarState) }
-            CompositionLocalProvider(LocalMd2ExtraColors provides extraColors) {
-                CompositionLocalProvider(LocalTextToolbar provides textToolbar) {
-                    MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
-                        Surface(
-                            modifier = Modifier.fillMaxSize(),
-                            color = MaterialTheme.colorScheme.background
-                        ) {
-                            Box(Modifier.fillMaxSize()) {
-                                AppScaffold(viewModel)
-                                KigttsTextToolbarPopup(
-                                    state = textToolbarState,
-                                    darkTheme = dark
-                                )
+            val state = viewModel.uiState
+            KigttsFontScaleProvider(state.fontScaleBlockMode) {
+                val systemDark = isSystemInDarkTheme()
+                val dark = UserPrefs.resolveThemeMode(state.themeMode, systemDark)
+                val colors = if (dark) KgtDarkColors else KgtLightColors
+                val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
+                val textToolbarState = remember { KigttsTextToolbarState() }
+                val textToolbar = remember(textToolbarState) { KigttsTextToolbar(textToolbarState) }
+                CompositionLocalProvider(LocalMd2ExtraColors provides extraColors) {
+                    CompositionLocalProvider(LocalTextToolbar provides textToolbar) {
+                        MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
+                            Surface(
+                                modifier = Modifier.fillMaxSize(),
+                                color = MaterialTheme.colorScheme.background
+                            ) {
+                                Box(Modifier.fillMaxSize()) {
+                                    AppScaffold(viewModel)
+                                    KigttsTextToolbarPopup(
+                                        state = textToolbarState,
+                                        darkTheme = dark
+                                    )
+                                }
                             }
                         }
                     }
@@ -7995,46 +8063,48 @@ private fun KigttsTextToolbarPopup(
         popupPositionProvider = positionProvider,
         properties = PopupProperties(focusable = false, dismissOnClickOutside = false)
     ) {
-        Box(
-            modifier = Modifier
-                .padding(8.dp)
-                .graphicsLayer {
-                    alpha = menuAlpha
-                    scaleX = menuScale
-                    scaleY = menuScale
-                    transformOrigin = TransformOrigin(0.5f, 0f)
-                    clip = false
-                },
-        ) {
-            Card(
-                modifier = Modifier.wrapContentSize(),
-                shape = RoundedCornerShape(UiTokens.Radius),
-                backgroundColor = backgroundColor,
-                elevation = UiTokens.MenuElevation
+        KigttsFontScaleProvider {
+            Box(
+                modifier = Modifier
+                    .padding(8.dp)
+                    .graphicsLayer {
+                        alpha = menuAlpha
+                        scaleX = menuScale
+                        scaleY = menuScale
+                        transformOrigin = TransformOrigin(0.5f, 0f)
+                        clip = false
+                    }
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Card(
+                    modifier = Modifier.wrapContentSize(),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = backgroundColor,
+                    elevation = UiTokens.MenuElevation
                 ) {
-                    actions.forEach { action ->
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = rememberRipple(bounded = true, radius = 20.dp)
-                                ) {
-                                    action.onClick?.invoke()
-                                    state.hide()
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            MsIcon(
-                                name = action.icon,
-                                contentDescription = action.contentDescription,
-                                tint = contentColor
-                            )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        actions.forEach { action ->
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = rememberRipple(bounded = true, radius = 20.dp)
+                                    ) {
+                                        action.onClick?.invoke()
+                                        state.hide()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                MsIcon(
+                                    name = action.icon,
+                                    contentDescription = action.contentDescription,
+                                    tint = contentColor
+                                )
+                            }
                         }
                     }
                 }
@@ -8286,26 +8356,28 @@ private fun Md2AnimatedOptionMenu(
         onDismissRequest = onDismissRequest,
         properties = PopupProperties(focusable = true)
     ) {
-        Box(
-            modifier = Modifier
-                .padding(8.dp)
-                .graphicsLayer {
-                    alpha = menuAlpha
-                    scaleX = menuScale
-                    scaleY = menuScale
-                    transformOrigin = TransformOrigin(1f, 0f)
-                    clip = false
-                },
-        ) {
-            Card(
+        KigttsFontScaleProvider {
+            Box(
                 modifier = Modifier
-                    .widthIn(min = 196.dp, max = 216.dp)
-                    .then(modifier),
-                shape = RoundedCornerShape(4.dp),
-                backgroundColor = md2CardContainerColor(),
-                elevation = UiTokens.MenuElevation
+                    .padding(8.dp)
+                    .graphicsLayer {
+                        alpha = menuAlpha
+                        scaleX = menuScale
+                        scaleY = menuScale
+                        transformOrigin = TransformOrigin(1f, 0f)
+                        clip = false
+                    }
             ) {
-                Column(content = content)
+                Card(
+                    modifier = Modifier
+                        .widthIn(min = 196.dp, max = 216.dp)
+                        .then(modifier),
+                    shape = RoundedCornerShape(4.dp),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = UiTokens.MenuElevation
+                ) {
+                    Column(content = content)
+                }
             }
         }
     }
@@ -11049,17 +11121,19 @@ private class VoicePackRecyclerAdapter(
             onStartDrag: () -> Unit
         ) {
             composeView.setContent {
-                VoicePackCardContent(
-                    pack = pack,
-                    isCurrent = isCurrent,
-                    isDragged = draggedState.value,
-                    onSelect = { onSelect(pack) },
-                    onTogglePin = { onTogglePin(pack) },
-                    onDetail = { onDetail(pack) },
-                    onShare = { onShare(pack) },
-                    onDelete = { onDelete(pack) },
-                    onStartDrag = onStartDrag
-                )
+                KigttsFontScaleProvider {
+                    VoicePackCardContent(
+                        pack = pack,
+                        isCurrent = isCurrent,
+                        isDragged = draggedState.value,
+                        onSelect = { onSelect(pack) },
+                        onTogglePin = { onTogglePin(pack) },
+                        onDetail = { onDetail(pack) },
+                        onShare = { onShare(pack) },
+                        onDelete = { onDelete(pack) },
+                        onStartDrag = onStartDrag
+                    )
+                }
             }
         }
     }
@@ -12772,15 +12846,17 @@ private class SoundboardItemRecyclerAdapter(
             onStartDrag: () -> Unit
         ) {
             composeView.setContent {
-                SoundboardEditableRow(
-                    item = item,
-                    isDragged = isDragged,
-                    canDelete = canDelete,
-                    onDelete = onDelete,
-                    onEdit = onEdit,
-                    onAudio = onAudio,
-                    onStartDrag = onStartDrag
-                )
+                KigttsFontScaleProvider {
+                    SoundboardEditableRow(
+                        item = item,
+                        isDragged = isDragged,
+                        canDelete = canDelete,
+                        onDelete = onDelete,
+                        onEdit = onEdit,
+                        onAudio = onAudio,
+                        onStartDrag = onStartDrag
+                    )
+                }
             }
         }
     }
@@ -15784,14 +15860,16 @@ private class QuickSubtitleItemRecyclerAdapter(
             onStartDrag: () -> Unit
         ) {
             composeView.setContent {
-                QuickSubtitleEditableRow(
-                    value = text,
-                    isDragged = isDragged,
-                    canDelete = canDelete,
-                    onDelete = onDelete,
-                    onEdit = onEdit,
-                    onStartDrag = onStartDrag
-                )
+                KigttsFontScaleProvider {
+                    QuickSubtitleEditableRow(
+                        value = text,
+                        isDragged = isDragged,
+                        canDelete = canDelete,
+                        onDelete = onDelete,
+                        onEdit = onEdit,
+                        onStartDrag = onStartDrag
+                    )
+                }
             }
         }
     }
@@ -16974,6 +17052,7 @@ fun DrawingBoardScreen(
     }
     val boardFillColor = if (isDark) Color(0xFF2C3237) else Color(0xFFFCFDFE)
     val currentPoints = remember { mutableStateListOf<DrawPoint>() }
+    var currentStrokeEraser by remember { mutableStateOf(false) }
     var viewportScale by rememberSaveable { mutableFloatStateOf(1f) }
     var viewportPanX by rememberSaveable { mutableFloatStateOf(0f) }
     var viewportPanY by rememberSaveable { mutableFloatStateOf(0f) }
@@ -17095,7 +17174,8 @@ fun DrawingBoardScreen(
             val top = (canvasH - fitH) / 2f
             val pxScale = minOf(fitW / 1080f, fitH / 1920f)
             val center = Offset(canvasW / 2f, canvasH / 2f)
-            val activeWidth = if (viewModel.drawEraser) viewModel.drawEraserSize * 5f else viewModel.drawBrushSize
+            val activeEraser = viewModel.drawEraser || currentStrokeEraser
+            val activeWidth = if (activeEraser) viewModel.drawEraserSize * 5f else viewModel.drawBrushSize
             val containerW = with(density) { maxWidth.toPx() }
             val containerH = with(density) { maxHeight.toPx() }
             val cardOrigin = Offset(
@@ -17150,7 +17230,7 @@ fun DrawingBoardScreen(
                         if (currentPoints.size > 1) {
                             drawStrokeOnBoard(
                                 points = currentPoints,
-                                color = if (viewModel.drawEraser) boardFillColor else viewModel.drawColor,
+                                color = if (activeEraser) boardFillColor else viewModel.drawColor,
                                 width = activeWidth * pxScale,
                                 left = left,
                                 top = top,
@@ -17187,6 +17267,22 @@ fun DrawingBoardScreen(
                             )
                             return local.rotateAround(center, rotationDegrees)
                         }
+                        fun commitCurrentStroke() {
+                            if (currentPoints.size > 1) {
+                                viewModel.appendDrawingStroke(
+                                    points = currentPoints.toList(),
+                                    eraserOverride = currentStrokeEraser
+                                )
+                            }
+                        }
+                        fun switchCurrentStrokeEraser(useEraser: Boolean) {
+                            if (useEraser == currentStrokeEraser) return
+                            val anchor = currentPoints.lastOrNull()
+                            commitCurrentStroke()
+                            currentPoints.clear()
+                            anchor?.let { currentPoints.add(it) }
+                            currentStrokeEraser = useEraser
+                        }
 
                         awaitPointerEventScope {
                             while (true) {
@@ -17200,6 +17296,7 @@ fun DrawingBoardScreen(
 
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 drawPointerId = down.id
+                                currentStrokeEraser = viewModel.drawEraser || down.type == PointerType.Eraser
                                 val downMapped = mapPoint(down.position)
                                 currentPoints.clear()
                                 if (downMapped.isInsideBoard(left, top, fitW, fitH)) {
@@ -17214,9 +17311,10 @@ fun DrawingBoardScreen(
 
                                     if (pressed.isEmpty()) {
                                         if (!transformActive && drawingActive && currentPoints.size > 1) {
-                                            viewModel.appendDrawingStroke(currentPoints.toList())
+                                            commitCurrentStroke()
                                         }
                                         currentPoints.clear()
+                                        currentStrokeEraser = false
                                         break
                                     }
 
@@ -17237,6 +17335,9 @@ fun DrawingBoardScreen(
 
                                         if (!transformActive) {
                                             transformActive = true
+                                            if (drawingActive && currentPoints.size > 1) {
+                                                commitCurrentStroke()
+                                            }
                                             drawingActive = false
                                             currentPoints.clear()
                                             lastFocus = focus
@@ -17279,7 +17380,9 @@ fun DrawingBoardScreen(
                                         currentPoints.clear()
                                     }
 
+                                    val eventEraser = viewModel.drawEraser || event.usesDrawingTemporaryEraser()
                                     if (!drawingActive) {
+                                        currentStrokeEraser = eventEraser
                                         val mapped = mapPoint(one.position)
                                         if (mapped.isInsideBoard(left, top, fitW, fitH)) {
                                             currentPoints.clear()
@@ -17287,6 +17390,7 @@ fun DrawingBoardScreen(
                                             drawingActive = true
                                         }
                                     } else {
+                                        switchCurrentStrokeEraser(eventEraser)
                                         val mapped = mapPoint(one.position)
                                         if (mapped.isInsideBoard(left, top, fitW, fitH)) {
                                             currentPoints.add(mapped.toDrawPoint(left, top, fitW, fitH))
@@ -17780,6 +17884,22 @@ private fun Offset.rotateAround(center: Offset, degrees: Float): Offset {
     )
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
+private fun PointerEvent.usesDrawingTemporaryEraser(): Boolean {
+    return changes.any { it.pressed && it.type == PointerType.Eraser } ||
+        buttons.hasRawButtonMask(MotionEvent.BUTTON_STYLUS_PRIMARY) ||
+        buttons.hasRawButtonMask(MotionEvent.BUTTON_STYLUS_SECONDARY)
+}
+
+private fun PointerButtons.hasRawButtonMask(mask: Int): Boolean {
+    val packedValue = toString()
+        .substringAfter("packedValue=", missingDelimiterValue = "")
+        .substringBefore(")")
+        .toIntOrNull()
+        ?: return false
+    return (packedValue and mask) != 0
+}
+
 private fun Offset.toDrawPoint(left: Float, top: Float, width: Float, height: Float): DrawPoint {
     return DrawPoint(
         x = ((x - left) / width).coerceIn(0f, 1f),
@@ -17854,9 +17974,15 @@ fun SettingsScreen(
         UserPrefs.THEME_MODE_LIGHT to "亮色",
         UserPrefs.THEME_MODE_DARK to "暗色"
     )
+    val fontScaleBlockModeOptions = listOf(
+        UserPrefs.FONT_SCALE_BLOCK_NONE to "图标和字体跟随缩放",
+        UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY to "仅禁用图标大小缩放",
+        UserPrefs.FONT_SCALE_BLOCK_ALL to "禁用图标和字体大小缩放"
+    )
     var drawerModeExpanded by remember { mutableStateOf(false) }
     var themeModeExpanded by remember { mutableStateOf(false) }
     var overlayThemeModeExpanded by remember { mutableStateOf(false) }
+    var fontScaleBlockModeExpanded by remember { mutableStateOf(false) }
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
     var denoiserModeExpanded by remember { mutableStateOf(false) }
@@ -18745,6 +18871,24 @@ fun SettingsScreen(
                                 onClick = {
                                     overlayThemeModeExpanded = false
                                     viewModel.setOverlayThemeMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
+                    Md2SettingDropdownRow(
+                        title = "系统字体大小屏蔽",
+                        value = fontScaleBlockModeOptions
+                            .firstOrNull { it.first == state.fontScaleBlockMode }?.second
+                            ?: fontScaleBlockModeOptions[1].second,
+                        expanded = fontScaleBlockModeExpanded,
+                        onExpandedChange = { fontScaleBlockModeExpanded = it },
+                        supportingText = "默认只固定 Material Symbol 图标大小；选择全部禁用时，主界面和悬浮窗文字也不会跟随系统字体大小缩放。"
+                    ) {
+                        fontScaleBlockModeOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    fontScaleBlockModeExpanded = false
+                                    viewModel.setFontScaleBlockMode(value)
                                 }
                             ) { Text(label) }
                         }

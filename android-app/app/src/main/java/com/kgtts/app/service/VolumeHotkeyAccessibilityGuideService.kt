@@ -5,6 +5,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.content.res.Resources
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -18,26 +19,62 @@ import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.overlay.FloatingOverlayService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 class VolumeHotkeyAccessibilityGuideService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var settings = UserPrefs.AppSettings()
+    private var settingsJob: Job? = null
     private var windowManager: WindowManager? = null
     private var rootView: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun getResources(): Resources {
+        val base = super.getResources()
+        if (settings.fontScaleBlockMode != UserPrefs.FONT_SCALE_BLOCK_ALL) return base
+        val config = Configuration(base.configuration)
+        if (config.fontScale == 1f) return base
+        config.fontScale = 1f
+        return createConfigurationContext(config).resources
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!FloatingOverlayService.canDrawOverlays(this)) {
             stopSelf()
             return START_NOT_STICKY
         }
-        showOverlayIfNeeded()
+        settingsJob?.cancel()
+        settingsJob = scope.launch {
+            val next = UserPrefs.getSettings(this@VolumeHotkeyAccessibilityGuideService)
+            val fontModeChanged = settings.fontScaleBlockMode != next.fontScaleBlockMode
+            settings = next
+            if (fontModeChanged && rootView != null) {
+                removeOverlayView()
+            }
+            showOverlayIfNeeded()
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        settingsJob?.cancel()
+        settingsJob = null
+        scope.cancel()
+        removeOverlayView()
+        super.onDestroy()
+    }
+
+    private fun removeOverlayView() {
         rootView?.let { view ->
             runCatching {
                 if (view.parent != null) {
@@ -48,7 +85,6 @@ class VolumeHotkeyAccessibilityGuideService : Service() {
         rootView = null
         layoutParams = null
         windowManager = null
-        super.onDestroy()
     }
 
     @Suppress("DEPRECATION")
