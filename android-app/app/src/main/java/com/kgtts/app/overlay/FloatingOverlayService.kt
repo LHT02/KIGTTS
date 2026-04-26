@@ -17,6 +17,7 @@ import android.content.pm.ResolveInfo
 import android.content.pm.ShortcutInfo
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.content.res.Resources
 import android.hardware.display.DisplayManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -1244,6 +1245,15 @@ class FloatingOverlayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun getResources(): Resources {
+        val base = super.getResources()
+        if (settings.fontScaleBlockMode != UserPrefs.FONT_SCALE_BLOCK_ALL) return base
+        val config = Configuration(base.configuration)
+        if (config.fontScale == 1f) return base
+        config.fontScale = 1f
+        return createConfigurationContext(config).resources
+    }
+
     override fun onCreate() {
         super.onCreate()
         AppLogger.i("FloatingOverlayService.onCreate")
@@ -1357,6 +1367,7 @@ class FloatingOverlayService : Service() {
         settingsJob = scope.launch {
             UserPrefs.observeSettings(this@FloatingOverlayService).collectLatest { next ->
                 val previousDarkTheme = overlayDarkTheme
+                val previousFontScaleBlockMode = settings.fontScaleBlockMode
                 settings = next
                 if (!next.floatingOverlayEnabled) {
                     stopSelf()
@@ -1365,6 +1376,10 @@ class FloatingOverlayService : Service() {
                 val darkNow = isOverlayDarkTheme()
                 if (darkNow != previousDarkTheme) {
                     overlayDarkTheme = darkNow
+                    rebuildWindowsPreservingState()
+                    return@collectLatest
+                }
+                if (next.fontScaleBlockMode != previousFontScaleBlockMode) {
                     rebuildWindowsPreservingState()
                     return@collectLatest
                 }
@@ -1408,6 +1423,7 @@ class FloatingOverlayService : Service() {
         }
     }
 
+    @Suppress("DEPRECATION")
     @SuppressLint("ClickableViewAccessibility")
     private fun ensureWindows() {
         if (fabRoot != null) return
@@ -8813,10 +8829,23 @@ class FloatingOverlayService : Service() {
             gravity = Gravity.CENTER
             textAlignment = View.TEXT_ALIGNMENT_CENTER
             setTextColor(color)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+            setSymbolTextSize(sp)
             typeface = iconTypeface
             includeFontPadding = false
         }
+
+    private fun TextView.setSymbolTextSize(sp: Float) {
+        if (settings.fontScaleBlockMode == UserPrefs.FONT_SCALE_BLOCK_NONE) {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+        } else {
+            val px = TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                sp,
+                super.getResources().displayMetrics
+            )
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, px)
+        }
+    }
 
     private fun launcherFabIconView(): ImageView =
         ImageView(this).apply {

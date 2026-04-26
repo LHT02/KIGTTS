@@ -629,6 +629,7 @@ class AudioLoopbackTester(
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun applyPreferredOutput(track: AudioTrack, preferredOutputType: Int) {
         val manager = audioManager ?: return
         try {

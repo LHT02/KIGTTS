@@ -29,6 +29,9 @@ object UserPrefs {
     const val THEME_MODE_FOLLOW_SYSTEM = 0
     const val THEME_MODE_LIGHT = 1
     const val THEME_MODE_DARK = 2
+    const val FONT_SCALE_BLOCK_NONE = 0
+    const val FONT_SCALE_BLOCK_ICONS_ONLY = 1
+    const val FONT_SCALE_BLOCK_ALL = 2
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
     const val SILERO_VAD_MIN_THRESHOLD = 0.05f
     const val SILERO_VAD_MAX_THRESHOLD = 0.95f
@@ -71,6 +74,7 @@ object UserPrefs {
     private val KEY_SOLID_TOP_BAR = booleanPreferencesKey("solid_top_bar")
     private val KEY_THEME_MODE = intPreferencesKey("theme_mode")
     private val KEY_OVERLAY_THEME_MODE = intPreferencesKey("overlay_theme_mode")
+    private val KEY_FONT_SCALE_BLOCK_MODE = intPreferencesKey("font_scale_block_mode")
     private val KEY_DRAWING_SAVE_RELATIVE_PATH = stringPreferencesKey("drawing_save_relative_path")
     private val KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT = booleanPreferencesKey("quick_card_auto_save_on_exit")
     private val KEY_USE_BUILTIN_FILE_MANAGER = booleanPreferencesKey("use_builtin_file_manager")
@@ -144,6 +148,7 @@ object UserPrefs {
         val solidTopBar: Boolean = true,
         val themeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
         val overlayThemeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
+        val fontScaleBlockMode: Int = FONT_SCALE_BLOCK_ICONS_ONLY,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val quickCardAutoSaveOnExit: Boolean = false,
         val useBuiltinFileManager: Boolean = true,
@@ -178,6 +183,9 @@ object UserPrefs {
 
     fun normalizeThemeMode(mode: Int): Int =
         mode.coerceIn(THEME_MODE_FOLLOW_SYSTEM, THEME_MODE_DARK)
+
+    fun normalizeFontScaleBlockMode(mode: Int): Int =
+        mode.coerceIn(FONT_SCALE_BLOCK_NONE, FONT_SCALE_BLOCK_ALL)
 
     fun resolveThemeMode(mode: Int, followSystemDark: Boolean): Boolean =
         when (normalizeThemeMode(mode)) {
@@ -297,6 +305,9 @@ object UserPrefs {
             solidTopBar = this[KEY_SOLID_TOP_BAR] ?: true,
             themeMode = normalizeThemeMode(this[KEY_THEME_MODE] ?: THEME_MODE_FOLLOW_SYSTEM),
             overlayThemeMode = normalizeThemeMode(this[KEY_OVERLAY_THEME_MODE] ?: THEME_MODE_FOLLOW_SYSTEM),
+            fontScaleBlockMode = normalizeFontScaleBlockMode(
+                this[KEY_FONT_SCALE_BLOCK_MODE] ?: FONT_SCALE_BLOCK_ICONS_ONLY
+            ),
             drawingSaveRelativePath = (this[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             quickCardAutoSaveOnExit = this[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
@@ -507,6 +518,12 @@ object UserPrefs {
     suspend fun setOverlayThemeMode(context: Context, mode: Int) {
         context.dataStore.edit { prefs ->
             prefs[KEY_OVERLAY_THEME_MODE] = normalizeThemeMode(mode)
+        }
+    }
+
+    suspend fun setFontScaleBlockMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FONT_SCALE_BLOCK_MODE] = normalizeFontScaleBlockMode(mode)
         }
     }
 
