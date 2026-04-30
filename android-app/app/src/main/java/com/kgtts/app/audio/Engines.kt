@@ -1639,6 +1639,38 @@ class RealtimeController(
     @Volatile private var suppressAsrAutoSpeak: Boolean = false
     @Volatile private var lastStreamingDecodeAtMs: Long = 0L
     private val streamingDecodeBusy = AtomicBoolean(false)
+    private val segmentProcessMutex = Mutex()
+    private val speakerVerifySessionLock = Any()
+    private val speakerVerifyPendingSegments = mutableListOf<RecognitionSegment>()
+    private var speakerVerifyPendingSamples = 0
+    private var speakerVerifyPendingSampleRate = sampleRate
+    private var speakerVerifyLastSegmentAtMs = 0L
+    private var speakerVerifySessionPassed = false
+    private var speakerVerifyLastAttemptSamples = 0
+
+    private data class RecognitionSegment(
+        val audio: FloatArray,
+        val sampleRate: Int,
+        val rms: Double
+    )
+
+    private data class SpeakerVerifyAttempt(
+        val segment: RecognitionSegment,
+        val samples: Int,
+        val finalDecision: Boolean
+    )
+
+    private sealed class SpeakerGateResult {
+        data class Ready(val segments: List<RecognitionSegment>) : SpeakerGateResult()
+        object Pending : SpeakerGateResult()
+    }
+
+    private companion object {
+        private const val SPEAKER_VERIFY_MIN_WINDOW_MS = 1200
+        private const val SPEAKER_VERIFY_FINAL_WINDOW_MS = 2600
+        private const val SPEAKER_VERIFY_MAX_PENDING_MS = 5000
+        private const val SPEAKER_VERIFY_SESSION_RESET_MS = 1600L
+    }
 
     private data class QueuedTts(
         val id: Long,
@@ -2084,14 +2116,17 @@ class RealtimeController(
 
     fun setSpeakerVerifyEnabled(enabled: Boolean) {
         speakerVerifyEnabled = enabled
+        resetSpeakerVerifyGateState()
     }
 
     fun setSpeakerVerifyThreshold(threshold: Float) {
         speakerVerifyThreshold = threshold.coerceIn(0.05f, 0.95f)
+        resetSpeakerVerifyGateState()
     }
 
     fun setSpeakerProfiles(profiles: List<FloatArray>) {
         rebuildSpeakerVerifyState(profiles)
+        resetSpeakerVerifyGateState()
     }
 
     fun clearSpeakerProfiles() {
@@ -2153,6 +2188,151 @@ class RealtimeController(
             }.getOrDefault(false)
             similarity to passed
         }
+    }
+
+    private fun resetSpeakerVerifyGateState() {
+        synchronized(speakerVerifySessionLock) {
+            speakerVerifyPendingSegments.clear()
+            speakerVerifyPendingSamples = 0
+            speakerVerifyPendingSampleRate = sampleRate
+            speakerVerifyLastSegmentAtMs = 0L
+            speakerVerifySessionPassed = false
+            speakerVerifyLastAttemptSamples = 0
+        }
+    }
+
+    private fun clearSpeakerVerifyPendingLocked() {
+        speakerVerifyPendingSegments.clear()
+        speakerVerifyPendingSamples = 0
+        speakerVerifyPendingSampleRate = sampleRate
+        speakerVerifyLastAttemptSamples = 0
+    }
+
+    private fun appendSpeakerVerifyPendingLocked(segment: RecognitionSegment) {
+        if (speakerVerifyPendingSegments.isNotEmpty() && speakerVerifyPendingSampleRate != segment.sampleRate) {
+            clearSpeakerVerifyPendingLocked()
+        }
+        speakerVerifyPendingSampleRate = segment.sampleRate
+        speakerVerifyPendingSegments.add(segment)
+        speakerVerifyPendingSamples += segment.audio.size
+        val maxSamples = segment.sampleRate * SPEAKER_VERIFY_MAX_PENDING_MS / 1000
+        while (speakerVerifyPendingSamples > maxSamples && speakerVerifyPendingSegments.isNotEmpty()) {
+            val removed = speakerVerifyPendingSegments.removeAt(0)
+            speakerVerifyPendingSamples -= removed.audio.size
+        }
+    }
+
+    private fun combineRecognitionSegments(segments: List<RecognitionSegment>): RecognitionSegment {
+        if (segments.size == 1) return segments.first()
+        val sampleRate = segments.firstOrNull()?.sampleRate ?: this.sampleRate
+        val totalSamples = segments.sumOf { it.audio.size }
+        val out = FloatArray(totalSamples)
+        var offset = 0
+        var rms = 0.0
+        segments.forEach { segment ->
+            System.arraycopy(segment.audio, 0, out, offset, segment.audio.size)
+            offset += segment.audio.size
+            rms = max(rms, segment.rms)
+        }
+        return RecognitionSegment(out, sampleRate, rms)
+    }
+
+    private fun prepareSpeakerVerifyAttempt(segment: RecognitionSegment, nowMs: Long): SpeakerVerifyAttempt? {
+        return synchronized(speakerVerifySessionLock) {
+            if (speakerVerifySessionPassed && nowMs - speakerVerifyLastSegmentAtMs <= SPEAKER_VERIFY_SESSION_RESET_MS) {
+                speakerVerifyLastSegmentAtMs = nowMs
+                return@synchronized null
+            }
+            if (nowMs - speakerVerifyLastSegmentAtMs > SPEAKER_VERIFY_SESSION_RESET_MS) {
+                speakerVerifySessionPassed = false
+                clearSpeakerVerifyPendingLocked()
+            }
+            speakerVerifyLastSegmentAtMs = nowMs
+            appendSpeakerVerifyPendingLocked(segment)
+            val minSamples = segment.sampleRate * SPEAKER_VERIFY_MIN_WINDOW_MS / 1000
+            val finalSamples = segment.sampleRate * SPEAKER_VERIFY_FINAL_WINDOW_MS / 1000
+            if (speakerVerifyPendingSamples < minSamples) {
+                // The speaker embedding model is unreliable on very short clips; fail open to avoid swallowing short words.
+                AppLogger.i("Skip speaker verify for short segment samples=${speakerVerifyPendingSamples} sr=${segment.sampleRate}")
+                clearSpeakerVerifyPendingLocked()
+                return@synchronized null
+            }
+            if (speakerVerifyPendingSamples <= speakerVerifyLastAttemptSamples) {
+                return@synchronized SpeakerVerifyAttempt(
+                    segment = combineRecognitionSegments(speakerVerifyPendingSegments),
+                    samples = speakerVerifyPendingSamples,
+                    finalDecision = speakerVerifyPendingSamples >= finalSamples
+                )
+            }
+            speakerVerifyLastAttemptSamples = speakerVerifyPendingSamples
+            SpeakerVerifyAttempt(
+                segment = combineRecognitionSegments(speakerVerifyPendingSegments),
+                samples = speakerVerifyPendingSamples,
+                finalDecision = speakerVerifyPendingSamples >= finalSamples
+            )
+        }
+    }
+
+    private fun markSpeakerVerifyPassed(): List<RecognitionSegment> {
+        return synchronized(speakerVerifySessionLock) {
+            val released = combineRecognitionSegments(speakerVerifyPendingSegments)
+            clearSpeakerVerifyPendingLocked()
+            speakerVerifySessionPassed = true
+            listOf(released)
+        }
+    }
+
+    private fun markSpeakerVerifyFailed() {
+        synchronized(speakerVerifySessionLock) {
+            clearSpeakerVerifyPendingLocked()
+            speakerVerifySessionPassed = false
+        }
+    }
+
+    private fun isSpeakerVerifySessionReadyForPreview(): Boolean {
+        if (!speakerVerifyEnabled || speakerProfiles.isEmpty()) return true
+        return synchronized(speakerVerifySessionLock) {
+            speakerVerifySessionPassed
+        }
+    }
+
+    private fun resolveSpeakerGate(segment: RecognitionSegment): SpeakerGateResult {
+        val profileSnapshot = speakerProfiles
+        if (!speakerVerifyEnabled || profileSnapshot.isEmpty()) {
+            resetSpeakerVerifyGateState()
+            return SpeakerGateResult.Ready(listOf(segment))
+        }
+        val now = SystemClock.uptimeMillis()
+        val attempt = prepareSpeakerVerifyAttempt(segment, now)
+            ?: return SpeakerGateResult.Ready(listOf(segment))
+        val segEmbedding = SpeakerVerifier.computeEmbedding(context, attempt.segment.audio, attempt.segment.sampleRate)
+        if (segEmbedding == null) {
+            if (!attempt.finalDecision) return SpeakerGateResult.Pending
+            AppLogger.i("Speaker verify dropped pending audio: embedding not ready samples=${attempt.samples}")
+            markSpeakerVerifyFailed()
+            return SpeakerGateResult.Pending
+        }
+        val verification = verifySpeakerEmbedding(segEmbedding)
+        if (verification == null) {
+            AppLogger.i("Speaker verify unavailable, drop pending audio")
+            markSpeakerVerifyFailed()
+            return SpeakerGateResult.Pending
+        }
+        val similarity = verification.first
+        val passed = verification.second
+        if (passed) {
+            speakerLastSimilarity = similarity
+            notifySpeakerVerify(similarity, true)
+            return SpeakerGateResult.Ready(markSpeakerVerifyPassed())
+        }
+        if (!attempt.finalDecision) {
+            AppLogger.i("Speaker verify waiting for more audio similarity=$similarity samples=${attempt.samples}")
+            return SpeakerGateResult.Pending
+        }
+        speakerLastSimilarity = similarity
+        notifySpeakerVerify(similarity, false)
+        markSpeakerVerifyFailed()
+        return SpeakerGateResult.Pending
     }
 
     private fun enqueueTts(text: String): Long {
@@ -2412,6 +2592,7 @@ class RealtimeController(
             }
             lastStreamingDecodeAtMs = 0L
             streamingDecodeBusy.set(false)
+            resetSpeakerVerifyGateState()
             stopRecorderOnlyLocked()
             SherpaSpeechEnhancer.resetStreaming()
             ensureAec3()
@@ -2503,6 +2684,7 @@ class RealtimeController(
         }
         streamingDecodeBusy.set(false)
         lastStreamingDecodeAtMs = 0L
+        resetSpeakerVerifyGateState()
         try {
             rec?.release()
         } catch (_: Exception) {
@@ -2898,52 +3080,58 @@ class RealtimeController(
         return voicedMs >= minVoicedMs && voicedRatio >= minVoicedRatio
     }
 
+    private suspend fun processAsrReadySegment(segment: RecognitionSegment) {
+        val rawText = try {
+            asr?.transcribe(segment.audio, segment.sampleRate) ?: ""
+        } catch (e: Exception) {
+            AppLogger.e("ASR failed", e)
+            notifyError("ASR 失败: ${e.message}")
+            ""
+        }
+        val text = filterAsrText(rawText, segment.rms)
+        if (text.isNotBlank()) {
+            val suppressForSoundboard = runCatching {
+                shouldSuppressAutoSpeakForText(text)
+            }.onFailure {
+                AppLogger.e("Auto speak suppress check failed", it)
+            }.getOrDefault(false)
+            if (suppressAsrAutoSpeak || suppressForSoundboard) {
+                val id = nextResultId()
+                notifyResult(id, text)
+                notifyProgress(id, 1f)
+                return
+            }
+            if (shouldSkipDuplicateTts(text)) {
+                AppLogger.i("Skip duplicate tts text=$text")
+                return
+            }
+            val id = enqueueTts(text)
+            notifyResult(id, text)
+            ensureTtsLoop()
+        }
+    }
+
     private fun processRecognizedSegment(audio: FloatArray) {
         val rms = rmsEnergy(audio)
         val minSegmentEnergy = minSegmentRms
         if (rms < minSegmentEnergy) return
-        scope.launch(Dispatchers.IO) asrTask@{
-            val (effectiveAudio, effectiveSampleRate) = prepareSpeechEnhancedAudio(audio, sampleRate)
-            if (effectiveAudio.isEmpty()) return@asrTask
-            val effectiveRms = max(rms, rmsEnergy(effectiveAudio))
-            val profileSnapshot = speakerProfiles
-            if (speakerVerifyEnabled && profileSnapshot.isNotEmpty()) {
-                val segEmbedding = SpeakerVerifier.computeEmbedding(context, effectiveAudio, effectiveSampleRate)
-                    ?: return@asrTask
-                val verification = verifySpeakerEmbedding(segEmbedding) ?: return@asrTask
-                val similarity = verification.first
-                val passed = verification.second
-                speakerLastSimilarity = similarity
-                notifySpeakerVerify(similarity, passed)
-                if (!passed) return@asrTask
-            }
-            val rawText = try {
-                asr?.transcribe(effectiveAudio, effectiveSampleRate) ?: ""
-            } catch (e: Exception) {
-                AppLogger.e("ASR failed", e)
-                notifyError("ASR 失败: ${e.message}")
-                ""
-            }
-            val text = filterAsrText(rawText, effectiveRms)
-            if (text.isNotBlank()) {
-                val suppressForSoundboard = runCatching {
-                    shouldSuppressAutoSpeakForText(text)
-                }.onFailure {
-                    AppLogger.e("Auto speak suppress check failed", it)
-                }.getOrDefault(false)
-                if (suppressAsrAutoSpeak || suppressForSoundboard) {
-                    val id = nextResultId()
-                    notifyResult(id, text)
-                    notifyProgress(id, 1f)
-                    return@asrTask
+        scope.launch(Dispatchers.IO) {
+            segmentProcessMutex.withLock {
+                val (effectiveAudio, effectiveSampleRate) = prepareSpeechEnhancedAudio(audio, sampleRate)
+                if (effectiveAudio.isEmpty()) return@withLock
+                val segment = RecognitionSegment(
+                    audio = effectiveAudio,
+                    sampleRate = effectiveSampleRate,
+                    rms = max(rms, rmsEnergy(effectiveAudio))
+                )
+                when (val gate = resolveSpeakerGate(segment)) {
+                    SpeakerGateResult.Pending -> return@withLock
+                    is SpeakerGateResult.Ready -> {
+                        gate.segments.forEach { readySegment ->
+                            processAsrReadySegment(readySegment)
+                        }
+                    }
                 }
-                if (shouldSkipDuplicateTts(text)) {
-                    AppLogger.i("Skip duplicate tts text=$text")
-                    return@asrTask
-                }
-                val id = enqueueTts(text)
-                notifyResult(id, text)
-                ensureTtsLoop()
             }
         }
     }
@@ -2952,6 +3140,7 @@ class RealtimeController(
         if (!pttStreamingEnabled) return
         if (asr == null) return
         if (!classicVadEnabled && !sileroVadEnabled) return
+        if (!isSpeakerVerifySessionReadyForPreview()) return
         val minSamples = sampleRate / 2
         if (window.size < minSamples) return
         val decodeIntervalMs = 260L
