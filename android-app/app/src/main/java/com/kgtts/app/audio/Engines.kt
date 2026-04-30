@@ -1560,6 +1560,7 @@ class RealtimeController(
     initialSpeakerVerifyEnabled: Boolean,
     initialSpeakerVerifyThreshold: Float,
     initialSpeakerProfiles: List<FloatArray>,
+    private val shouldSuppressAutoSpeakForText: suspend (String) -> Boolean = { false },
     private val moduleFactory: SpeechModuleFactory = DefaultSpeechModuleFactory
 ) {
     private var recorder: AudioRecord? = null
@@ -2925,7 +2926,12 @@ class RealtimeController(
             }
             val text = filterAsrText(rawText, effectiveRms)
             if (text.isNotBlank()) {
-                if (suppressAsrAutoSpeak) {
+                val suppressForSoundboard = runCatching {
+                    shouldSuppressAutoSpeakForText(text)
+                }.onFailure {
+                    AppLogger.e("Auto speak suppress check failed", it)
+                }.getOrDefault(false)
+                if (suppressAsrAutoSpeak || suppressForSoundboard) {
                     val id = nextResultId()
                     notifyResult(id, text)
                     notifyProgress(id, 1f)

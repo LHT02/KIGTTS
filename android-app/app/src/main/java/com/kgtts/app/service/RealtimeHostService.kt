@@ -694,7 +694,12 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialAllowSystemAecWithAec3 = currentSettings.allowSystemAecWithAec3,
             initialSpeakerVerifyEnabled = currentSettings.speakerVerifyEnabled && speakerProfiles.isNotEmpty(),
             initialSpeakerVerifyThreshold = currentSettings.speakerVerifyThreshold,
-            initialSpeakerProfiles = speakerProfiles.map { it.vector.copyOf() }
+            initialSpeakerProfiles = speakerProfiles.map { it.vector.copyOf() },
+            shouldSuppressAutoSpeakForText = { text ->
+                currentSettings.soundboardKeywordTriggerEnabled &&
+                    currentSettings.soundboardSuppressTtsOnKeyword &&
+                    SoundboardManager.hasTriggerMatch(applicationContext, text)
+            }
         )
         created.setPushToTalkStreamingEnabled(
             currentSettings.pushToTalkMode &&
@@ -856,6 +861,16 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
     ) {
         val message = text.trim()
         if (message.isEmpty()) return
+        val suppressTtsForSoundboard =
+            !fromQuickText &&
+                currentSettings.soundboardKeywordTriggerEnabled &&
+                currentSettings.soundboardSuppressTtsOnKeyword &&
+                SoundboardManager.hasTriggerMatch(applicationContext, message)
+        if (suppressTtsForSoundboard) {
+            appendRecognizedHistory(message, fromQuickText = false)
+            updateStatus("已触发音效板，跳过本句朗读")
+            return
+        }
         val queuedId = speakText(message, interruptCurrent = interruptCurrent)
         if (queuedId != null) {
             appendRecognizedHistory(message, queuedId, fromQuickText = fromQuickText)

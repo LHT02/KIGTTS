@@ -603,10 +603,12 @@ data class UiState(
         VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.DownUp),
     val ttsDisabled: Boolean = false,
     val soundboardKeywordTriggerEnabled: Boolean = false,
+    val soundboardSuppressTtsOnKeyword: Boolean = false,
     val allowQuickTextTriggerSoundboard: Boolean = false,
     val quickSubtitleInterruptQueue: Boolean = true,
     val quickSubtitleAutoFit: Boolean = true,
     val quickSubtitleCompactControls: Boolean = false,
+    val drawingKeepCanvasOrientationToDevice: Boolean = true,
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
     val speakerVerifyEnabled: Boolean = false,
@@ -1054,6 +1056,8 @@ class MainViewModel(
         private set
     var drawingToolbarCollapsed by mutableStateOf(false)
         private set
+    var drawingManualRotationQuarterTurns by mutableIntStateOf(0)
+        private set
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
     private var soundboardNextGroupId = 2L
@@ -1309,10 +1313,12 @@ class MainViewModel(
             volumeHotkeyDownUpAction = settings.volumeHotkeyDownUpAction,
             ttsDisabled = settings.ttsDisabled,
             soundboardKeywordTriggerEnabled = settings.soundboardKeywordTriggerEnabled,
+            soundboardSuppressTtsOnKeyword = settings.soundboardSuppressTtsOnKeyword,
             allowQuickTextTriggerSoundboard = settings.allowQuickTextTriggerSoundboard,
             quickSubtitleInterruptQueue = settings.quickSubtitleInterruptQueue,
             quickSubtitleAutoFit = settings.quickSubtitleAutoFit,
             quickSubtitleCompactControls = settings.quickSubtitleCompactControls,
+            drawingKeepCanvasOrientationToDevice = settings.drawingKeepCanvasOrientationToDevice,
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
             speakerProfileReady = hasProfiles,
@@ -2170,6 +2176,14 @@ class MainViewModel(
         viewModelScope.launch {
             SoundboardManager.triggerByText(appContext, normalized)
         }
+    }
+
+    private suspend fun shouldSuppressVoiceTtsForSoundboard(text: String): Boolean {
+        val normalized = text.trim()
+        if (normalized.isEmpty()) return false
+        return uiState.soundboardKeywordTriggerEnabled &&
+            uiState.soundboardSuppressTtsOnKeyword &&
+            SoundboardManager.hasTriggerMatch(appContext, normalized)
     }
 
     private fun quickCardDir(): File {
@@ -3256,6 +3270,13 @@ class MainViewModel(
         }
     }
 
+    fun setSoundboardSuppressTtsOnKeyword(enabled: Boolean) {
+        uiState = uiState.copy(soundboardSuppressTtsOnKeyword = enabled)
+        viewModelScope.launch {
+            UserPrefs.setSoundboardSuppressTtsOnKeyword(appContext, enabled)
+        }
+    }
+
     fun setAllowQuickTextTriggerSoundboard(enabled: Boolean) {
         uiState = uiState.copy(allowQuickTextTriggerSoundboard = enabled)
         viewModelScope.launch {
@@ -3281,6 +3302,13 @@ class MainViewModel(
         uiState = uiState.copy(quickSubtitleCompactControls = enabled)
         viewModelScope.launch {
             UserPrefs.setQuickSubtitleCompactControls(appContext, enabled)
+        }
+    }
+
+    fun setDrawingKeepCanvasOrientationToDevice(enabled: Boolean) {
+        uiState = uiState.copy(drawingKeepCanvasOrientationToDevice = enabled)
+        viewModelScope.launch {
+            UserPrefs.setDrawingKeepCanvasOrientationToDevice(appContext, enabled)
         }
     }
 
@@ -3367,6 +3395,11 @@ class MainViewModel(
             return
         }
         viewModelScope.launch {
+            if (shouldSuppressVoiceTtsForSoundboard(message)) {
+                appendRecognizedHistory(message)
+                uiState = uiState.copy(status = "已触发音效板，跳过本句朗读")
+                return@launch
+            }
             val host = requestRealtimeHost("音频宿主初始化中")
             val queuedId = host?.speakText(message)
             if (queuedId != null) {
@@ -3626,6 +3659,11 @@ class MainViewModel(
 
     fun updateDrawingToolbarCollapsed(collapsed: Boolean) {
         drawingToolbarCollapsed = collapsed
+    }
+
+    fun rotateDrawingCanvasQuarterTurns(delta: Int) {
+        drawingManualRotationQuarterTurns =
+            ((drawingManualRotationQuarterTurns + delta) % 4 + 4) % 4
     }
 
     fun clearDrawingBoard() {
@@ -6830,7 +6868,8 @@ private fun QuickCardEditorScreen(
     val context = LocalContext.current
     val uiState = viewModel.uiState
     val draft = viewModel.quickCardDraft
-    var cropLandscape by remember { mutableStateOf(false) }
+    var cropLandscape by rememberSaveable { mutableStateOf(false) }
+    var activeCropLandscape by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
@@ -6860,7 +6899,7 @@ private fun QuickCardEditorScreen(
         if (result.isSuccessful) {
             val uri = result.uriContent
             if (uri != null) {
-                if (!viewModel.setQuickCardDraftImage(uri, landscape = cropLandscape)) {
+                if (!viewModel.setQuickCardDraftImage(uri, landscape = activeCropLandscape)) {
                     toast(context, "设置图片失败")
                 }
             } else {
@@ -6871,11 +6910,21 @@ private fun QuickCardEditorScreen(
         }
     }
     fun launchQuickCardCrop(uri: Uri) {
+        val targetLandscape = cropLandscape
+        activeCropLandscape = targetLandscape
+        val aspectX = if (targetLandscape) 16 else 9
+        val aspectY = if (targetLandscape) 9 else 16
+        val outputWidth = if (targetLandscape) 1920 else 1080
+        val outputHeight = if (targetLandscape) 1080 else 1920
         val options = CropImageOptions(
             fixAspectRatio = true,
-            aspectRatioX = 16,
-            aspectRatioY = 9,
-            activityTitle = "裁剪名片图片",
+            aspectRatioX = aspectX,
+            aspectRatioY = aspectY,
+            activityTitle = if (targetLandscape) {
+                "裁剪横屏名片图片（16:9）"
+            } else {
+                "裁剪竖屏名片图片（9:16）"
+            },
             cropMenuCropButtonTitle = "确认",
             activityMenuIconColor = 0xFFFFFFFF.toInt(),
             activityMenuTextColor = 0xFFFFFFFF.toInt(),
@@ -6885,7 +6934,10 @@ private fun QuickCardEditorScreen(
             toolbarBackButtonColor = 0xFFFFFFFF.toInt(),
             toolbarTintColor = 0xFFFFFFFF.toInt(),
             outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
-            outputCompressQuality = 100
+            outputCompressQuality = 100,
+            outputRequestWidth = outputWidth,
+            outputRequestHeight = outputHeight,
+            outputRequestSizeOptions = CropImageView.RequestSizeOptions.RESIZE_EXACT
         )
         cropLauncher.launch(CropImageContractOptions(uri, options))
     }
@@ -8699,10 +8751,13 @@ fun AppScaffold(viewModel: MainViewModel) {
     val desktopCaptionTopInset = with(density) {
         WindowInsets.captionBar.getTop(this).toDp()
     }
-    val topBarDesktopMaximizeInset = if (!inMultiWindowMode && desktopCaptionTopInset > 0.dp) {
-        desktopCaptionTopInset
-    } else {
-        0.dp
+    val statusTopInset = with(density) {
+        WindowInsets.statusBars.getTop(this).toDp()
+    }
+    val topBarDesktopMaximizeInset = when {
+        desktopCaptionTopInset > 0.dp -> desktopCaptionTopInset
+        inMultiWindowMode && statusTopInset > 0.dp -> statusTopInset
+        else -> 0.dp
     }
     SideEffect {
         activity?.window?.let { window ->
@@ -9509,7 +9564,8 @@ fun AppScaffold(viewModel: MainViewModel) {
                         showQuickCardMainActions || showQuickCardEditorActions -> 96.dp
                         showQuickCardSortActions -> 48.dp
                         showQuickCardWebActions -> 48.dp
-                        showQuickSubtitleActions || showDrawingActions || showVoicePackActions || showSettingsEntryActions -> 48.dp
+                        showDrawingActions -> 144.dp
+                        showQuickSubtitleActions || showVoicePackActions || showSettingsEntryActions -> 48.dp
                         else -> 0.dp
                     }
                     val actionsWidth by animateDpAsState(
@@ -9625,6 +9681,18 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.End
                             ) {
+                                IconButton(
+                                    onClick = { viewModel.rotateDrawingCanvasQuarterTurns(-1) },
+                                    enabled = showDrawingActions
+                                ) {
+                                    MsIcon("rotate_left", contentDescription = "向左旋转画布")
+                                }
+                                IconButton(
+                                    onClick = { viewModel.rotateDrawingCanvasQuarterTurns(1) },
+                                    enabled = showDrawingActions
+                                ) {
+                                    MsIcon("rotate_right", contentDescription = "向右旋转画布")
+                                }
                                 IconButton(
                                     onClick = { viewModel.saveDrawingSnapshot() },
                                     enabled = showDrawingActions && viewModel.drawStrokes.isNotEmpty()
@@ -11558,6 +11626,7 @@ private fun SoundboardScreen(
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val navBarsPadding = WindowInsets.navigationBars.asPaddingValues()
     val navBarsBottomInset = navBarsPadding.calculateBottomPadding()
+    val state = viewModel.uiState
     val groups = viewModel.soundboardGroups
     val selectedGroupIndex = viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
     val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
@@ -11633,6 +11702,34 @@ private fun SoundboardScreen(
                 } else {
                     listContent(targetItems)
                 }
+            }
+        }
+    }
+    val controlCard: @Composable (Modifier) -> Unit = { cardModifier ->
+        Card(
+            modifier = cardModifier,
+            shape = RoundedCornerShape(UiTokens.Radius),
+            backgroundColor = md2CardContainerColor(),
+            elevation = UiTokens.CardElevation
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("触发关键词时不进行朗读", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "命中音效板唤醒词时只上屏并播放音效，跳过本句 TTS。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f)
+                    )
+                }
+                Md2Switch(
+                    checked = state.soundboardSuppressTtsOnKeyword,
+                    onCheckedChange = { viewModel.setSoundboardSuppressTtsOnKeyword(it) }
+                )
             }
         }
     }
@@ -11767,11 +11864,19 @@ private fun SoundboardScreen(
                 modifier = pageModifier,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                contentCard(
-                    Modifier
+                Column(
+                    modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
-                )
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    controlCard(Modifier.fillMaxWidth())
+                    contentCard(
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    )
+                }
                 tabsCard(
                     Modifier
                         .width(54.dp)
@@ -11781,14 +11886,15 @@ private fun SoundboardScreen(
             }
         } else {
             Column(
-                modifier = pageModifier
+                modifier = pageModifier,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                controlCard(Modifier.fillMaxWidth())
                 contentCard(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f)
                 )
-                Spacer(Modifier.height(8.dp))
                 tabsCard(Modifier.fillMaxWidth(), false)
             }
         }
@@ -12093,6 +12199,16 @@ private fun SoundboardEditorScreen(
                             Md2Switch(
                                 checked = state.soundboardKeywordTriggerEnabled,
                                 onCheckedChange = { viewModel.setSoundboardKeywordTriggerEnabled(it) }
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("触发关键词时不进行朗读", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                            Md2Switch(
+                                checked = state.soundboardSuppressTtsOnKeyword,
+                                onCheckedChange = { viewModel.setSoundboardSuppressTtsOnKeyword(it) }
                             )
                         }
                         Row(
@@ -13409,9 +13525,13 @@ fun QuickSubtitleScreen(
                 minFontSizeSp = minFontSizeSp,
                 lineHeightMultiplier = lineHeightMultiplier,
                 autoFitEnabled = quickSubtitleAutoFit,
-                modifier = modifier.then(
-                    if (rotated) Modifier.graphicsLayer(rotationZ = 180f) else Modifier
-                )
+                modifier = modifier,
+                contentAlignment = if (rotated) {
+                    if (subtitleCentered) Alignment.BottomCenter else Alignment.BottomStart
+                } else {
+                    Alignment.TopStart
+                },
+                textRotationZ = if (rotated) 180f else 0f
             )
         }
     }
@@ -14863,7 +14983,9 @@ private fun QuickSubtitleAdaptiveText(
     minFontSizeSp: Float,
     lineHeightMultiplier: Float,
     autoFitEnabled: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentAlignment: Alignment = Alignment.TopStart,
+    textRotationZ: Float = 0f
 ) {
     BoxWithConstraints(modifier = modifier) {
         val density = LocalDensity.current
@@ -14939,7 +15061,10 @@ private fun QuickSubtitleAdaptiveText(
         } else {
             Modifier.fillMaxSize()
         }
-        Box(modifier = contentModifier) {
+        Box(
+            modifier = contentModifier,
+            contentAlignment = contentAlignment
+        ) {
             Text(
                 text = text,
                 style = MaterialTheme.typography.bodyLarge.copy(
@@ -14949,7 +15074,9 @@ private fun QuickSubtitleAdaptiveText(
                 ),
                 color = color,
                 textAlign = textAlign,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (textRotationZ != 0f) Modifier.graphicsLayer(rotationZ = textRotationZ) else Modifier)
             )
         }
     }
@@ -17044,12 +17171,21 @@ fun DrawingBoardScreen(
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val isDark = currentAppDarkTheme()
-    val rotationDegrees = when (context.display?.rotation ?: Surface.ROTATION_0) {
+    val state = viewModel.uiState
+    val deviceRotationDegrees = when (context.display?.rotation ?: Surface.ROTATION_0) {
         Surface.ROTATION_90 -> 90f
         Surface.ROTATION_180 -> 180f
         Surface.ROTATION_270 -> 270f
         else -> 0f
     }
+    val autoRotationDegrees = if (state.drawingKeepCanvasOrientationToDevice) deviceRotationDegrees else 0f
+    val manualRotationDegrees = viewModel.drawingManualRotationQuarterTurns * 90f
+    val rotationDegrees = ((autoRotationDegrees - manualRotationDegrees) % 360f + 360f) % 360f
+    val animatedRotationDegrees by animateFloatAsState(
+        targetValue = rotationDegrees,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "drawing_canvas_rotation"
+    )
     val boardFillColor = if (isDark) Color(0xFF2C3237) else Color(0xFFFCFDFE)
     val currentPoints = remember { mutableStateListOf<DrawPoint>() }
     var currentStrokeEraser by remember { mutableStateOf(false) }
@@ -17183,60 +17319,64 @@ fun DrawingBoardScreen(
                 y = ((containerH - canvasH) * 0.5f).coerceAtLeast(0f)
             )
 
-            Card(
+            Box(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .size(cardWidthDp, cardHeightDp)
-                    .onSizeChanged { boardSize = it }
-                    .mdCenteredShadow(
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        shadowStyle = MdCardShadowStyle
-                    )
                     .graphicsLayer {
                         scaleX = viewportScale
                         scaleY = viewportScale
                         translationX = viewportPanX
                         translationY = viewportPanY
-                    },
-                shape = RoundedCornerShape(UiTokens.Radius),
-                backgroundColor = md2CardContainerColor(),
-                elevation = 0.dp
+                    }
             ) {
-                Canvas(
+                Card(
                     modifier = Modifier
                         .fillMaxSize()
+                        .onSizeChanged { boardSize = it }
+                        .mdCenteredShadow(
+                            shape = RoundedCornerShape(UiTokens.Radius),
+                            shadowStyle = MdCardShadowStyle
+                        ),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = 0.dp
                 ) {
-                    withTransform({
-                        rotate(degrees = -rotationDegrees, pivot = center)
-                    }) {
-                        drawRoundRect(
-                            color = boardFillColor,
-                            topLeft = Offset(left, top),
-                            size = Size(fitW, fitH),
-                            cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx())
-                        )
+                    Canvas(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        withTransform({
+                            rotate(degrees = -animatedRotationDegrees, pivot = center)
+                        }) {
+                            drawRoundRect(
+                                color = boardFillColor,
+                                topLeft = Offset(left, top),
+                                size = Size(fitW, fitH),
+                                cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx())
+                            )
 
-                        viewModel.drawStrokes.forEach { stroke ->
-                            drawStrokeOnBoard(
-                                points = stroke.points,
-                                color = if (stroke.eraser) boardFillColor else stroke.color,
-                                width = stroke.width * pxScale,
-                                left = left,
-                                top = top,
-                                widthPx = fitW,
-                                heightPx = fitH
-                            )
-                        }
-                        if (currentPoints.size > 1) {
-                            drawStrokeOnBoard(
-                                points = currentPoints,
-                                color = if (activeEraser) boardFillColor else viewModel.drawColor,
-                                width = activeWidth * pxScale,
-                                left = left,
-                                top = top,
-                                widthPx = fitW,
-                                heightPx = fitH
-                            )
+                            viewModel.drawStrokes.forEach { stroke ->
+                                drawStrokeOnBoard(
+                                    points = stroke.points,
+                                    color = if (stroke.eraser) boardFillColor else stroke.color,
+                                    width = stroke.width * pxScale,
+                                    left = left,
+                                    top = top,
+                                    widthPx = fitW,
+                                    heightPx = fitH
+                                )
+                            }
+                            if (currentPoints.size > 1) {
+                                drawStrokeOnBoard(
+                                    points = currentPoints,
+                                    color = if (activeEraser) boardFillColor else viewModel.drawColor,
+                                    width = activeWidth * pxScale,
+                                    left = left,
+                                    top = top,
+                                    widthPx = fitW,
+                                    heightPx = fitH
+                                )
+                            }
                         }
                     }
                 }
@@ -18930,6 +19070,12 @@ fun SettingsScreen(
                     )
                     Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
                     Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
+                    Md2SettingSwitchRow(
+                        title = "将画板画布方向保持设备方向",
+                        checked = state.drawingKeepCanvasOrientationToDevice,
+                        onCheckedChange = { viewModel.setDrawingKeepCanvasOrientationToDevice(it) },
+                        supportingText = "开启后设备旋转时画布会自动反向旋转以保持原有朝向；手动旋转会继续叠加。"
+                    )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)

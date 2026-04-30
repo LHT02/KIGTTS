@@ -105,10 +105,13 @@ object UserPrefs {
     private val KEY_QUICK_CARD_CONFIG = stringPreferencesKey("quick_card_config")
     private val KEY_TTS_DISABLED = booleanPreferencesKey("tts_disabled")
     private val KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED = booleanPreferencesKey("soundboard_keyword_trigger_enabled")
+    private val KEY_SOUNDBOARD_SUPPRESS_TTS_ON_KEYWORD = booleanPreferencesKey("soundboard_suppress_tts_on_keyword")
     private val KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD = booleanPreferencesKey("allow_quick_text_trigger_soundboard")
     private val KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE = booleanPreferencesKey("quick_subtitle_interrupt_queue")
     private val KEY_QUICK_SUBTITLE_AUTO_FIT = booleanPreferencesKey("quick_subtitle_auto_fit")
     private val KEY_QUICK_SUBTITLE_COMPACT_CONTROLS = booleanPreferencesKey("quick_subtitle_compact_controls")
+    private val KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE =
+        booleanPreferencesKey("drawing_keep_canvas_orientation_to_device")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
@@ -170,10 +173,12 @@ object UserPrefs {
             VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.DownUp),
         val ttsDisabled: Boolean = false,
         val soundboardKeywordTriggerEnabled: Boolean = false,
+        val soundboardSuppressTtsOnKeyword: Boolean = false,
         val allowQuickTextTriggerSoundboard: Boolean = false,
         val quickSubtitleInterruptQueue: Boolean = true,
         val quickSubtitleAutoFit: Boolean = true,
         val quickSubtitleCompactControls: Boolean = false,
+        val drawingKeepCanvasOrientationToDevice: Boolean = true,
         val speakerVerifyEnabled: Boolean = false,
         val speakerVerifyThreshold: Float = 0.5f,
         val speakerVerifyProfileCsv: String = "",
@@ -338,10 +343,12 @@ object UserPrefs {
             ),
             ttsDisabled = this[KEY_TTS_DISABLED] ?: false,
             soundboardKeywordTriggerEnabled = this[KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED] ?: false,
+            soundboardSuppressTtsOnKeyword = this[KEY_SOUNDBOARD_SUPPRESS_TTS_ON_KEYWORD] ?: false,
             allowQuickTextTriggerSoundboard = this[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] ?: false,
             quickSubtitleInterruptQueue = this[KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE] ?: true,
             quickSubtitleAutoFit = this[KEY_QUICK_SUBTITLE_AUTO_FIT] ?: true,
             quickSubtitleCompactControls = this[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] ?: false,
+            drawingKeepCanvasOrientationToDevice = this[KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE] ?: true,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
             speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
             speakerVerifyProfileCsv = this[KEY_SPEAKER_VERIFY_PROFILE] ?: "",
@@ -648,6 +655,12 @@ object UserPrefs {
         }
     }
 
+    suspend fun setSoundboardSuppressTtsOnKeyword(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SOUNDBOARD_SUPPRESS_TTS_ON_KEYWORD] = enabled
+        }
+    }
+
     suspend fun setAllowQuickTextTriggerSoundboard(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] = enabled
@@ -669,6 +682,12 @@ object UserPrefs {
     suspend fun setQuickSubtitleCompactControls(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] = enabled
+        }
+    }
+
+    suspend fun setDrawingKeepCanvasOrientationToDevice(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE] = enabled
         }
     }
 

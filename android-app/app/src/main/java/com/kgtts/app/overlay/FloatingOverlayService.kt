@@ -114,7 +114,11 @@ class FloatingOverlayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val windowManager by lazy { getSystemService(WindowManager::class.java) }
     private val iconTypeface: Typeface? by lazy {
-        ResourcesCompat.getFont(this, R.font.material_symbols_sharp)
+        runCatching {
+            ResourcesCompat.getFont(this, R.font.material_symbols_sharp)
+        }.onFailure {
+            AppLogger.e("FloatingOverlayService.material symbol font load failed", it)
+        }.getOrNull()
     }
 
     private var settings = UserPrefs.AppSettings()
@@ -5504,8 +5508,8 @@ class FloatingOverlayService : Service() {
                 maxLines = 1
                 ellipsize = null
                 isSingleLine = true
-                setHorizontallyScrolling(false)
-                maxWidth = maxWatermarkWidth
+                setHorizontallyScrolling(true)
+                minWidth = maxWatermarkWidth
                 includeFontPadding = false
                 text = watermarkText
             }
@@ -6101,6 +6105,7 @@ class FloatingOverlayService : Service() {
                             ellipsize = null
                             isSingleLine = true
                             setHorizontallyScrolling(true)
+                            minWidth = container.height.takeIf { it > 0 } ?: dp(220)
                             includeFontPadding = false
                             text = watermarkText
                         }
@@ -8831,6 +8836,9 @@ class FloatingOverlayService : Service() {
             setTextColor(color)
             setSymbolTextSize(sp)
             typeface = iconTypeface
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                fontFeatureSettings = "liga"
+            }
             includeFontPadding = false
         }
 

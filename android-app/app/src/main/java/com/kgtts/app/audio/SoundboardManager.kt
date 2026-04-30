@@ -169,9 +169,24 @@ object SoundboardManager {
         return true
     }
 
-    suspend fun triggerByText(context: Context, text: String) {
+    suspend fun hasTriggerMatch(context: Context, text: String): Boolean {
         val normalized = text.trim()
-        if (normalized.isEmpty()) return
+        if (normalized.isEmpty()) return false
+        val config = if (!hasLoadedConfig) loadConfig(context) else cachedConfig
+        return config.groups.any { group ->
+            group.keywordWakeEnabled && group.items.any { item ->
+                val wakeWord = item.wakeWord.trim()
+                wakeWord.isNotEmpty() &&
+                    normalized.contains(wakeWord) &&
+                    item.audioPath.isNotBlank() &&
+                    File(item.audioPath).exists()
+            }
+        }
+    }
+
+    suspend fun triggerByText(context: Context, text: String): Boolean {
+        val normalized = text.trim()
+        if (normalized.isEmpty()) return false
         val config = if (!hasLoadedConfig) loadConfig(context) else cachedConfig
         val matchesByWakeWord = linkedMapOf<String, MutableList<SoundboardItem>>()
         config.groups.forEach { group ->
@@ -187,10 +202,12 @@ object SoundboardManager {
                 }
             }
         }
+        var triggered = false
         matchesByWakeWord.values.forEach { candidates ->
             val selected = if (candidates.size == 1) candidates.first() else candidates.random(Random.Default)
-            play(selected)
+            if (play(selected)) triggered = true
         }
+        return triggered
     }
 
     private suspend fun cleanupStalePlaybacks(config: SoundboardConfig) {
