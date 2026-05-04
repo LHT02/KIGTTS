@@ -9,6 +9,8 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .resource_paths import resolve_resources_root
+
 
 def _base_dir() -> Path:
     env_base = os.environ.get("KGTTS_BASE_DIR")
@@ -35,16 +37,16 @@ def _load_voicepack_base(voicepack_path: Path, temp_dir: Path) -> Tuple[Path, di
             zip_candidate = next((candidate for candidate in archive_candidates if candidate.exists()), None)
             if zip_candidate is not None:
                 return _load_voicepack_base(zip_candidate, temp_dir)
-            raise FileNotFoundError("语音包目录缺少 manifest.json")
+            raise FileNotFoundError("这个语音包目录不完整，无法试听。")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         return voicepack_path, manifest
     if not zipfile.is_zipfile(voicepack_path):
-        raise RuntimeError("语音包不是有效的 zip 文件")
+        raise RuntimeError("这个文件不是有效的语音包，无法试听。")
     with zipfile.ZipFile(voicepack_path, "r") as zf:
         zf.extractall(temp_dir)
     manifest_path = temp_dir / "manifest.json"
     if not manifest_path.exists():
-        raise FileNotFoundError("语音包缺少 manifest.json")
+        raise FileNotFoundError("这个语音包文件不完整，无法试听。")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     return temp_dir, manifest
 
@@ -55,13 +57,13 @@ def _resolve_voicepack_files(base_dir: Path, manifest: dict) -> Tuple[Path, Path
     config_rel = files.get("config")
     dict_rel = files.get("phonemizer")
     if not model_rel or not config_rel or not dict_rel:
-        raise RuntimeError("语音包 manifest 缺少 files/model/config/phonemizer")
+        raise RuntimeError("语音包缺少必要的模型或配置文件，无法试听。")
     model_path = base_dir / model_rel
     config_path = base_dir / config_rel
     dict_path = base_dir / dict_rel
     for path in (model_path, config_path, dict_path):
         if not path.exists():
-            raise FileNotFoundError(f"缺少语音包文件: {path}")
+            raise FileNotFoundError("语音包缺少必要文件，无法试听。")
     return model_path, config_path, dict_path
 
 
@@ -82,6 +84,10 @@ def _find_espeak_ng() -> Tuple[Path, Path]:
     env_path = os.environ.get("ESPEAK_NG_PATH")
     if env_path:
         candidates.append(Path(env_path))
+    resources_root = resolve_resources_root()
+    if resources_root is not None:
+        candidates.append(resources_root / "tools" / "espeak-ng" / "eSpeak NG" / "espeak-ng.exe")
+        candidates.append(resources_root / "tools" / "espeak-ng" / "espeak-ng.exe")
     base = _base_dir()
     candidates.append(base / "tools" / "espeak-ng" / "eSpeak NG" / "espeak-ng.exe")
     candidates.append(base / "tools" / "espeak-ng" / "espeak-ng.exe")
@@ -92,7 +98,7 @@ def _find_espeak_ng() -> Tuple[Path, Path]:
             data_dir = exe.parent / "espeak-ng-data"
             if data_dir.exists():
                 return exe, data_dir
-    raise RuntimeError("未找到 espeak-ng，请先集成 espeak-ng")
+    raise RuntimeError("缺少发音组件，请先安装训练资源包后再试听。")
 
 
 def _strip_language_flags(text: str) -> str:
@@ -139,7 +145,7 @@ def _phonemize_espeak(text: str, voice: str) -> List[str]:
     )
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout).strip()
-        raise RuntimeError(f"espeak-ng 失败: {err}")
+        raise RuntimeError(f"发音组件处理失败：{err}")
     out = proc.stdout.strip()
     if not out:
         return []
@@ -281,7 +287,7 @@ def synthesize_voicepack(
         import numpy as np
         import onnxruntime as ort
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("缺少 onnxruntime/numpy，无法测试语音包") from exc
+        raise RuntimeError("试听组件未安装完整，请重新安装 Piper 基础运行时后再试。") from exc
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         base_dir, manifest = _load_voicepack_base(voicepack_path, Path(tmp_dir))
@@ -291,16 +297,16 @@ def synthesize_voicepack(
         phoneme_type = str(cfg.get("phoneme_type", "text")).lower()
         id_map = cfg.get("phoneme_id_map") or {}
         if not id_map:
-            raise RuntimeError("语音包缺少 phoneme_id_map，无法合成")
+            raise RuntimeError("语音包缺少发音映射信息，无法试听。")
         if phoneme_type == "espeak":
             ids = _text_to_espeak_ids(text, cfg)
         elif phoneme_type == "text":
             phoneme_map = _load_phonemizer_dict(dict_path)
             ids = _text_to_phoneme_ids(text, phoneme_map, id_map)
         else:
-            raise RuntimeError(f"不支持的 phoneme_type: {phoneme_type}")
+            raise RuntimeError("当前语音包格式暂不支持试听。")
         if not ids:
-            raise RuntimeError("测试文本无法转换为 phoneme ids")
+            raise RuntimeError("试听文本无法转换为可朗读内容，请换一段文本再试。")
 
         infer_cfg = cfg.get("inference") or {}
         noise_scale = float(infer_cfg.get("noise_scale", 0.667))

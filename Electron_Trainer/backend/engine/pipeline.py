@@ -11,6 +11,7 @@ from .project_state import (
     archive_voxcpm_reference,
     distill_options_from_dict,
     load_project_config,
+    read_saved_texts_jsonl,
     read_metadata_entries,
     save_project_config,
     training_options_from_dict,
@@ -24,6 +25,29 @@ def _ensure_dirs(paths: ProjectPaths) -> None:
     paths.work_dir.mkdir(parents=True, exist_ok=True)
     paths.segments_dir.mkdir(parents=True, exist_ok=True)
     paths.export_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _expected_generated_entries(paths: ProjectPaths, mode: str, texts: list[str]) -> list[tuple[Path, str]]:
+    if mode == "gsv_distill":
+        wav_dir = paths.work_dir / "distill_corpus" / "wavs"
+    elif mode == "voxcpm_distill":
+        wav_dir = paths.work_dir / "voxcpm_corpus" / "wavs"
+    else:
+        return []
+    return [(wav_dir / f"{index:05d}.wav", text) for index, text in enumerate(texts, start=1)]
+
+
+def _load_saved_expected_texts(paths: ProjectPaths, mode: str, config: dict[str, object]) -> list[str]:
+    raw_expected = config.get("metadata_texts") or []
+    if isinstance(raw_expected, list):
+        texts = [str(item).strip() for item in raw_expected if str(item).strip()]
+        if texts:
+            return texts
+    if mode == "gsv_distill":
+        return read_saved_texts_jsonl(paths.work_dir / "distill_corpus" / "texts.jsonl")
+    if mode == "voxcpm_distill":
+        return read_saved_texts_jsonl(paths.work_dir / "voxcpm_corpus" / "texts.jsonl")
+    return []
 
 
 def synth_preview(model_dir: Path, opts: TrainingOptions) -> Optional[Path]:
@@ -115,6 +139,7 @@ def run_pipeline(
 ) -> PipelineResult:
     _ensure_dirs(paths)
     archive_input_audio(paths)
+    save_project_config(paths, "piper", opts)
 
     processed = preprocess.preprocess_audios(
         paths.input_audio, paths.work_dir / "processed", opts, progress
@@ -134,9 +159,9 @@ def run_distill_pipeline(
     progress: Optional[ProgressCallback] = None,
 ) -> PipelineResult:
     _ensure_dirs(paths)
-
-    gsv_distill.build_distill_corpus(paths, distill_opts, progress)
-    save_project_config(paths, "gsv_distill", opts, distill_opts=distill_opts)
+    texts = gsv_distill.collect_distill_texts(distill_opts, paths.work_dir, progress)
+    save_project_config(paths, "gsv_distill", opts, distill_opts=distill_opts, metadata_texts=texts)
+    gsv_distill.build_distill_corpus(paths, distill_opts, progress, texts=texts)
     return _train_export_package(paths, opts, progress)
 
 
@@ -149,8 +174,9 @@ def run_voxcpm_distill_pipeline(
     _ensure_dirs(paths)
 
     archive_voxcpm_reference(paths, voxcpm_opts)
-    voxcpm_distill.build_voxcpm_corpus(paths, voxcpm_opts, opts, progress)
-    save_project_config(paths, "voxcpm_distill", opts, voxcpm_opts=voxcpm_opts)
+    texts = gsv_distill.collect_distill_texts(voxcpm_opts, paths.work_dir, progress)  # type: ignore[arg-type]
+    save_project_config(paths, "voxcpm_distill", opts, voxcpm_opts=voxcpm_opts, metadata_texts=texts)
+    voxcpm_distill.build_voxcpm_corpus(paths, voxcpm_opts, opts, progress, texts=texts)
     return _train_export_package(paths, opts, progress)
 
 
@@ -162,17 +188,24 @@ def run_resume_project_pipeline(
     config = load_project_config(paths.project_root)
     mode = str(config.get("mode") or "").strip()
     opts = training_options_from_dict(config.get("training_options") or {})
+    expected_texts = _load_saved_expected_texts(paths, mode, config)
     try:
         entries = read_metadata_entries(paths.training_manifest)
         metadata_error = ""
     except Exception as exc:
         entries = []
         metadata_error = str(exc)
-    expected_texts = [str(item) for item in (config.get("metadata_texts") or [])]
     metadata_texts = [text for _audio, text in entries]
     metadata_inconsistent = bool(expected_texts and expected_texts != metadata_texts)
     if metadata_inconsistent and progress:
-        progress("collect", 0.0, "项目 metadata.csv 文本与项目配置记录不一致，将按当前 metadata.csv 继续。")
+        progress("collect", 0.0, "项目中的文本记录与上次保存的设置不一致，将按当前文本记录继续。")
+
+    if mode in {"gsv_distill", "voxcpm_distill"} and expected_texts:
+        generated_entries = _expected_generated_entries(paths, mode, expected_texts)
+        if not entries or metadata_inconsistent or len(entries) != len(expected_texts):
+            entries = generated_entries
+            metadata_texts = [text for _audio, text in entries]
+            metadata_inconsistent = False
 
     existing_entries = [(audio_path, text) for audio_path, text in entries if audio_path.exists()]
     missing_entries = [(audio_path, text) for audio_path, text in entries if not audio_path.exists()]
@@ -182,7 +215,7 @@ def run_resume_project_pipeline(
         return _train_export_package(paths, opts, progress)
 
     if not entries and mode != "piper":
-        raise RuntimeError(metadata_error or "旧项目没有可用于恢复的 metadata 文本")
+        raise RuntimeError(metadata_error or "旧项目没有可用于恢复的训练文本。")
 
     if progress:
         progress("collect", 0.5, f"旧项目检测到 {len(missing_entries)} 条音频缺失")
@@ -236,7 +269,7 @@ def run_resume_project_pipeline(
                 reason = metadata_error or f"缺失 {len(missing_entries)} 条音频"
                 raise RuntimeError(f"标准训练旧项目需要重新处理，但项目配置中没有可用原始音频：{reason}")
             if progress:
-                progress("collect", 0.0, "标准训练旧项目音频或 metadata 不完整，按项目内原始音频重新切分和 ASR。")
+                progress("collect", 0.0, "旧项目素材不完整，将使用项目保存的原始录音重新准备训练素材。")
             paths.input_audio = stored_audio
             return run_pipeline(paths, opts, progress)
         return _train_export_package(paths, opts, progress)

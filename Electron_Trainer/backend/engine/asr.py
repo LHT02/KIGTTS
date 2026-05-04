@@ -145,7 +145,7 @@ class OfflineASR:
 
         feat_cfg_cls = getattr(sherpa_onnx, "FeatureConfig", None) or getattr(sherpa_onnx, "FeatureExtractorConfig", None)
         if not feat_cfg_cls:
-            raise RuntimeError("当前 sherpa-onnx 版本缺少 FeatureConfig/FeatureExtractorConfig。")
+            raise RuntimeError("语音识别组件版本不兼容，请重新安装训练资源包后再试。")
         feat_cfg = feat_cfg_cls()
         if hasattr(feat_cfg, "sample_rate"):
             feat_cfg.sample_rate = 16000

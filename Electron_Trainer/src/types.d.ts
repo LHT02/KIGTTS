@@ -83,6 +83,7 @@ declare global {
     repetition_penalty: number
     sample_steps: number
     if_sr: boolean
+    parallel_workers: number
     text_sources: DistillTextSource[]
   }
 
@@ -92,6 +93,7 @@ declare global {
     voice_mode: VoxCpmVoiceMode
     voice_description: string
     reference_audio: string
+    voice_reference_text: string
     prompt_text: string
     cfg_value: number
     inference_timesteps: number
@@ -102,7 +104,36 @@ declare global {
     retry_badcase: boolean
     retry_badcase_max_times: number
     retry_badcase_ratio_threshold: number
+    parallel_workers: number
     text_sources: DistillTextSource[]
+  }
+
+  type PiperRuntimeStatus = {
+    ok: boolean
+    available: boolean
+    status: 'missing' | 'ready' | 'error'
+    message: string
+    runtime_root: string
+    env_path: string
+    python_path: string
+    archive_source_config: string
+    archive_sources_configured: number
+    seven_zip_path?: string
+    source?: string
+    source_label?: string
+    conda_source?: string
+    torch_source?: string
+    pip_toolchain_source?: string
+    pip_dependency_source?: string
+    installed_with?: string
+    archive_name?: string
+    torch_version?: string
+    torch_cuda_version?: string | null
+    torchaudio_version?: string
+    pytorch_lightning_version?: string
+    piper_train_path?: string
+    cuda_available?: boolean
+    archive_sources?: Array<{ id: string; label: string; url: string }>
   }
 
   type PiperCudaRuntimeStatus = {
@@ -115,10 +146,14 @@ declare global {
     python_path: string
     micromamba_path: string
     bundled_micromamba_path?: string
+    archive_source_config?: string
+    archive_sources_configured?: number
+    seven_zip_path?: string
     requirements_path?: string
     piper_train_wheel?: string
     local_wheel_dirs?: string[]
     source?: string
+    source_label?: string
     conda_source?: string
     torch_source?: string
     pip_toolchain_source?: string
@@ -134,6 +169,7 @@ declare global {
     driver_version?: string
     gpu_name?: string
     gpu_memory?: string
+    archive_sources?: Array<{ id: string; label: string; url: string }>
   }
 
   type VoxCpmRuntimeStatus = {
@@ -146,7 +182,11 @@ declare global {
     python_path: string
     micromamba_path: string
     bundled_micromamba_path?: string
+    archive_source_config?: string
+    archive_sources_configured?: number
+    seven_zip_path?: string
     source?: string
+    source_label?: string
     conda_source?: string
     torch_source?: string
     pip_toolchain_source?: string
@@ -161,6 +201,7 @@ declare global {
     driver_version?: string
     gpu_name?: string
     gpu_memory?: string
+    archive_sources?: Array<{ id: string; label: string; url: string }>
   }
 
   type VoxCpmModelStatus = {
@@ -175,8 +216,53 @@ declare global {
     denoiser_repo: string
   }
 
+  type TrainerResourceStatus = {
+    ok: boolean
+    available: boolean
+    external_available: boolean
+    status: 'missing' | 'ready' | 'fallback' | 'error'
+    message: string
+    resources_parent: string
+    resources_root: string
+    active_resources_root: string
+    archive_source_config: string
+    archive_sources_configured: number
+    seven_zip_path?: string
+    source?: string
+    source_label?: string
+    installed_with?: string
+    archive_name?: string
+    asr_model_count?: number
+    piper_checkpoint_count?: number
+    phonemizer_available?: boolean
+    espeak_available?: boolean
+    archive_sources?: Array<{ id: string; label: string; url: string }>
+  }
+
+  type DownloadSourceItem = {
+    id: string
+    label: string
+    url: string
+  }
+
+  type DownloadSourceGroup = {
+    key: string
+    label: string
+    preferred_source_id: string
+    sources: DownloadSourceItem[]
+  }
+
+  type DownloadSourceConfig = {
+    ok: boolean
+    config_path: string
+    builtin_config_path: string
+    preferred_sources: Record<string, string>
+    groups: DownloadSourceGroup[]
+  }
+
   type TrainingProjectStatus = {
     ok: boolean
+    has_project?: boolean
     message: string
     mode?: TrainingMode | string
     project_dir?: string
@@ -195,6 +281,7 @@ declare global {
     material_status?: string
     config_summary?: string
     config_path?: string
+    completion_state?: 'ready' | 'unfinished'
   }
 
   type BackendResponsePayload = {

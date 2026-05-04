@@ -1,11 +1,11 @@
 import json
-import os
 import shutil
 import zipfile
 from pathlib import Path
 from typing import Optional
 
 from .config import TrainingOptions
+from .resource_paths import resolve_resources_root
 
 
 def build_manifest(
@@ -42,9 +42,9 @@ def build_voice_meta(opts: TrainingOptions, avatar_name: Optional[str]) -> dict:
 
 
 def _resources_dir() -> Path:
-    env_resources = os.environ.get("KGTTS_RESOURCES")
-    if env_resources:
-        return Path(env_resources)
+    resolved = resolve_resources_root()
+    if resolved is not None:
+        return resolved
     base = Path(__file__).resolve().parent.parent
     candidate = base / "resources_pack"
     if candidate.exists():

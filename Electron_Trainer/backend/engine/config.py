@@ -68,6 +68,7 @@ class DistillOptions:
     repetition_penalty: float = 1.35
     sample_steps: int = 16
     if_sr: bool = False
+    parallel_workers: int = 1
     text_sources: List[DistillTextSource] = field(default_factory=list)
 
 
@@ -78,6 +79,7 @@ class VoxCpmDistillOptions:
     voice_mode: str = "description"
     voice_description: str = ""
     reference_audio: Optional[Path] = None
+    voice_reference_text: str = "你好，这是语音试听。很高兴认识你，我叫林祈语，从现在开始，我将会一直陪伴着你"
     prompt_text: str = ""
     cfg_value: float = 2.0
     inference_timesteps: int = 10
@@ -88,6 +90,7 @@ class VoxCpmDistillOptions:
     retry_badcase: bool = True
     retry_badcase_max_times: int = 3
     retry_badcase_ratio_threshold: float = 6.0
+    parallel_workers: int = 1
     text_sources: List[DistillTextSource] = field(default_factory=list)
 
 

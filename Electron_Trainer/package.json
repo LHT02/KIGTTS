@@ -9,8 +9,12 @@
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron electron/main.cjs\"",
     "start": "electron electron/main.cjs",
     "build": "tsc -b && vite build",
-    "dist": "npm run build && electron-builder",
+    "prepare:bootstrap": "powershell -ExecutionPolicy Bypass -File scripts/prepare_python_bootstrap.ps1",
+    "dist": "npm run build && npm run prepare:bootstrap && electron-builder",
     "dist:inno": "powershell -ExecutionPolicy Bypass -File scripts/build_inno.ps1",
+    "pack:runtimes": "powershell -ExecutionPolicy Bypass -File scripts/pack_runtime_archives.ps1",
+    "pack:resources": "powershell -ExecutionPolicy Bypass -File scripts/pack_resource_archives.ps1",
+    "test:runtime-archive": "python scripts/test_runtime_archive_manifest.py",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -28,6 +32,8 @@
       "dist-renderer/**",
       "electron/**",
       "backend/**",
+      "!backend/**/__pycache__/**",
+      "!backend/**/*.pyc",
       "package.json"
     ],
     "extraResources": [
@@ -48,49 +54,18 @@
         "to": "THIRD_PARTY_LICENSES.md"
       },
       {
-        "from": "../pc_trainer/piper_env",
-        "to": "piper_env"
+        "from": "build/python_bootstrap",
+        "to": "python_bootstrap"
       },
       {
-        "from": "../pc_trainer/resources_pack",
-        "to": "resources_pack",
-        "filter": [
-          "data/**",
-          "tools/**",
-          "logs/**",
-          "Model/*.zip",
-          "Model/sosv-int8/**",
-          "Model/piper_voices/**",
-          "Model/piper_checkpoints/**"
-        ]
-      },
-      {
-        "from": "../pc_trainer/CKPT",
-        "to": "CKPT",
-        "filter": [
-          "**/*.ckpt"
-        ]
-      },
-      {
-        "from": "build/micromamba",
-        "to": "micromamba"
+        "from": "node_modules/7zip-bin/win/x64/7za.exe",
+        "to": "tools/7za.exe"
       },
       {
         "from": "build/icons",
         "to": "build/icons",
         "filter": [
           "**/*.ico"
-        ]
-      },
-      {
-        "from": "../pc_trainer/piper_wheels/piper_train-1.0.0-py3-none-any.whl",
-        "to": "runtime_assets/piper_train-1.0.0-py3-none-any.whl"
-      },
-      {
-        "from": "../pc_trainer/piper_wheels",
-        "to": "runtime_assets/piper_wheels",
-        "filter": [
-          "**/*.whl"
         ]
       }
     ]

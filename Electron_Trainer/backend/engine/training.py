@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 
 from .config import SegmentMetadata, TrainingOptions, ProgressCallback
-from .runtime_manager import resolve_cuda_python
+from .resource_paths import resolve_resources_root
+from .runtime_manager import resolve_cuda_python, resolve_piper_runtime_python
 from .utils import find_executable
 
 
@@ -32,9 +33,9 @@ def _base_dir() -> Path:
 
 
 def _resources_dir() -> Path:
-    env_resources = os.environ.get("KGTTS_RESOURCES")
-    if env_resources:
-        return Path(env_resources)
+    resolved = resolve_resources_root()
+    if resolved is not None:
+        return resolved
     base = _base_dir()
     candidate = base / "resources_pack"
     if candidate.exists():
@@ -47,6 +48,9 @@ def _find_piper_python(*, prefer_cuda: bool = False) -> Optional[Path]:
         cuda_python = resolve_cuda_python()
         if cuda_python and cuda_python.exists():
             return cuda_python
+    runtime_python = resolve_piper_runtime_python()
+    if runtime_python and runtime_python.exists():
+        return runtime_python
     base = _base_dir()
     candidates = [
         base / "piper_env" / "python.exe",
@@ -404,18 +408,18 @@ def run_piper_training(
     if piper_python:
         prep_script = _resources_dir() / "tools" / "piper_prep.py"
         if not prep_script.exists():
-            raise RuntimeError(f"缺少预处理脚本: {prep_script}")
+            raise RuntimeError("训练组件不完整，请重新安装 Piper 基础运行时后再试。")
         use_espeak = bool(opts.use_espeak)
         piper_config = opts.piper_config
         if use_espeak and piper_config is None and opts.piper_base_checkpoint:
             piper_config = _find_piper_config(opts.piper_base_checkpoint, piper_python)
         if use_espeak and piper_config is None:
-            raise RuntimeError("缺少 Piper config.json（espeak 模式需要）")
+            raise RuntimeError("当前基线缺少发音配置，请重新选择基线或安装训练资源包后再试。")
         phonemizer = None
         if not use_espeak:
             phonemizer = opts.phonemizer_dict or _default_phonemizer_dict()
             if not phonemizer.exists():
-                raise RuntimeError(f"缺少 phonemizer 字典: {phonemizer}")
+                raise RuntimeError("缺少发音字典，请安装训练资源包后再试。")
 
         prep_dir = work_dir / "piper_preprocess"
         prep_cmd = [

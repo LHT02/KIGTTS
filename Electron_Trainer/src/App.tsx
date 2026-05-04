@@ -65,7 +65,7 @@ type PendingRequest = {
   timeout: number
 }
 
-type RuntimeStatusWithSources = PiperCudaRuntimeStatus | VoxCpmRuntimeStatus
+type RuntimeStatusWithSources = PiperRuntimeStatus | PiperCudaRuntimeStatus | VoxCpmRuntimeStatus
 
 type CommonPipelineOptions = {
   quality: 'A' | 'B'
@@ -114,8 +114,8 @@ const formatRuntimeSources = (status?: RuntimeStatusWithSources | null) => {
     status.pip_toolchain_source ? `pip工具链: ${getRuntimeSourceLabel(status.pip_toolchain_source)}` : '',
     status.pip_dependency_source ? `pip依赖: ${getRuntimeSourceLabel(status.pip_dependency_source)}` : '',
   ].filter(Boolean)
-  if (!parts.length && status.source) {
-    parts.push(`来源: ${getRuntimeSourceLabel(status.source)}`)
+  if (!parts.length && (status.source_label || status.source)) {
+    parts.push(status.source_label ? `来源: ${status.source_label}` : `来源: ${getRuntimeSourceLabel(status.source)}`)
   }
   return parts.join(' / ')
 }
@@ -124,6 +124,13 @@ type PendingDistillStart = {
   outputDir: string
   commonOpts: CommonPipelineOptions
   distillPayload: DistillOptions
+}
+
+type VoxcpmBootstrapContext = {
+  outputDir: string
+  commonOpts: CommonPipelineOptions
+  sourcePayload: VoxCpmDistillOptions
+  referenceText: string
 }
 
 type AboutCreator = {
@@ -197,6 +204,7 @@ const VOXCPM_VOICE_MODES: Array<{ value: VoxCpmVoiceMode; label: string; descrip
   { value: 'controlled_clone', label: '可控声音克隆', description: '用参考音频决定音色，可选音色描述控制情绪、语速和表达。' },
   { value: 'high_fidelity', label: '高保真克隆（需要调用 ASR）', description: '用参考音频和精确转写做 prompt，优先还原音色、节奏和细节。' },
 ]
+const VOXCPM_BOOTSTRAP_REFERENCE_TEXT_DEFAULT = '你好，这是语音试听。很高兴认识你，我叫林祈语，从现在开始，我将会一直陪伴着你'
 const GSVI_REQUIRED_NAMES = {
   gsvAuthor: '花儿不哭',
   gsvTrainer: '红血球AE3803',
@@ -586,6 +594,7 @@ const defaultDistillOptions = (): DistillOptions => ({
   repetition_penalty: 1.35,
   sample_steps: 16,
   if_sr: false,
+  parallel_workers: 1,
   text_sources: [],
 })
 
@@ -595,6 +604,7 @@ const defaultVoxcpmOptions = (): VoxCpmDistillOptions => ({
   voice_mode: 'description',
   voice_description: '',
   reference_audio: '',
+  voice_reference_text: VOXCPM_BOOTSTRAP_REFERENCE_TEXT_DEFAULT,
   prompt_text: '',
   cfg_value: 2,
   inference_timesteps: 10,
@@ -605,6 +615,7 @@ const defaultVoxcpmOptions = (): VoxCpmDistillOptions => ({
   retry_badcase: true,
   retry_badcase_max_times: 3,
   retry_badcase_ratio_threshold: 6,
+  parallel_workers: 1,
   text_sources: [],
 })
 
@@ -693,8 +704,38 @@ const getCudaRuntimeChipLabel = (status: PiperCudaRuntimeStatus | null) => {
   return '已就绪'
 }
 
+const getPiperRuntimeChipColor = (status: PiperRuntimeStatus | null): 'default' | 'success' | 'warning' | 'error' => {
+  if (!status) return 'default'
+  if (status.status === 'error') return 'error'
+  if (!status.available) return 'warning'
+  return 'success'
+}
+
+const getPiperRuntimeChipLabel = (status: PiperRuntimeStatus | null) => {
+  if (!status) return '未检测'
+  if (status.status === 'error') return '运行时异常'
+  if (!status.available) return '未安装'
+  return '已就绪'
+}
+
+const getTrainerResourcesChipColor = (status: TrainerResourceStatus | null): 'default' | 'success' | 'warning' | 'error' => {
+  if (!status) return 'default'
+  if (status.status === 'error') return 'error'
+  if (!status.available) return 'warning'
+  if (!status.external_available) return 'warning'
+  return 'success'
+}
+
+const getTrainerResourcesChipLabel = (status: TrainerResourceStatus | null) => {
+  if (!status) return '未检测'
+  if (status.status === 'error') return '资源异常'
+  if (!status.available) return '未安装'
+  if (!status.external_available) return '可用但建议安装'
+  return '已就绪'
+}
+
 const getRuntimeChipColor = (
-  status: PiperCudaRuntimeStatus | VoxCpmRuntimeStatus | null,
+  status: RuntimeStatusWithSources | null,
 ): 'default' | 'success' | 'warning' | 'error' => {
   if (!status) return 'default'
   if (status.status === 'error') return 'error'
@@ -703,7 +744,7 @@ const getRuntimeChipColor = (
   return 'success'
 }
 
-const getRuntimeChipLabel = (status: PiperCudaRuntimeStatus | VoxCpmRuntimeStatus | null) => {
+const getRuntimeChipLabel = (status: RuntimeStatusWithSources | null) => {
   if (!status) return '未检测'
   if (status.status === 'error') return '运行时异常'
   if (!status.available) return '未安装'
@@ -1240,13 +1281,19 @@ function App() {
   const pingRequestIdRef = useRef<string | null>(null)
   const pendingRequestsRef = useRef<Map<string, PendingRequest>>(new Map())
   const pendingDistillStartRef = useRef<PendingDistillStart | null>(null)
+  const pendingFreshStartRef = useRef<(() => void) | null>(null)
+  const pendingExistingProjectDirRef = useRef('')
   const runtimeInstallTailRef = useRef<Promise<void>>(Promise.resolve())
   const runtimeInstallQueueDepthRef = useRef(0)
+  const piperRuntimeRequestIdRef = useRef<string | null>(null)
   const cudaRuntimeRequestIdRef = useRef<string | null>(null)
   const voxcpmRuntimeRequestIdRef = useRef<string | null>(null)
   const voxcpmModelRequestIdRef = useRef<string | null>(null)
+  const trainerResourcesRequestIdRef = useRef<string | null>(null)
   const gsvDistillPreviewRequestIdRef = useRef<string | null>(null)
   const voxcpmDistillPreviewRequestIdRef = useRef<string | null>(null)
+  const voxcpmBootstrapPreviewRequestIdRef = useRef<string | null>(null)
+  const voxcpmBootstrapContextRef = useRef<VoxcpmBootstrapContext | null>(null)
   const [connected, setConnected] = useState(false)
   const [status, setStatus] = useState('待命')
   const [logs, setLogs] = useState<string[]>([])
@@ -1266,6 +1313,8 @@ function App() {
   const [resumeProjectStatus, setResumeProjectStatus] = useState<TrainingProjectStatus | null>(null)
   const [resumeProjectBusy, setResumeProjectBusy] = useState(false)
   const [resumeRebuildConfirmOpen, setResumeRebuildConfirmOpen] = useState(false)
+  const [existingProjectPromptOpen, setExistingProjectPromptOpen] = useState(false)
+  const [existingProjectStatus, setExistingProjectStatus] = useState<TrainingProjectStatus | null>(null)
   const [pendingResumeProjectDir, setPendingResumeProjectDir] = useState('')
   const [pendingResumeProjectStatus, setPendingResumeProjectStatus] = useState<TrainingProjectStatus | null>(null)
   const [aboutDialog, setAboutDialog] = useState<AboutDialogKind>(null)
@@ -1279,6 +1328,10 @@ function App() {
   const [useEspeak, setUseEspeak] = useState(false)
   const [piperConfig, setPiperConfig] = useState('')
   const [device, setDevice] = useState<'cpu' | 'cuda'>('cpu')
+  const [piperRuntimeStatus, setPiperRuntimeStatus] = useState<PiperRuntimeStatus | null>(null)
+  const [piperRuntimeBusy, setPiperRuntimeBusy] = useState(false)
+  const [piperRuntimeProgressMessage, setPiperRuntimeProgressMessage] = useState('')
+  const [piperRuntimeProgressValue, setPiperRuntimeProgressValue] = useState(0)
   const [cudaRuntimeStatus, setCudaRuntimeStatus] = useState<PiperCudaRuntimeStatus | null>(null)
   const [cudaRuntimeBusy, setCudaRuntimeBusy] = useState(false)
   const [cudaRuntimeProgressMessage, setCudaRuntimeProgressMessage] = useState('')
@@ -1291,6 +1344,14 @@ function App() {
   const [voxcpmModelBusy, setVoxcpmModelBusy] = useState(false)
   const [voxcpmModelProgressMessage, setVoxcpmModelProgressMessage] = useState('')
   const [voxcpmModelProgressValue, setVoxcpmModelProgressValue] = useState(0)
+  const [trainerResourcesStatus, setTrainerResourcesStatus] = useState<TrainerResourceStatus | null>(null)
+  const [trainerResourcesBusy, setTrainerResourcesBusy] = useState(false)
+  const [trainerResourcesProgressMessage, setTrainerResourcesProgressMessage] = useState('')
+  const [trainerResourcesProgressValue, setTrainerResourcesProgressValue] = useState(0)
+  const [downloadSourceConfig, setDownloadSourceConfig] = useState<DownloadSourceConfig | null>(null)
+  const [downloadSourceDraft, setDownloadSourceDraft] = useState<DownloadSourceConfig | null>(null)
+  const [downloadSourceBusy, setDownloadSourceBusy] = useState(false)
+  const [downloadSourceDialogOpen, setDownloadSourceDialogOpen] = useState(false)
   const [distillOpts, setDistillOpts] = useState<DistillOptions>(() => {
     try {
       const raw = window.localStorage.getItem(DISTILL_SETTINGS_STORAGE_KEY)
@@ -1335,6 +1396,10 @@ function App() {
   const [voxcpmDistillPreviewAudioPath, setVoxcpmDistillPreviewAudioPath] = useState('')
   const [voxcpmDistillPreviewAudioRev, setVoxcpmDistillPreviewAudioRev] = useState(0)
   const [voxcpmDistillPreviewBusy, setVoxcpmDistillPreviewBusy] = useState(false)
+  const [voxcpmBootstrapPreviewOpen, setVoxcpmBootstrapPreviewOpen] = useState(false)
+  const [voxcpmBootstrapPreviewBusy, setVoxcpmBootstrapPreviewBusy] = useState(false)
+  const [voxcpmBootstrapPreviewAudioPath, setVoxcpmBootstrapPreviewAudioPath] = useState('')
+  const [voxcpmBootstrapPreviewAudioRev, setVoxcpmBootstrapPreviewAudioRev] = useState(0)
   const [previewPlaying, setPreviewPlaying] = useState(false)
   const [previewDuration, setPreviewDuration] = useState(0)
   const [previewCurrentTime, setPreviewCurrentTime] = useState(0)
@@ -1485,6 +1550,12 @@ function App() {
     const sep = base.includes('?') ? '&' : '?'
     return `${base}${sep}v=${voxcpmDistillPreviewAudioRev}`
   }, [voxcpmDistillPreviewAudioPath, voxcpmDistillPreviewAudioRev])
+  const voxcpmBootstrapPreviewAudioSrc = useMemo(() => {
+    if (!voxcpmBootstrapPreviewAudioPath) return ''
+    const base = toFileUrl(voxcpmBootstrapPreviewAudioPath)
+    const sep = base.includes('?') ? '&' : '?'
+    return `${base}${sep}v=${voxcpmBootstrapPreviewAudioRev}`
+  }, [voxcpmBootstrapPreviewAudioPath, voxcpmBootstrapPreviewAudioRev])
   const hasPreviewAudio = Boolean(previewAudioSrc)
   const textContextCaps = useMemo(
     () => getTextContextCapabilities(textContextMenu.target),
@@ -1501,7 +1572,8 @@ function App() {
       : []
   const selectedEmotion = catalogEmotions.find((item) => item.name === distillOpts.emotion) ?? null
   const selectedVoxcpmVoiceMode = VOXCPM_VOICE_MODES.find((item) => item.value === voxcpmOpts.voice_mode) ?? VOXCPM_VOICE_MODES[0]
-  const trainingFabBlockedByBackgroundTask = cudaRuntimeBusy || voxcpmRuntimeBusy || voxcpmModelBusy
+  const trainingFabBlockedByBackgroundTask =
+    piperRuntimeBusy || cudaRuntimeBusy || voxcpmRuntimeBusy || voxcpmModelBusy || trainerResourcesBusy
   const gsviFieldMismatch = {
     gsvAuthor: Boolean(gsviAttributionError) && gsviAttribution.gsvAuthor.trim() !== GSVI_REQUIRED_NAMES.gsvAuthor,
     gsvTrainer: Boolean(gsviAttributionError) && gsviAttribution.gsvTrainer.trim() !== GSVI_REQUIRED_NAMES.gsvTrainer,
@@ -1819,6 +1891,242 @@ function App() {
     return current
   }
 
+  const refreshPiperRuntimeStatus = async (silent = false) => {
+    try {
+      if (!silent) {
+        setPiperRuntimeBusy(true)
+      }
+      const status = await requestBackend<PiperRuntimeStatus>('get_piper_runtime_status', {}, 30000)
+      setPiperRuntimeStatus(status)
+      if (!silent) {
+        appendLog(`[runtime] ${status.message}`)
+      }
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取 Piper 基础运行时状态失败'
+      if (!silent) {
+        showToast(message, 'error')
+      }
+      throw error
+    } finally {
+      if (!silent) {
+        setPiperRuntimeBusy(false)
+        setPiperRuntimeProgressMessage('')
+        setPiperRuntimeProgressValue(0)
+      }
+    }
+  }
+
+  const pickRuntimeArchive = async (title: string) => {
+    const files = await window.dialogs?.openFiles({
+      title,
+      filters: [
+        { name: '7z 包', extensions: ['7z'] },
+        { name: 'All', extensions: ['*'] },
+      ],
+      properties: ['openFile'],
+    })
+    return files?.[0] || ''
+  }
+
+  const cloneDownloadSourceConfig = (config: DownloadSourceConfig): DownloadSourceConfig =>
+    JSON.parse(JSON.stringify(config)) as DownloadSourceConfig
+
+  const refreshDownloadSourceConfig = async (silent = false) => {
+    try {
+      if (!silent) {
+        setDownloadSourceBusy(true)
+      }
+      const config = await requestBackend<DownloadSourceConfig>('get_download_source_config', {}, 30000)
+      setDownloadSourceConfig(config)
+      if (!downloadSourceDraft || !downloadSourceDialogOpen) {
+        setDownloadSourceDraft(cloneDownloadSourceConfig(config))
+      }
+      if (!silent) {
+        appendLog('[runtime] 下载源设置已读取。')
+      }
+      return config
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取下载源设置失败'
+      if (!silent) {
+        showToast(message, 'error')
+      }
+      throw error
+    } finally {
+      if (!silent) {
+        setDownloadSourceBusy(false)
+      }
+    }
+  }
+
+  const openDownloadSourceDialog = async () => {
+    const config = downloadSourceConfig ?? (await refreshDownloadSourceConfig(true).catch(() => null))
+    if (!config) {
+      showToast('暂时无法打开下载源设置，请稍后重试', 'error')
+      return
+    }
+    setDownloadSourceDraft(cloneDownloadSourceConfig(config))
+    setDownloadSourceDialogOpen(true)
+  }
+
+  const updateDownloadSourceDraft = (groupKey: string, sourceId: string, patch: Partial<DownloadSourceItem>) => {
+    setDownloadSourceDraft((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        groups: prev.groups.map((group) =>
+          group.key === groupKey
+            ? {
+                ...group,
+                sources: group.sources.map((source) => (source.id === sourceId ? { ...source, ...patch } : source)),
+              }
+            : group,
+        ),
+      }
+    })
+  }
+
+  const setPreferredDownloadSourceDraft = (groupKey: string, sourceId: string) => {
+    setDownloadSourceDraft((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        preferred_sources: {
+          ...prev.preferred_sources,
+          [groupKey]: sourceId,
+        },
+        groups: prev.groups.map((group) =>
+          group.key === groupKey ? { ...group, preferred_source_id: sourceId } : group,
+        ),
+      }
+    })
+  }
+
+  const savePreferredDownloadSource = async (groupKey: string, sourceId: string) => {
+    const base = downloadSourceConfig
+    if (!base) return
+    const next = cloneDownloadSourceConfig(base)
+    next.preferred_sources = { ...next.preferred_sources, [groupKey]: sourceId }
+    next.groups = next.groups.map((group) =>
+      group.key === groupKey ? { ...group, preferred_source_id: sourceId } : group,
+    )
+    setDownloadSourceConfig(next)
+    try {
+      setDownloadSourceBusy(true)
+      const saved = await requestBackend<DownloadSourceConfig>(
+        'save_download_source_config',
+        {
+          preferred_sources: next.preferred_sources,
+          groups: next.groups,
+        },
+        30000,
+      )
+      setDownloadSourceConfig(saved)
+      setDownloadSourceDraft(cloneDownloadSourceConfig(saved))
+      showToast('优先下载源已保存', 'success')
+    } catch (error) {
+      setDownloadSourceConfig(base)
+      const message = error instanceof Error ? error.message : '保存优先下载源失败'
+      showToast(message, 'error')
+    } finally {
+      setDownloadSourceBusy(false)
+    }
+  }
+
+  const saveDownloadSourceConfig = async () => {
+    if (!downloadSourceDraft) return
+    try {
+      setDownloadSourceBusy(true)
+      const saved = await requestBackend<DownloadSourceConfig>(
+        'save_download_source_config',
+        {
+          preferred_sources: downloadSourceDraft.preferred_sources,
+          groups: downloadSourceDraft.groups,
+        },
+        30000,
+      )
+      setDownloadSourceConfig(saved)
+      setDownloadSourceDraft(cloneDownloadSourceConfig(saved))
+      setDownloadSourceDialogOpen(false)
+      appendLog('[runtime] 下载源设置已保存。')
+      showToast('下载源设置已保存', 'success')
+      void refreshPiperRuntimeStatus(true).catch(() => undefined)
+      void refreshCudaRuntimeStatus(true).catch(() => undefined)
+      void refreshVoxcpmRuntimeStatus(true).catch(() => undefined)
+      void refreshTrainerResourcesStatus(true).catch(() => undefined)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存下载源设置失败'
+      showToast(message, 'error')
+    } finally {
+      setDownloadSourceBusy(false)
+    }
+  }
+
+  const installPiperRuntime = async (force = false, localArchivePath = '') => {
+    const actionLabel = localArchivePath
+      ? '本地安装 Piper 基础运行时'
+      : force
+        ? '重装 Piper 基础运行时'
+        : '安装 Piper 基础运行时'
+    const queued = runtimeInstallQueueDepthRef.current > 0
+    setPiperRuntimeBusy(true)
+    setPiperRuntimeProgressValue(0)
+    setPiperRuntimeProgressMessage(queued ? '已加入运行时安装队列，等待前一个任务完成...' : `正在${actionLabel}...`)
+    if (queued) {
+      appendLog(`[runtime] ${actionLabel} 已加入队列。`)
+    }
+    try {
+      return await enqueueRuntimeInstall<PiperRuntimeStatus>(actionLabel, async () => {
+        try {
+          setPiperRuntimeProgressValue(0)
+          setPiperRuntimeProgressMessage(`正在${actionLabel}...`)
+          const status = await requestBackend<PiperRuntimeStatus>(
+            'install_piper_runtime',
+            { force, local_archive_path: localArchivePath },
+            24 * 60 * 60 * 1000,
+            (id) => {
+              piperRuntimeRequestIdRef.current = id
+            },
+          )
+          setPiperRuntimeStatus(status)
+          setPiperRuntimeProgressValue(1)
+          setPiperRuntimeProgressMessage(status.message)
+          appendLog(`[runtime] ${status.message}`)
+          showToast(status.message, status.available ? 'success' : 'warning')
+          return status
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '安装 Piper 基础运行时失败'
+          setPiperRuntimeProgressMessage(message)
+          appendLog(`[runtime] ${message}`)
+          showToast(message, 'error')
+          throw error
+        } finally {
+          piperRuntimeRequestIdRef.current = null
+        }
+      })
+    } finally {
+      setPiperRuntimeBusy(false)
+    }
+  }
+
+  const openPiperRuntimeDirectory = async () => {
+    const target = piperRuntimeStatus?.env_path || piperRuntimeStatus?.runtime_root || ''
+    if (!target || !window.paths?.openInExplorer) {
+      showToast('当前没有可打开的 Piper 基础运行时目录', 'warning')
+      return
+    }
+    const result = await window.paths.openInExplorer(target)
+    if (!result?.ok) {
+      showToast(result?.message || '打开 Piper 基础运行时目录失败', 'error')
+    }
+  }
+
+  const installPiperRuntimeFromLocal = async () => {
+    const archivePath = await pickRuntimeArchive('选择 Piper 基础运行时 7z 包')
+    if (!archivePath) return
+    await installPiperRuntime(true, archivePath)
+  }
+
   const refreshCudaRuntimeStatus = async (silent = false) => {
     try {
       if (!silent) {
@@ -1845,12 +2153,16 @@ function App() {
     }
   }
 
-  const installCudaRuntime = async (force = false) => {
-    const actionLabel = force ? '重建 Piper CUDA 运行时' : '安装 Piper CUDA 运行时'
+  const installCudaRuntime = async (force = false, localArchivePath = '') => {
+    const actionLabel = localArchivePath
+      ? '本地安装 Piper CUDA 运行时'
+      : force
+        ? '重新解压 Piper CUDA 运行时'
+        : '安装 Piper CUDA 运行时'
     const queued = runtimeInstallQueueDepthRef.current > 0
     setCudaRuntimeBusy(true)
     setCudaRuntimeProgressValue(0)
-    setCudaRuntimeProgressMessage(queued ? '已加入运行时安装队列，等待前一个 CUDA 运行时任务完成...' : `正在${actionLabel}...`)
+    setCudaRuntimeProgressMessage(queued ? '已加入运行时安装队列，等待前一个运行时任务完成...' : `正在${actionLabel}...`)
     if (queued) {
       appendLog(`[runtime] ${actionLabel} 已加入队列。`)
     }
@@ -1861,7 +2173,7 @@ function App() {
           setCudaRuntimeProgressMessage(`正在${actionLabel}...`)
           const status = await requestBackend<PiperCudaRuntimeStatus>(
             'install_piper_cuda_runtime',
-            { force },
+            { force, local_archive_path: localArchivePath },
             60 * 60 * 1000,
             (id) => {
               cudaRuntimeRequestIdRef.current = id
@@ -1900,6 +2212,12 @@ function App() {
     }
   }
 
+  const installCudaRuntimeFromLocal = async () => {
+    const archivePath = await pickRuntimeArchive('选择 Piper CUDA 运行时 7z 包')
+    if (!archivePath) return
+    await installCudaRuntime(true, archivePath)
+  }
+
   const refreshVoxcpmRuntimeStatus = async (silent = false) => {
     try {
       if (!silent) {
@@ -1926,12 +2244,16 @@ function App() {
     }
   }
 
-  const installVoxcpmRuntime = async (force = false) => {
-    const actionLabel = force ? '重建 VoxCPM2 运行时' : '安装 VoxCPM2 运行时'
+  const installVoxcpmRuntime = async (force = false, localArchivePath = '') => {
+    const actionLabel = localArchivePath
+      ? '本地安装 VoxCPM2 运行时'
+      : force
+        ? '重新解压 VoxCPM2 运行时'
+        : '安装 VoxCPM2 运行时'
     const queued = runtimeInstallQueueDepthRef.current > 0
     setVoxcpmRuntimeBusy(true)
     setVoxcpmRuntimeProgressValue(0)
-    setVoxcpmRuntimeProgressMessage(queued ? '已加入运行时安装队列，等待前一个 CUDA 运行时任务完成...' : `正在${actionLabel}...`)
+    setVoxcpmRuntimeProgressMessage(queued ? '已加入运行时安装队列，等待前一个运行时任务完成...' : `正在${actionLabel}...`)
     if (queued) {
       appendLog(`[runtime] ${actionLabel} 已加入队列。`)
     }
@@ -1942,7 +2264,7 @@ function App() {
           setVoxcpmRuntimeProgressMessage(`正在${actionLabel}...`)
           const status = await requestBackend<VoxCpmRuntimeStatus>(
             'install_voxcpm_runtime',
-            { force },
+            { force, local_archive_path: localArchivePath },
             60 * 60 * 1000,
             (id) => {
               voxcpmRuntimeRequestIdRef.current = id
@@ -2038,6 +2360,100 @@ function App() {
     }
   }
 
+  const installVoxcpmRuntimeFromLocal = async () => {
+    const archivePath = await pickRuntimeArchive('选择 VoxCPM2 运行时 7z 包')
+    if (!archivePath) return
+    await installVoxcpmRuntime(true, archivePath)
+  }
+
+  const refreshTrainerResourcesStatus = async (silent = false) => {
+    try {
+      if (!silent) {
+        setTrainerResourcesBusy(true)
+      }
+      const status = await requestBackend<TrainerResourceStatus>('get_trainer_resources_status', {}, 30000)
+      setTrainerResourcesStatus(status)
+      if (!silent) {
+        appendLog(`[runtime] ${status.message}`)
+      }
+      return status
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取训练资源包状态失败'
+      if (!silent) {
+        showToast(message, 'error')
+      }
+      throw error
+    } finally {
+      if (!silent) {
+        setTrainerResourcesBusy(false)
+        setTrainerResourcesProgressMessage('')
+        setTrainerResourcesProgressValue(0)
+      }
+    }
+  }
+
+  const installTrainerResources = async (force = false, localArchivePath = '') => {
+    const actionLabel = localArchivePath ? '本地安装训练资源包' : force ? '重新解压训练资源包' : '安装训练资源包'
+    const queued = runtimeInstallQueueDepthRef.current > 0
+    setTrainerResourcesBusy(true)
+    setTrainerResourcesProgressValue(0)
+    setTrainerResourcesProgressMessage(queued ? '已加入运行时/资源安装队列，等待前一个任务完成...' : `正在${actionLabel}...`)
+    if (queued) {
+      appendLog(`[runtime] ${actionLabel} 已加入队列。`)
+    }
+    try {
+      return await enqueueRuntimeInstall<TrainerResourceStatus>(actionLabel, async () => {
+        try {
+          setTrainerResourcesProgressValue(0)
+          setTrainerResourcesProgressMessage(`正在${actionLabel}...`)
+          const status = await requestBackend<TrainerResourceStatus>(
+            'install_trainer_resources',
+            { force, local_archive_path: localArchivePath },
+            24 * 60 * 60 * 1000,
+            (id) => {
+              trainerResourcesRequestIdRef.current = id
+            },
+          )
+          setTrainerResourcesStatus(status)
+          setTrainerResourcesProgressValue(1)
+          setTrainerResourcesProgressMessage(status.message)
+          appendLog(`[runtime] ${status.message}`)
+          showToast(status.message, status.available ? 'success' : 'warning')
+          send('get_defaults')
+          return status
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '安装训练资源包失败'
+          setTrainerResourcesProgressMessage(message)
+          appendLog(`[runtime] ${message}`)
+          showToast(message, 'error')
+          throw error
+        } finally {
+          trainerResourcesRequestIdRef.current = null
+        }
+      })
+    } finally {
+      setTrainerResourcesBusy(false)
+    }
+  }
+
+  const installTrainerResourcesFromLocal = async () => {
+    const archivePath = await pickRuntimeArchive('选择训练资源 7z 包')
+    if (!archivePath) return
+    await installTrainerResources(true, archivePath)
+  }
+
+  const openTrainerResourcesDirectory = async () => {
+    const target = trainerResourcesStatus?.active_resources_root || trainerResourcesStatus?.resources_parent || ''
+    if (!target || !window.paths?.openInExplorer) {
+      showToast('当前没有可打开的训练资源目录', 'warning')
+      return
+    }
+    const result = await window.paths.openInExplorer(target)
+    if (!result?.ok) {
+      showToast(result?.message || '打开训练资源目录失败', 'error')
+    }
+  }
+
   const openVoxcpmModelDirectory = async () => {
     const target = voxcpmModelStatus?.model_root || ''
     if (!target || !window.paths?.openInExplorer) {
@@ -2051,11 +2467,11 @@ function App() {
   }
 
   const requestBackendRestart = () => {
-    rejectPendingRequests('后端已重启，请重试')
+    rejectPendingRequests('后台服务已重启，请重试')
     window.backend?.restart?.()
     setConnected(false)
-    appendLog('[SYS] 已请求后端重启')
-    showToast('已请求后端重启', 'info')
+    appendLog('[SYS] 已请求后台服务重启')
+    showToast('已请求后台服务重启', 'info')
     setTimeout(() => {
       pingRequestIdRef.current = send('ping')
     }, 1200)
@@ -2072,7 +2488,7 @@ function App() {
     setActiveRunMode(null)
     setCurrentStage('idle')
     setStatus('中止训练中...')
-    appendLog('[SYS] 已请求中止训练，正在重启后端...')
+      appendLog('[SYS] 已请求中止训练，正在重启后台服务...')
     showToast('已请求中止训练', 'warning')
     window.backend?.restart?.()
     setConnected(false)
@@ -2083,7 +2499,7 @@ function App() {
 
   useEffect(() => {
     if (!window.backend) {
-      appendLog('未检测到后端桥接。')
+      appendLog('未检测到后台服务连接。')
       return
     }
     const offBackendEvent = window.backend.onEvent((evt) => {
@@ -2101,14 +2517,17 @@ function App() {
             abortingPipelineRef.current = false
             setStatus('训练已中止')
           }
-          showToast('后端已连接', 'success')
+          showToast('后台服务已连接', 'success')
           if (!defaultsRequested.current) {
             defaultsRequested.current = true
             send('get_defaults')
           }
+          void refreshPiperRuntimeStatus(true).catch(() => undefined)
           void refreshCudaRuntimeStatus(true).catch(() => undefined)
           void refreshVoxcpmRuntimeStatus(true).catch(() => undefined)
           void refreshVoxcpmModelStatus(true).catch(() => undefined)
+          void refreshTrainerResourcesStatus(true).catch(() => undefined)
+          void refreshDownloadSourceConfig(true).catch(() => undefined)
         }
         return
       }
@@ -2141,12 +2560,18 @@ function App() {
             if (evt.id === cudaRuntimeRequestIdRef.current) {
               setCudaRuntimeProgressMessage(msg)
               setCudaRuntimeProgressValue(value)
+            } else if (evt.id === piperRuntimeRequestIdRef.current) {
+              setPiperRuntimeProgressMessage(msg)
+              setPiperRuntimeProgressValue(value)
             } else if (evt.id === voxcpmRuntimeRequestIdRef.current) {
               setVoxcpmRuntimeProgressMessage(msg)
               setVoxcpmRuntimeProgressValue(value)
             } else if (evt.id === voxcpmModelRequestIdRef.current) {
               setVoxcpmModelProgressMessage(msg)
               setVoxcpmModelProgressValue(value)
+            } else if (evt.id === trainerResourcesRequestIdRef.current) {
+              setTrainerResourcesProgressMessage(msg)
+              setTrainerResourcesProgressValue(value)
             }
             setStatus(msg)
           }
@@ -2214,11 +2639,24 @@ function App() {
           showToast(errMsg || 'VoxCPM2 试听失败', 'error')
           return
         }
+        if (evt.id === voxcpmBootstrapPreviewRequestIdRef.current) {
+          voxcpmBootstrapPreviewRequestIdRef.current = null
+          setVoxcpmBootstrapPreviewBusy(false)
+          setStatus('VoxCPM2 音色预览失败')
+          appendLog(`[ERROR] ${errMsg}`)
+          if (evt.traceback) {
+            appendLog(evt.traceback)
+          }
+          showToast(errMsg || 'VoxCPM2 音色预览失败', 'error')
+          return
+        }
         const backendFatal =
           errMsg.includes('Backend exited') ||
           errMsg.includes('Backend parse error') ||
           errMsg.includes('Python not found') ||
-          errMsg.includes('JSON 解析失败')
+          errMsg.includes('后台服务') ||
+          errMsg.includes('启动组件缺失') ||
+          errMsg.includes('请求格式不正确')
         if (abortingPipelineRef.current && backendFatal) {
           setStatus('训练已中止')
           setPipelineRunning(false)
@@ -2272,6 +2710,21 @@ function App() {
             showToast('VoxCPM2 试听生成完成', 'success')
           } else {
             showToast('试听生成完成，但未返回音频路径', 'warning')
+          }
+          return
+        }
+        if (evt.id === voxcpmBootstrapPreviewRequestIdRef.current) {
+          voxcpmBootstrapPreviewRequestIdRef.current = null
+          setVoxcpmBootstrapPreviewBusy(false)
+          setStatus('VoxCPM2 音色预览完成')
+          if (outPath) {
+            setVoxcpmBootstrapPreviewAudioPath(outPath)
+            setVoxcpmBootstrapPreviewAudioRev((prev) => prev + 1)
+            setVoxcpmBootstrapPreviewOpen(true)
+            appendLog(`[preview] VoxCPM2 音色预览生成: ${outPath}`)
+            showToast('VoxCPM2 音色预览生成完成', 'success')
+          } else {
+            showToast('音色预览生成完成，但未返回音频路径', 'warning')
           }
           return
         }
@@ -2685,7 +3138,7 @@ function App() {
       const presetPath =
         (await window.fsBridge?.ensureTextPresetFile?.(selectedDistillPreset.fileName, presetContent)) || ''
       if (!presetPath) {
-        throw new Error('写入内置预设文本失败')
+        throw new Error('添加预设文本失败，请检查输出目录是否可写。')
       }
       addDistillSources([
         {
@@ -2962,8 +3415,8 @@ function App() {
 
   const startPreview = () => {
     if (!connected) {
-      setStatus('后端未连接')
-      showToast('后端未连接', 'error')
+      setStatus('后台服务未连接')
+      showToast('后台服务未连接', 'error')
       return
     }
     if (pipelineRunning) {
@@ -3024,6 +3477,7 @@ function App() {
     sample_steps: Math.max(1, Number(distillOpts.sample_steps) || 16),
     speed_factor: Math.max(0.1, Number(distillOpts.speed_factor) || 1),
     temperature: Math.max(0, Number(distillOpts.temperature) || 1),
+    parallel_workers: Math.max(1, Math.floor(Number(distillOpts.parallel_workers) || 1)),
   })
 
   const buildVoxcpmPreviewPayload = (): VoxCpmDistillOptions => ({
@@ -3031,7 +3485,8 @@ function App() {
     device: voxcpmOpts.device === 'cpu' ? 'cpu' : 'cuda',
     voice_mode: voxcpmOpts.voice_mode,
     voice_description: voxcpmOpts.voice_description.trim(),
-    reference_audio: voxcpmOpts.reference_audio.trim(),
+    reference_audio: voxcpmOpts.voice_mode === 'description' ? '' : voxcpmOpts.reference_audio.trim(),
+    voice_reference_text: voxcpmOpts.voice_reference_text.trim() || VOXCPM_BOOTSTRAP_REFERENCE_TEXT_DEFAULT,
     prompt_text: voxcpmOpts.prompt_text.trim(),
     cfg_value: Math.max(0.1, Number(voxcpmOpts.cfg_value) || 2),
     inference_timesteps: Math.max(1, Math.floor(Number(voxcpmOpts.inference_timesteps) || 10)),
@@ -3039,11 +3494,12 @@ function App() {
     max_len: Math.max(1, Math.floor(Number(voxcpmOpts.max_len) || 4096)),
     retry_badcase_max_times: Math.max(0, Math.floor(Number(voxcpmOpts.retry_badcase_max_times) || 3)),
     retry_badcase_ratio_threshold: Math.max(0.1, Number(voxcpmOpts.retry_badcase_ratio_threshold) || 6),
+    parallel_workers: Math.max(1, Math.floor(Number(voxcpmOpts.parallel_workers) || 1)),
   })
 
   const startGsvDistillPreview = () => {
     if (!connected) {
-      showToast('后端未连接', 'error')
+      showToast('后台服务未连接', 'error')
       return
     }
     if (pipelineRunning || previewBusy || gsvDistillPreviewBusy || voxcpmDistillPreviewBusy) {
@@ -3074,7 +3530,7 @@ function App() {
 
   const startVoxcpmDistillPreview = () => {
     if (!connected) {
-      showToast('后端未连接', 'error')
+      showToast('后台服务未连接', 'error')
       return
     }
     if (pipelineRunning || previewBusy || gsvDistillPreviewBusy || voxcpmDistillPreviewBusy) {
@@ -3245,11 +3701,53 @@ function App() {
     })
   }
 
+  const launchWithExistingProjectCheck = async (outputDir: string, startFresh: () => void) => {
+    try {
+      const status = await requestBackend<TrainingProjectStatus>('inspect_training_project', { project_dir: outputDir }, 30000)
+      if (status?.has_project && status.mode && status.mode !== 'resume_project') {
+        pendingFreshStartRef.current = startFresh
+        pendingExistingProjectDirRef.current = outputDir
+        setExistingProjectStatus(status)
+        setExistingProjectPromptOpen(true)
+        return
+      }
+    } catch {
+      // No valid project snapshot means this is a normal fresh run.
+    }
+    startFresh()
+  }
+
   const launchResumeProjectPipeline = (projectDir: string) => {
     beginPipelineRun('resume_project', 'collect', '旧项目继续训练任务启动中...', '旧项目继续训练任务已启动')
     send('start_resume_project_pipeline', {
       project_dir: projectDir,
     })
+  }
+
+  const continueExistingOutputProject = () => {
+    const projectDir = pendingExistingProjectDirRef.current
+    setExistingProjectPromptOpen(false)
+    setExistingProjectStatus(null)
+    pendingFreshStartRef.current = null
+    pendingExistingProjectDirRef.current = ''
+    if (!projectDir) {
+      showToast('旧项目路径已失效，请重新开始训练。', 'warning')
+      return
+    }
+    launchResumeProjectPipeline(projectDir)
+  }
+
+  const restartExistingOutputProject = () => {
+    const startFresh = pendingFreshStartRef.current
+    setExistingProjectPromptOpen(false)
+    setExistingProjectStatus(null)
+    pendingFreshStartRef.current = null
+    pendingExistingProjectDirRef.current = ''
+    if (!startFresh) {
+      showToast('训练启动上下文已失效，请重新点击开始训练。', 'warning')
+      return
+    }
+    startFresh()
   }
 
   const openResumeRebuildConfirm = (projectDir: string, projectStatus: TrainingProjectStatus) => {
@@ -3314,15 +3812,66 @@ function App() {
     launchDistillPipeline(pending.outputDir, pending.commonOpts, pending.distillPayload)
   }
 
+  const startVoxcpmBootstrapPreview = (context: VoxcpmBootstrapContext) => {
+    voxcpmBootstrapContextRef.current = context
+    setVoxcpmBootstrapPreviewBusy(true)
+    setVoxcpmBootstrapPreviewAudioPath('')
+    setVoxcpmBootstrapPreviewAudioRev((prev) => prev + 1)
+    setStatus('VoxCPM2 音色预览生成中...')
+    const id = send('preview_voxcpm_distill', {
+      output_dir: context.outputDir,
+      text: context.referenceText,
+      opts: context.commonOpts,
+      voxcpm: context.sourcePayload,
+    })
+    voxcpmBootstrapPreviewRequestIdRef.current = id
+  }
+
+  const confirmVoxcpmBootstrapVoice = () => {
+    const context = voxcpmBootstrapContextRef.current
+    if (!context || !voxcpmBootstrapPreviewAudioPath) {
+      showToast('音色预览上下文已失效，请重新生成。', 'warning')
+      return
+    }
+    const highFidelityPayload: VoxCpmDistillOptions = {
+      ...context.sourcePayload,
+      voice_mode: 'high_fidelity',
+      reference_audio: voxcpmBootstrapPreviewAudioPath,
+      prompt_text: context.referenceText,
+      voice_reference_text: context.referenceText,
+      voice_description: context.sourcePayload.voice_description,
+    }
+    setVoxcpmOpts((prev) => ({
+      ...prev,
+      voice_mode: 'high_fidelity',
+      reference_audio: voxcpmBootstrapPreviewAudioPath,
+      prompt_text: context.referenceText,
+      voice_reference_text: context.referenceText,
+    }))
+    setVoxcpmBootstrapPreviewOpen(false)
+    voxcpmBootstrapContextRef.current = null
+    launchVoxcpmPipeline(context.outputDir, context.commonOpts, highFidelityPayload)
+  }
+
+  const regenerateVoxcpmBootstrapVoice = () => {
+    const context = voxcpmBootstrapContextRef.current
+    if (!context) {
+      showToast('音色预览上下文已失效，请重新点击开始训练。', 'warning')
+      setVoxcpmBootstrapPreviewOpen(false)
+      return
+    }
+    startVoxcpmBootstrapPreview(context)
+  }
+
   const startPipeline = async () => {
     if (!connected) {
-      setStatus('后端未连接')
-      showToast('后端未连接', 'error')
+      setStatus('后台服务未连接')
+      showToast('后台服务未连接', 'error')
       return
     }
     if (trainingFabBlockedByBackgroundTask) {
-      setStatus('环境安装或模型下载中')
-      showToast('当前正在安装运行时或下载模型，请等待后台任务完成后再开始训练', 'warning')
+      setStatus('环境安装、资源解压或模型下载中')
+      showToast('当前正在安装运行时、解压资源包或下载模型，请等待后台任务完成后再开始训练', 'warning')
       return
     }
     if (previewBusy) {
@@ -3373,6 +3922,15 @@ function App() {
         showToast('Piper CUDA 运行时已安装，但当前机器未检测到可用 CUDA', 'warning')
         return
       }
+    } else {
+      const runtimeStatus = piperRuntimeStatus?.available
+        ? piperRuntimeStatus
+        : await refreshPiperRuntimeStatus(true).catch(() => null)
+      if (!runtimeStatus?.available) {
+        setStatus('请先安装 Piper 基础运行时')
+        showToast('当前未安装 Piper 基础运行时，请先在训练设置里下载解压 7z 运行时包', 'warning')
+        return
+      }
     }
 
     const commonOpts = buildCommonOptsPayload()
@@ -3412,17 +3970,21 @@ function App() {
         sample_steps: Math.max(1, Number(distillOpts.sample_steps) || 16),
         speed_factor: Math.max(0.1, Number(distillOpts.speed_factor) || 1),
         temperature: Math.max(0, Number(distillOpts.temperature) || 1),
+        parallel_workers: Math.max(1, Math.floor(Number(distillOpts.parallel_workers) || 1)),
       }
       const pendingStart = {
         outputDir: effectiveOutputDir,
         commonOpts,
         distillPayload,
       }
-      if (shouldSkipGsviPrompt()) {
-        launchDistillPipeline(pendingStart.outputDir, pendingStart.commonOpts, pendingStart.distillPayload)
-        return
+      const startFresh = () => {
+        if (shouldSkipGsviPrompt()) {
+          launchDistillPipeline(pendingStart.outputDir, pendingStart.commonOpts, pendingStart.distillPayload)
+          return
+        }
+        openGsviConfirmationFlow(pendingStart)
       }
-      openGsviConfirmationFlow(pendingStart)
+      await launchWithExistingProjectCheck(effectiveOutputDir, startFresh)
       return
     }
 
@@ -3445,6 +4007,11 @@ function App() {
       if (voxcpmOpts.voice_mode === 'description' && !voxcpmOpts.voice_description.trim()) {
         setStatus('请先填写音色描述')
         showToast('声音设定模式需要填写音色描述', 'warning')
+        return
+      }
+      if (voxcpmOpts.voice_mode !== 'high_fidelity' && !voxcpmOpts.voice_reference_text.trim()) {
+        setStatus('请先填写音色参考文本')
+        showToast('声音设定和可控声音克隆需要填写一段音色参考文本', 'warning')
         return
       }
       if (voxcpmOpts.voice_mode !== 'description' && !voxcpmOpts.reference_audio.trim()) {
@@ -3476,7 +4043,8 @@ function App() {
         device: voxcpmOpts.device === 'cpu' ? 'cpu' : 'cuda',
         voice_mode: voxcpmOpts.voice_mode,
         voice_description: voxcpmOpts.voice_description.trim(),
-        reference_audio: voxcpmOpts.reference_audio.trim(),
+        reference_audio: voxcpmOpts.voice_mode === 'description' ? '' : voxcpmOpts.reference_audio.trim(),
+        voice_reference_text: voxcpmOpts.voice_reference_text.trim() || VOXCPM_BOOTSTRAP_REFERENCE_TEXT_DEFAULT,
         prompt_text: voxcpmOpts.prompt_text.trim(),
         cfg_value: Math.max(0.1, Number(voxcpmOpts.cfg_value) || 2),
         inference_timesteps: Math.max(1, Math.floor(Number(voxcpmOpts.inference_timesteps) || 10)),
@@ -3484,8 +4052,21 @@ function App() {
         max_len: Math.max(1, Math.floor(Number(voxcpmOpts.max_len) || 4096)),
         retry_badcase_max_times: Math.max(0, Math.floor(Number(voxcpmOpts.retry_badcase_max_times) || 3)),
         retry_badcase_ratio_threshold: Math.max(0.1, Number(voxcpmOpts.retry_badcase_ratio_threshold) || 6),
+        parallel_workers: Math.max(1, Math.floor(Number(voxcpmOpts.parallel_workers) || 1)),
       }
-      launchVoxcpmPipeline(effectiveOutputDir, commonOpts, voxcpmPayload)
+      const startFresh = () => {
+        if (voxcpmPayload.voice_mode === 'description' || voxcpmPayload.voice_mode === 'controlled_clone') {
+          startVoxcpmBootstrapPreview({
+            outputDir: effectiveOutputDir,
+            commonOpts,
+            sourcePayload: voxcpmPayload,
+            referenceText: voxcpmPayload.voice_reference_text,
+          })
+          return
+        }
+        launchVoxcpmPipeline(effectiveOutputDir, commonOpts, voxcpmPayload)
+      }
+      await launchWithExistingProjectCheck(effectiveOutputDir, startFresh)
       return
     }
 
@@ -3495,11 +4076,13 @@ function App() {
       return
     }
 
-    beginPipelineRun('piper', 'preprocess', '任务启动中...', '任务已启动')
-    send('start_pipeline', {
-      input_audio: audioFiles,
-      output_dir: effectiveOutputDir,
-      opts: commonOpts,
+    await launchWithExistingProjectCheck(effectiveOutputDir, () => {
+      beginPipelineRun('piper', 'preprocess', '任务启动中...', '任务已启动')
+      send('start_pipeline', {
+        input_audio: audioFiles,
+        output_dir: effectiveOutputDir,
+        opts: commonOpts,
+      })
     })
   }
 
@@ -3600,7 +4183,7 @@ function App() {
                 setResumeProjectStatus(null)
                 void inspectResumeProject(value)
               }}
-              helperText="选择包含 work/metadata.csv 和 work/kigtts_project.json 的项目目录"
+              helperText="选择之前创建的训练项目目录，软件会自动检查可继续使用的素材。"
               placeholder="选择旧训练项目根目录"
             />
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
@@ -3615,7 +4198,7 @@ function App() {
                 检查项目
               </Button>
               <Typography variant="caption" sx={{ alignSelf: 'center', opacity: 0.72 }}>
-                该模式会使用项目内保存的训练参数和蒸馏配置，不再使用当前页面的文本来源配置。
+                继续训练会优先使用旧项目保存的设置和素材；当前页面的文本来源不会覆盖旧项目。
               </Typography>
             </Stack>
             {resumeProjectStatus && (
@@ -3632,7 +4215,7 @@ function App() {
                       size="small"
                       label={`模式：${TRAINING_MODE_LABELS[String(resumeProjectStatus.mode || '')] || resumeProjectStatus.mode || '未知'}`}
                     />
-                    <Chip size="small" label={`metadata：${resumeProjectStatus.metadata_count ?? 0} 条`} />
+                    <Chip size="small" label={`文本记录：${resumeProjectStatus.metadata_count ?? 0} 条`} />
                     <Chip size="small" label={`可用音频：${resumeProjectStatus.existing_count ?? 0} 条`} />
                     <Chip
                       size="small"
@@ -4078,6 +4661,14 @@ function App() {
               />
 
               <NumberField
+                label="并行合成路数"
+                value={distillOpts.parallel_workers}
+                onChangeValue={(value) => setDistillOpts((prev) => ({ ...prev, parallel_workers: Math.max(1, Math.floor(value || 1)) }))}
+                inputProps={{ step: 1, min: 1 }}
+                helperText="同时启动多路合成进程，显存占用会同步增加"
+              />
+
+              <NumberField
                 label="随机种子"
                 value={distillOpts.seed}
                 onChangeValue={(value) => setDistillOpts((prev) => ({ ...prev, seed: Math.trunc(value || -1) }))}
@@ -4243,16 +4834,26 @@ function App() {
                     }}
                     disabled={voxcpmRuntimeBusy || pipelineRunning}
                   >
-                    {voxcpmRuntimeStatus?.available ? '重建运行时' : '安装运行时'}
+                    {voxcpmRuntimeStatus?.available ? '重新解压' : '安装运行时'}
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    startIcon={<MsIcon name="upload_file" size={18} />}
+                    onClick={() => {
+                      void installVoxcpmRuntimeFromLocal()
+                    }}
+                    disabled={voxcpmRuntimeBusy || pipelineRunning}
+                  >
+                    本地安装
                   </Button>
                 </Box>
               </Stack>
               <Box sx={{ minWidth: 0 }}>
                 <Typography variant="body2" sx={{ opacity: 0.78 }}>
-                  首次使用会在线创建 voxcpm_env，并安装 PyTorch 2.5+ / CUDA 12 相关依赖。安装前会自动测速 Conda / PyPI / PyTorch CUDA wheel 镜像，优先使用当前最快可达源并自动换源。软件本体不内置 CUDA 运行时。
+                  VoxCPM2 运行时用于生成蒸馏语料。首次使用 VoxCPM2 蒸馏前需要先安装。
                 </Typography>
                 <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
-                  候选源：Conda 含南科大/上交/清华/北外/中科大/南大/官方；PyPI 含阿里/北外/腾讯/上交/南科大等；PyTorch wheel 含阿里/上交/官方。
+                  软件会自动选择可用下载源；也可以选择你已经下载好的本地 7z 文件安装。
                 </Typography>
               </Box>
 
@@ -4360,7 +4961,7 @@ function App() {
                 </Box>
               </Stack>
               <Typography variant="body2" sx={{ opacity: 0.78 }}>
-                主模型与 denoiser 从 ModelScope 下载到用户数据目录，打包产物不会包含这些权重。
+                VoxCPM2 主模型和 denoiser 需要单独下载。下载后会保存在本机，之后可直接复用。
               </Typography>
 
               {(voxcpmModelBusy || voxcpmModelProgressMessage) && (
@@ -4387,10 +4988,10 @@ function App() {
                   <Stack spacing={0.5}>
                     <Typography variant="body2">{voxcpmModelStatus.message}</Typography>
                     <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                      主模型：{voxcpmModelStatus.main_repo} {'->'} {voxcpmModelStatus.main_model_dir}
+                      主模型：{voxcpmModelStatus.main_available ? '已下载' : '未下载'}（{voxcpmModelStatus.main_repo}）
                     </Typography>
                     <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                      denoiser：{voxcpmModelStatus.denoiser_repo} {'->'} {voxcpmModelStatus.denoiser_model_dir}
+                      denoiser：{voxcpmModelStatus.denoiser_available ? '已下载' : '未下载'}（{voxcpmModelStatus.denoiser_repo}）
                     </Typography>
                   </Stack>
                 </Alert>
@@ -4447,6 +5048,17 @@ function App() {
                       ? '官方格式会把描述包在括号中放到文本前，例如：年轻女性，温柔甜美，语速自然。'
                       : '可选。用于控制情绪、语速、语气；不填则按参考音频音色直接克隆。'
                   }
+                />
+              )}
+              {voxcpmOpts.voice_mode !== 'high_fidelity' && (
+                <TextField
+                  label="音色参考文本"
+                  value={voxcpmOpts.voice_reference_text}
+                  onChange={(event) => setVoxcpmOpts((prev) => ({ ...prev, voice_reference_text: event.target.value }))}
+                  multiline
+                  minRows={2}
+                  fullWidth
+                  helperText="开始训练时会先用这段文本生成音色预览；确认后自动作为高保真克隆的参考文本继续训练。"
                 />
               )}
               {voxcpmOpts.voice_mode !== 'description' && (
@@ -4615,6 +5227,13 @@ function App() {
                 value={voxcpmOpts.inference_timesteps}
                 onChangeValue={(value) => setVoxcpmOpts((prev) => ({ ...prev, inference_timesteps: Math.max(1, value || 1) }))}
                 inputProps={{ step: 1, min: 1 }}
+              />
+              <NumberField
+                label="并行合成路数"
+                value={voxcpmOpts.parallel_workers}
+                onChangeValue={(value) => setVoxcpmOpts((prev) => ({ ...prev, parallel_workers: Math.max(1, Math.floor(value || 1)) }))}
+                inputProps={{ step: 1, min: 1 }}
+                helperText="同时启动多路合成进程，默认 1 路"
               />
               <NumberField
                 label="max_len"
@@ -4900,12 +5519,12 @@ function App() {
             }}
           />
           <TextField
-            label="训练 batch_size"
+            label="训练批量大小"
             value={trainBatchSize}
             onChange={(e) => setTrainBatchSize(e.target.value)}
             fullWidth
             size="small"
-            helperText="显存不足时会自动降级重试"
+            helperText="显存不足时会自动减小这个数并重试"
             InputProps={{
               endAdornment: trainBatchSize ? (
                 <InputAdornment position="end">
@@ -4923,7 +5542,7 @@ function App() {
             />
           </Box>
           <PathField
-            label="ASR 模型 zip"
+            label="语音识别模型包"
             value={asrModel}
             onChange={setAsrModel}
             onPick={pickAsrModel}
@@ -4931,7 +5550,7 @@ function App() {
             onDropFiles={saveDroppedFileSingle}
           />
           <PathField
-            label="Piper 基线 ckpt (可选)"
+            label="Piper 基线模型（可选）"
             value={baseCkpt}
             onChange={setBaseCkpt}
             onPick={pickBaseCkpt}
@@ -4940,10 +5559,10 @@ function App() {
           />
           <FormControlLabel
             control={<Switch checked={useEspeak} onChange={(e) => setUseEspeak(e.target.checked)} />}
-            label="使用 espeak-ng (兼容基线)"
+            label="使用兼容发音模式（espeak-ng）"
           />
           <PathField
-            label="Piper config.json"
+            label="Piper 发音配置"
             value={piperConfig}
             onChange={setPiperConfig}
             onPick={pickPiperConfig}
@@ -4958,6 +5577,334 @@ function App() {
             </Select>
           </FormControl>
         </Box>
+      </Paper>
+
+      <Paper sx={cardPaperSx}>
+        <Stack spacing={1.5}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between">
+            <Stack spacing={0.25}>
+              <Typography variant="subtitle1" fontWeight={600}>
+                下载源设置
+              </Typography>
+              <Typography variant="body2" sx={{ opacity: 0.72 }}>
+                软件会优先使用你选择的下载源；如果该源暂时不可用，会自动尝试同一组里的其它链接。
+              </Typography>
+            </Stack>
+            <Box sx={runtimeActionRowSx}>
+              <Button
+                variant="outlined"
+                startIcon={<MsIcon name="refresh" size={18} />}
+                onClick={() => {
+                  void refreshDownloadSourceConfig()
+                }}
+                disabled={downloadSourceBusy || pipelineRunning}
+              >
+                刷新配置
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<MsIcon name="edit" size={18} />}
+                onClick={() => {
+                  void openDownloadSourceDialog()
+                }}
+                disabled={downloadSourceBusy || pipelineRunning}
+              >
+                编辑链接
+              </Button>
+            </Box>
+          </Stack>
+
+          {downloadSourceConfig ? (
+            <Stack spacing={1}>
+              {downloadSourceConfig.groups.map((group) => {
+                const selectableSources = group.sources.length ? group.sources : [{ id: '', label: '未配置', url: '' }]
+                const selected = group.preferred_source_id || downloadSourceConfig.preferred_sources[group.key] || selectableSources[0]?.id || ''
+                const configuredCount = group.sources.filter((source) => source.url.trim()).length
+                return (
+                  <Stack
+                    key={group.key}
+                    direction={{ xs: 'column', md: 'row' }}
+                    spacing={1}
+                    alignItems={{ xs: 'stretch', md: 'center' }}
+                    justifyContent="space-between"
+                    sx={{ py: 0.75 }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" fontWeight={600}>
+                        {group.label}
+                      </Typography>
+                      <Typography variant="caption" sx={{ opacity: 0.68 }}>
+                        已填写 {configuredCount}/{group.sources.length} 个源
+                      </Typography>
+                    </Box>
+                    <FormControl size="small" sx={{ minWidth: { xs: '100%', md: 260 } }}>
+                      <InputLabel>优先下载源</InputLabel>
+                      <Select
+                        value={selected}
+                        label="优先下载源"
+                        onChange={(event) => {
+                          void savePreferredDownloadSource(group.key, String(event.target.value))
+                        }}
+                        disabled={downloadSourceBusy || pipelineRunning || !group.sources.length}
+                      >
+                        {selectableSources.map((source) => (
+                          <MenuItem key={source.id || 'empty'} value={source.id}>
+                            {source.label}{source.url.trim() ? '' : '（未填写链接）'}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Stack>
+                )
+              })}
+              <Typography variant="caption" sx={{ opacity: 0.64 }}>
+                可在“编辑链接”中填写或调整 ModelScope、Hugging Face 等下载地址。
+              </Typography>
+            </Stack>
+          ) : (
+            <Alert severity="info">尚未读取下载源设置。</Alert>
+          )}
+        </Stack>
+      </Paper>
+
+      <Paper sx={cardPaperSx}>
+        <Stack spacing={1.5}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+              <Typography variant="subtitle1" fontWeight={600}>
+                训练资源包
+              </Typography>
+              <Chip
+                size="small"
+                color={getTrainerResourcesChipColor(trainerResourcesStatus)}
+                label={getTrainerResourcesChipLabel(trainerResourcesStatus)}
+              />
+            </Stack>
+            <Box sx={runtimeActionRowSx}>
+              <Button
+                variant="outlined"
+                startIcon={<MsIcon name="refresh" size={18} />}
+                onClick={() => {
+                  void refreshTrainerResourcesStatus()
+                }}
+                disabled={trainerResourcesBusy || pipelineRunning}
+              >
+                刷新状态
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<MsIcon name={trainerResourcesStatus?.external_available ? 'archive' : 'download'} size={18} />}
+                onClick={() => {
+                  void installTrainerResources(Boolean(trainerResourcesStatus?.external_available))
+                }}
+                disabled={trainerResourcesBusy || pipelineRunning}
+              >
+                {trainerResourcesStatus?.external_available ? '重新解压' : '下载解压'}
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<MsIcon name="upload_file" size={18} />}
+                onClick={() => {
+                  void installTrainerResourcesFromLocal()
+                }}
+                disabled={trainerResourcesBusy || pipelineRunning}
+              >
+                本地安装
+              </Button>
+            </Box>
+          </Stack>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="body2" sx={{ opacity: 0.78 }}>
+              首次训练前需要准备训练资源包，里面包含 ASR 模型、Piper 基线、发音字典和 espeak-ng 等必要资源。
+            </Typography>
+            <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
+              可以在线下载，也可以选择你已经下载好的本地 7z 文件安装。
+            </Typography>
+          </Box>
+
+          {(trainerResourcesBusy || trainerResourcesProgressMessage) && (
+            <Stack spacing={0.75}>
+              {trainerResourcesBusy && (
+                <LinearProgress
+                  variant={trainerResourcesProgressValue > 0 ? 'determinate' : 'indeterminate'}
+                  value={Math.min(100, Math.max(0, trainerResourcesProgressValue * 100))}
+                />
+              )}
+              {trainerResourcesBusy && trainerResourcesProgressValue > 0 && (
+                <Typography variant="caption" sx={{ opacity: 0.68 }}>
+                  安装进度：{Math.round(trainerResourcesProgressValue * 100)}%
+                </Typography>
+              )}
+              <Typography variant="caption" sx={{ opacity: 0.78 }}>
+                {trainerResourcesProgressMessage || '正在处理训练资源包...'}
+              </Typography>
+            </Stack>
+          )}
+
+          {trainerResourcesStatus && (
+            <Alert
+              severity={
+                trainerResourcesStatus.status === 'error'
+                  ? 'error'
+                  : trainerResourcesStatus.external_available
+                    ? 'success'
+                    : trainerResourcesStatus.available
+                      ? 'warning'
+                      : 'info'
+              }
+            >
+              <Stack spacing={0.5}>
+                <Typography variant="body2">{trainerResourcesStatus.message}</Typography>
+                <Typography variant="caption" sx={{ opacity: 0.8, wordBreak: 'break-all' }}>
+                  当前资源目录：{trainerResourcesStatus.active_resources_root || '未找到'}
+                </Typography>
+                <Typography variant="caption" sx={{ opacity: 0.8, wordBreak: 'break-all' }}>
+                  外置资源目录：{trainerResourcesStatus.resources_root}
+                </Typography>
+                <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                  ASR 模型：{trainerResourcesStatus.asr_model_count ?? 0} / Piper 基线：{trainerResourcesStatus.piper_checkpoint_count ?? 0}
+                  {trainerResourcesStatus.phonemizer_available ? ' / phonemizer 已就绪' : ' / phonemizer 缺失'}
+                  {trainerResourcesStatus.espeak_available ? ' / espeak-ng 已就绪' : ' / espeak-ng 缺失'}
+                </Typography>
+                {trainerResourcesStatus.source_label && (
+                  <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                    安装来源：{trainerResourcesStatus.source_label}
+                  </Typography>
+                )}
+              </Stack>
+            </Alert>
+          )}
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+            <Button
+              variant="outlined"
+              startIcon={<MsIcon name="folder_open" size={18} />}
+              onClick={() => {
+                void openTrainerResourcesDirectory()
+              }}
+              disabled={trainerResourcesBusy || !trainerResourcesStatus}
+            >
+              打开资源目录
+            </Button>
+            <Typography variant="caption" sx={{ alignSelf: 'center', opacity: 0.72 }}>
+              安装完成后会自动刷新默认模型和基线路径。
+            </Typography>
+          </Stack>
+        </Stack>
+      </Paper>
+
+      <Paper sx={cardPaperSx}>
+        <Stack spacing={1.5}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.25} alignItems={{ xs: 'flex-start', md: 'center' }} justifyContent="space-between">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+              <Typography variant="subtitle1" fontWeight={600}>
+                Piper 基础运行时
+              </Typography>
+              <Chip
+                size="small"
+                color={getPiperRuntimeChipColor(piperRuntimeStatus)}
+                label={getPiperRuntimeChipLabel(piperRuntimeStatus)}
+              />
+            </Stack>
+            <Box sx={runtimeActionRowSx}>
+              <Button
+                variant="outlined"
+                startIcon={<MsIcon name="refresh" size={18} />}
+                onClick={() => {
+                  void refreshPiperRuntimeStatus()
+                }}
+                disabled={piperRuntimeBusy || pipelineRunning}
+              >
+                刷新状态
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<MsIcon name={piperRuntimeStatus?.available ? 'archive' : 'download'} size={18} />}
+                onClick={() => {
+                  void installPiperRuntime(Boolean(piperRuntimeStatus?.available))
+                }}
+                disabled={piperRuntimeBusy || pipelineRunning}
+              >
+                {piperRuntimeStatus?.available ? '重新解压' : '下载解压'}
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<MsIcon name="upload_file" size={18} />}
+                onClick={() => {
+                  void installPiperRuntimeFromLocal()
+                }}
+                disabled={piperRuntimeBusy || pipelineRunning}
+              >
+                本地安装
+              </Button>
+            </Box>
+          </Stack>
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="body2" sx={{ opacity: 0.78 }}>
+              Piper 基础运行时用于 CPU 训练、预处理和导出。首次使用前需要先安装。
+            </Typography>
+            <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
+              可以在线下载，也可以选择你已经下载好的本地 7z 文件安装。
+            </Typography>
+          </Box>
+
+          {(piperRuntimeBusy || piperRuntimeProgressMessage) && (
+            <Stack spacing={0.75}>
+              {piperRuntimeBusy && (
+                <LinearProgress
+                  variant={piperRuntimeProgressValue > 0 ? 'determinate' : 'indeterminate'}
+                  value={Math.min(100, Math.max(0, piperRuntimeProgressValue * 100))}
+                />
+              )}
+              {piperRuntimeBusy && piperRuntimeProgressValue > 0 && (
+                <Typography variant="caption" sx={{ opacity: 0.68 }}>
+                  安装进度：{Math.round(piperRuntimeProgressValue * 100)}%
+                </Typography>
+              )}
+              <Typography variant="caption" sx={{ opacity: 0.78 }}>
+                {piperRuntimeProgressMessage || '正在处理 Piper 基础运行时...'}
+              </Typography>
+            </Stack>
+          )}
+
+          {piperRuntimeStatus && (
+            <Alert severity={piperRuntimeStatus.status === 'error' ? 'error' : piperRuntimeStatus.available ? 'success' : 'warning'}>
+              <Stack spacing={0.5}>
+                <Typography variant="body2">{piperRuntimeStatus.message}</Typography>
+                <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                  运行时目录：{piperRuntimeStatus.env_path}
+                </Typography>
+                {piperRuntimeStatus.torch_version && (
+                  <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                    Torch：{piperRuntimeStatus.torch_version}
+                    {piperRuntimeStatus.pytorch_lightning_version ? ` / Lightning ${piperRuntimeStatus.pytorch_lightning_version}` : ''}
+                  </Typography>
+                )}
+                {piperRuntimeStatus.source_label && (
+                  <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                    安装来源：{piperRuntimeStatus.source_label}
+                  </Typography>
+                )}
+              </Stack>
+            </Alert>
+          )}
+
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+            <Button
+              variant="outlined"
+              startIcon={<MsIcon name="folder_open" size={18} />}
+              onClick={() => {
+                void openPiperRuntimeDirectory()
+              }}
+              disabled={piperRuntimeBusy || !piperRuntimeStatus}
+            >
+              打开运行时目录
+            </Button>
+            <Typography variant="caption" sx={{ alignSelf: 'center', opacity: 0.72 }}>
+              CPU 训练和通用 Piper 流程会使用这个基础运行时。
+            </Typography>
+          </Stack>
+        </Stack>
       </Paper>
 
       <Paper sx={cardPaperSx}>
@@ -4992,17 +5939,27 @@ function App() {
                 }}
                 disabled={cudaRuntimeBusy || pipelineRunning}
               >
-                {cudaRuntimeStatus?.available ? '重建运行时' : '安装运行时'}
+                {cudaRuntimeStatus?.available ? '重新解压' : '安装运行时'}
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<MsIcon name="upload_file" size={18} />}
+                onClick={() => {
+                  void installCudaRuntimeFromLocal()
+                }}
+                disabled={cudaRuntimeBusy || pipelineRunning}
+              >
+                本地安装
               </Button>
             </Box>
           </Stack>
           <Box sx={{ minWidth: 0 }}>
             <Typography variant="body2" sx={{ opacity: 0.78 }}>
-              使用内置 micromamba 在线创建 `piper_env_cuda`。安装前会自动测速 Conda / PyPI / PyTorch CUDA wheel 镜像，优先使用当前最快可达源并自动换源。
-            </Typography>
-            <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
-              候选源：Conda 含南科大/上交/清华/北外/中科大/南大/官方；PyPI 含阿里/北外/腾讯/上交/南科大等；PyTorch wheel 含阿里/上交/官方。
-            </Typography>
+                  Piper CUDA 运行时用于显卡训练。首次使用 GPU/CUDA 训练前需要先安装。
+                </Typography>
+                <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.62 }}>
+                  软件会自动选择可用下载源；也可以选择你已经下载好的本地 7z 文件安装。
+                </Typography>
           </Box>
 
           {(cudaRuntimeBusy || cudaRuntimeProgressMessage) && (
@@ -5030,9 +5987,6 @@ function App() {
                 <Typography variant="body2">{cudaRuntimeStatus.message}</Typography>
                 <Typography variant="caption" sx={{ opacity: 0.8 }}>
                   运行时目录：{cudaRuntimeStatus.env_path}
-                </Typography>
-                <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                  micromamba：{cudaRuntimeStatus.micromamba_path || cudaRuntimeStatus.bundled_micromamba_path || '未找到'}
                 </Typography>
                 {cudaRuntimeStatus.driver_version && (
                   <Typography variant="caption" sx={{ opacity: 0.8 }}>
@@ -5134,13 +6088,13 @@ function App() {
                 justifyContent: 'flex-end',
               }}
             >
-              <Button
-                variant="contained"
-                color="primary"
-                startIcon={<MsIcon name="restart_alt" size={18} />}
-                onClick={requestBackendRestart}
-              >
-                重启后端
+                <Button
+                  variant="contained"
+                  color="primary"
+                  startIcon={<MsIcon name="restart_alt" size={18} />}
+                  onClick={requestBackendRestart}
+                >
+                重启后台服务
               </Button>
             </Stack>
           </Stack>
@@ -5253,7 +6207,7 @@ function App() {
         </Typography>
         <Stack direction="row" alignItems="center" spacing={0.5}>
           <Chip
-            label={connected ? 'Backend Ready' : 'Backend Offline'}
+            label={connected ? '后台服务已连接' : '后台服务未连接'}
             color={connected ? 'success' : 'default'}
             variant="outlined"
             size="small"
@@ -6164,6 +7118,90 @@ function App() {
         </Popover>
 
         <Dialog
+          open={downloadSourceDialogOpen}
+          onClose={() => {
+            if (!downloadSourceBusy) setDownloadSourceDialogOpen(false)
+          }}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>编辑下载源</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" sx={{ opacity: 0.78 }}>
+                每组资源会优先使用你选择的下载源；如果该源失败，会继续尝试同组其它已填写链接。留空的链接不会参与下载。
+              </Typography>
+              {downloadSourceDraft?.groups.map((group) => (
+                <Paper key={group.key} variant="outlined" sx={{ p: 1.5, borderColor: 'divider' }}>
+                  <Stack spacing={1.25}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                      <Box>
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          {group.label}
+                        </Typography>
+                        <Typography variant="caption" sx={{ opacity: 0.62 }}>
+                          {group.key}
+                        </Typography>
+                      </Box>
+                      <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 240 } }}>
+                        <InputLabel>优先下载源</InputLabel>
+                        <Select
+                          value={group.preferred_source_id || downloadSourceDraft.preferred_sources[group.key] || group.sources[0]?.id || ''}
+                          label="优先下载源"
+                          onChange={(event) => setPreferredDownloadSourceDraft(group.key, String(event.target.value))}
+                        >
+                          {group.sources.map((source) => (
+                            <MenuItem key={source.id} value={source.id}>
+                              {source.label}{source.url.trim() ? '' : '（未填写链接）'}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </Stack>
+                    <Stack spacing={1}>
+                      {group.sources.map((source) => (
+                        <TextField
+                          key={source.id}
+                          label={`${source.label} 链接`}
+                          value={source.url}
+                          onChange={(event) => updateDownloadSourceDraft(group.key, source.id, { url: event.target.value })}
+                          fullWidth
+                          size="small"
+                          placeholder="https://..."
+                          helperText={source.url.trim() ? '将使用这个地址下载对应文件' : '留空时不会使用这个下载源'}
+                        />
+                      ))}
+                    </Stack>
+                  </Stack>
+                </Paper>
+              ))}
+              {downloadSourceDraft && (
+                <Stack spacing={0.25}>
+                  <Typography variant="caption" sx={{ opacity: 0.62 }}>
+                    修改只会保存在本机，不会影响软件内置的默认下载源。
+                  </Typography>
+                </Stack>
+              )}
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <Button onClick={() => setDownloadSourceDialogOpen(false)} disabled={downloadSourceBusy}>
+              取消
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={downloadSourceBusy ? <CircularProgress color="inherit" size={16} /> : <MsIcon name="save" size={18} />}
+              onClick={() => {
+                void saveDownloadSourceConfig()
+              }}
+              disabled={downloadSourceBusy || !downloadSourceDraft}
+            >
+              保存设置
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
           open={distillPresetDialogOpen}
           onClose={(_event, reason) => {
             if ((reason === 'backdropClick' || reason === 'escapeKeyDown') && distillPresetBusy) return
@@ -6294,7 +7332,7 @@ function App() {
                         size="small"
                         label={`模式：${TRAINING_MODE_LABELS[String(pendingResumeProjectStatus.mode || '')] || pendingResumeProjectStatus.mode || '未知'}`}
                       />
-                      <Chip size="small" label={`metadata：${pendingResumeProjectStatus.metadata_count ?? 0} 条`} />
+                      <Chip size="small" label={`文本记录：${pendingResumeProjectStatus.metadata_count ?? 0} 条`} />
                       <Chip size="small" label={`可用音频：${pendingResumeProjectStatus.existing_count ?? 0} 条`} />
                       <Chip size="small" color="warning" label={`缺失音频：${pendingResumeProjectStatus.missing_count ?? 0} 条`} />
                       {pendingResumeProjectStatus.input_audio_count !== undefined && pendingResumeProjectStatus.input_audio_count > 0 && (
@@ -6322,6 +7360,106 @@ function App() {
             </Button>
             <Button variant="contained" onClick={confirmResumeRebuild}>
               继续并重新准备素材
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={existingProjectPromptOpen}
+          onClose={(_event, reason) => {
+            if (reason === 'backdropClick' || reason === 'escapeKeyDown') return
+            setExistingProjectPromptOpen(false)
+            setExistingProjectStatus(null)
+            pendingFreshStartRef.current = null
+            pendingExistingProjectDirRef.current = ''
+          }}
+          maxWidth="sm"
+          fullWidth
+          disableEscapeKeyDown
+        >
+          <DialogTitle>检测到已有训练项目</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" sx={{ opacity: 0.86 }}>
+                检测到上次未完成或已经生成完毕的项目，是否继续使用已有素材，还是重新训练并覆盖当前项目内容？
+              </Typography>
+              {existingProjectStatus && (
+                <Alert severity={existingProjectStatus.direct_train_ready ? 'success' : 'warning'}>
+                  <Stack spacing={1}>
+                    <Typography variant="body2">
+                      {existingProjectStatus.material_status || existingProjectStatus.message}
+                    </Typography>
+                    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                      <Chip size="small" label={`模式：${TRAINING_MODE_LABELS[String(existingProjectStatus.mode || '')] || existingProjectStatus.mode || '未知'}`} />
+                      <Chip size="small" label={`文本记录：${existingProjectStatus.metadata_count ?? 0} 条`} />
+                      <Chip size="small" label={`可用音频：${existingProjectStatus.existing_count ?? 0} 条`} />
+                      <Chip size="small" color={(existingProjectStatus.missing_count ?? 0) > 0 ? 'warning' : 'default'} label={`缺失音频：${existingProjectStatus.missing_count ?? 0} 条`} />
+                    </Stack>
+                  </Stack>
+                </Alert>
+              )}
+              <Typography variant="caption" sx={{ opacity: 0.72, wordBreak: 'break-all' }}>
+                项目目录：{pendingExistingProjectDirRef.current || outputDir || '未选择'}
+              </Typography>
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <Button variant="outlined" onClick={restartExistingOutputProject}>
+              重新训练
+            </Button>
+            <Button variant="contained" onClick={continueExistingOutputProject}>
+              继续项目
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={voxcpmBootstrapPreviewOpen}
+          onClose={(_event, reason) => {
+            if (reason === 'backdropClick' || reason === 'escapeKeyDown') return
+          }}
+          maxWidth="md"
+          fullWidth
+          disableEscapeKeyDown
+        >
+          <DialogTitle>确认 VoxCPM2 音色预览</DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Typography variant="body2" sx={{ opacity: 0.86 }}>
+                请试听这段由当前声音设定生成的参考音频。确认后训练器会自动切换为高保真克隆模式，并用这段音频和参考文本继续生成完整蒸馏语料。
+              </Typography>
+              {voxcpmBootstrapPreviewBusy && <LinearProgress />}
+              <InlineAudioPlayer
+                src={voxcpmBootstrapPreviewAudioSrc}
+                audioPath={voxcpmBootstrapPreviewAudioPath}
+                emptyText="音色预览生成中..."
+              />
+              <TextField
+                label="参考文本"
+                value={voxcpmBootstrapContextRef.current?.referenceText || voxcpmOpts.voice_reference_text}
+                multiline
+                minRows={2}
+                fullWidth
+                InputProps={{ readOnly: true }}
+              />
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+            <Button
+              variant="outlined"
+              startIcon={voxcpmBootstrapPreviewBusy ? <CircularProgress size={16} /> : <MsIcon name="refresh" size={18} />}
+              onClick={regenerateVoxcpmBootstrapVoice}
+              disabled={voxcpmBootstrapPreviewBusy}
+            >
+              重新生成
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={<MsIcon name="check" size={18} />}
+              onClick={confirmVoxcpmBootstrapVoice}
+              disabled={voxcpmBootstrapPreviewBusy || !voxcpmBootstrapPreviewAudioPath}
+            >
+              以该音色进行训练
             </Button>
           </DialogActions>
         </Dialog>

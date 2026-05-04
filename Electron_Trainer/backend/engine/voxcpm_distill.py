@@ -3,13 +3,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-import librosa
-import soundfile as sf
-
-from . import asr
 from .config import ProjectPaths, TrainingOptions, VoxCpmDistillOptions
 from .gsv_distill import collect_distill_texts
 from .runtime_manager import describe_voxcpm_models, get_voxcpm_python_path
@@ -51,7 +49,8 @@ def _helper_request_payload(
 ) -> Dict[str, Any]:
     corpus_dir = paths.work_dir / "voxcpm_corpus"
     wav_dir = corpus_dir / "wavs"
-    reference_audio = opts.reference_audio.expanduser().resolve() if opts.reference_audio else None
+    voice_mode = _normal_mode(opts.voice_mode)
+    reference_audio = opts.reference_audio.expanduser().resolve() if opts.reference_audio and voice_mode != "description" else None
     return {
         "model_dir": model_status["main_model_dir"],
         "denoiser_dir": model_status["denoiser_model_dir"],
@@ -60,7 +59,7 @@ def _helper_request_payload(
         "metadata_path": str(paths.training_manifest),
         "device": "cuda" if str(opts.device).lower() in {"cuda", "gpu"} else "cpu",
         "allow_cpu_fallback": bool(opts.allow_cpu_fallback),
-        "voice_mode": _normal_mode(opts.voice_mode),
+        "voice_mode": voice_mode,
         "voice_description": opts.voice_description.strip(),
         "reference_audio": str(reference_audio) if reference_audio else "",
         "prompt_text": prompt_text.strip(),
@@ -127,6 +126,104 @@ def _run_helper(
     return result
 
 
+def _default_wav_path(paths: ProjectPaths, corpus_name: str, index: int) -> Path:
+    return paths.work_dir / corpus_name / "wavs" / f"{index:05d}.wav"
+
+
+def _write_metadata(paths: ProjectPaths, entries: list[tuple[Path, str]]) -> None:
+    lines = [f"{audio_path}|{text}" for audio_path, text in entries]
+    paths.training_manifest.parent.mkdir(parents=True, exist_ok=True)
+    paths.training_manifest.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def _split_entries(entries: list[tuple[Path, str]], worker_count: int) -> list[list[tuple[Path, str]]]:
+    if not entries:
+        return []
+    actual_workers = max(1, min(worker_count, len(entries)))
+    buckets: list[list[tuple[Path, str]]] = [[] for _ in range(actual_workers)]
+    for index, entry in enumerate(entries):
+        buckets[index % actual_workers].append(entry)
+    return [bucket for bucket in buckets if bucket]
+
+
+def _run_generation_entries(
+    python_path: Path,
+    model_status: Dict[str, Any],
+    prompt_text: str,
+    paths: ProjectPaths,
+    opts: VoxCpmDistillOptions,
+    entries: list[tuple[Path, str]],
+    *,
+    progress: Optional[ProgressCallback],
+    progress_stage: str,
+    log_stem: str,
+) -> Dict[str, Any]:
+    if not entries:
+        return {"code": 0, "generated": 0, "message": ""}
+    worker_groups = _split_entries(entries, max(1, int(opts.parallel_workers or 1)))
+    if len(worker_groups) <= 1:
+        request_path = paths.work_dir / "voxcpm_corpus" / f"{log_stem}_request.json"
+        log_path = paths.work_dir / f"{log_stem}.log"
+        payload = _helper_request_payload(paths, opts, [text for _audio_path, text in entries], model_status, prompt_text)
+        payload["output_paths"] = [str(audio_path) for audio_path, _text in entries]
+        payload["metadata_path"] = str(paths.work_dir / "voxcpm_corpus" / f"{log_stem}_metadata.csv")
+        _write_request(request_path, payload)
+        return _run_helper(python_path, request_path, log_path, progress, progress_stage=progress_stage)
+
+    worker_progress = [0.0 for _ in worker_groups]
+    progress_lock = threading.Lock()
+    last_message = ""
+
+    def make_progress_callback(worker_index: int) -> ProgressCallback:
+        def _cb(stage: str, value: float, message: str) -> None:
+            nonlocal last_message
+            with progress_lock:
+                worker_progress[worker_index] = max(0.0, min(1.0, value))
+                last_message = message
+                average = sum(worker_progress) / max(1, len(worker_progress))
+            if progress:
+                progress(stage, average, f"并行合成 {worker_index + 1}/{len(worker_groups)}：{message}")
+
+        return _cb
+
+    def run_worker(worker_index: int, worker_entries: list[tuple[Path, str]]) -> Dict[str, Any]:
+        request_path = paths.work_dir / "voxcpm_corpus" / f"{log_stem}_worker_{worker_index + 1}.json"
+        log_path = paths.work_dir / f"{log_stem}_worker_{worker_index + 1}.log"
+        payload = _helper_request_payload(paths, opts, [text for _audio_path, text in worker_entries], model_status, prompt_text)
+        payload["output_paths"] = [str(audio_path) for audio_path, _text in worker_entries]
+        payload["metadata_path"] = str(paths.work_dir / "voxcpm_corpus" / f"{log_stem}_worker_{worker_index + 1}_metadata.csv")
+        _write_request(request_path, payload)
+        return _run_helper(
+            python_path,
+            request_path,
+            log_path,
+            make_progress_callback(worker_index),
+            progress_stage=progress_stage,
+        )
+
+    results: list[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=len(worker_groups)) as executor:
+        future_map = {
+            executor.submit(run_worker, worker_index, worker_entries): worker_index
+            for worker_index, worker_entries in enumerate(worker_groups)
+        }
+        for future in as_completed(future_map):
+            results.append(future.result())
+
+    first_error = next((item for item in results if int(item.get("code") or 0) != 0), None)
+    if first_error:
+        return {
+            "code": int(first_error.get("code") or 1),
+            "generated": sum(int(item.get("generated") or 0) for item in results),
+            "message": str(first_error.get("message") or last_message or "VoxCPM2 合成失败"),
+        }
+    return {
+        "code": 0,
+        "generated": sum(int(item.get("generated") or 0) for item in results),
+        "message": "",
+    }
+
+
 def _write_request(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -148,9 +245,14 @@ def _transcribe_reference_audio(
     if training_opts is None or not training_opts.asr_model_zip:
         raise RuntimeError("高保真克隆需要参考音频转写文本；请填写参考文本，或先配置 ASR 模型。")
     if not training_opts.asr_model_zip.exists():
-        raise RuntimeError(f"ASR 模型不存在: {training_opts.asr_model_zip}")
+        raise RuntimeError("找不到语音识别模型，请重新安装训练资源包或重新选择模型。")
     if progress:
         progress(progress_stage, 0.0, "高保真克隆：正在转写参考音频...")
+    import librosa
+    import soundfile as sf
+
+    from . import asr
+
     engine = asr.OfflineASR(training_opts.asr_model_zip, device="cpu")
     audio, sr = sf.read(reference_audio)
     mono = librosa.to_mono(audio.T if getattr(audio, "ndim", 1) > 1 else audio)
@@ -206,10 +308,11 @@ def build_voxcpm_corpus(
     opts: VoxCpmDistillOptions,
     training_opts: Optional[TrainingOptions] = None,
     progress: Optional[ProgressCallback] = None,
+    texts: Optional[list[str]] = None,
 ) -> int:
     python_path, model_status, prompt_text = _ensure_common(opts, training_opts, progress, "synth")
 
-    texts = collect_distill_texts(opts, paths.work_dir, progress)  # type: ignore[arg-type]
+    texts = list(texts or collect_distill_texts(opts, paths.work_dir, progress))  # type: ignore[arg-type]
     if not texts:
         raise RuntimeError("VoxCPM2 蒸馏文本为空")
 
@@ -224,23 +327,35 @@ def build_voxcpm_corpus(
     log_path = paths.work_dir / "voxcpm_distill.log"
     if log_path.exists():
         log_path.unlink()
+    wav_dir = corpus_dir / "wavs"
+    wav_dir.mkdir(parents=True, exist_ok=True)
+    for stale in wav_dir.glob("*.wav"):
+        stale.unlink(missing_ok=True)
 
     if progress:
         progress("collect", 1.0, f"文本收集完成，共 {len(texts)} 条")
 
-    request_payload = _helper_request_payload(paths, opts, texts, model_status, prompt_text)
-    _write_request(request_path, request_payload)
+    entries = [(_default_wav_path(paths, "voxcpm_corpus", index), text) for index, text in enumerate(texts, start=1)]
     if progress:
         progress(
             "synth",
             0.0,
-            f"启动 VoxCPM2 合成（mode={request_payload['voice_mode']}, device={request_payload['device']}, denoise={request_payload['denoise']}）",
+            f"启动 VoxCPM2 合成（mode={_normal_mode(opts.voice_mode)}, device={'cuda' if str(opts.device).lower() in {'cuda', 'gpu'} else 'cpu'}, denoise={bool(opts.denoise)}, workers={max(1, int(opts.parallel_workers or 1))}）",
         )
 
-    result = _run_helper(python_path, request_path, log_path, progress)
-    if result["code"] != 0 and request_payload.get("denoise"):
-        request_payload["denoise"] = False
-        _write_request(request_path, request_payload)
+    result = _run_generation_entries(
+        python_path,
+        model_status,
+        prompt_text,
+        paths,
+        opts,
+        entries,
+        progress=progress,
+        progress_stage="synth",
+        log_stem="voxcpm_distill",
+    )
+    if result["code"] != 0 and bool(opts.denoise):
+        retry_opts = VoxCpmDistillOptions(**{**opts.__dict__, "denoise": False})
         if progress:
             progress(
                 "synth",
@@ -249,10 +364,21 @@ def build_voxcpm_corpus(
             )
         with log_path.open("a", encoding="utf-8") as log_file:
             log_file.write("[retry] denoiser failed, retry with denoise=False\n")
-        result = _run_helper(python_path, request_path, log_path, progress)
+        result = _run_generation_entries(
+            python_path,
+            model_status,
+            prompt_text,
+            paths,
+            retry_opts,
+            entries,
+            progress=progress,
+            progress_stage="synth",
+            log_stem="voxcpm_distill_retry",
+        )
     if result["code"] != 0:
         raise RuntimeError(str(result.get("message") or f"VoxCPM2 合成失败，详见 {log_path}"))
 
+    _write_metadata(paths, entries)
     if progress:
         progress("synth", 1.0, f"VoxCPM2 蒸馏语料生成完成，共 {result['generated']} 条")
     return len(texts)
@@ -270,21 +396,35 @@ def generate_voxcpm_entries(
     python_path, model_status, prompt_text = _ensure_common(opts, training_opts, progress, "synth")
     resume_dir = paths.work_dir / "voxcpm_corpus"
     resume_dir.mkdir(parents=True, exist_ok=True)
-    request_path = resume_dir / "resume_request.json"
     log_path = paths.work_dir / "voxcpm_resume.log"
-    payload = _helper_request_payload(paths, opts, [text for _path, text in entries], model_status, prompt_text)
-    payload["output_paths"] = [str(audio_path) for audio_path, _text in entries]
-    payload["metadata_path"] = str(resume_dir / "resume_metadata.csv")
-    _write_request(request_path, payload)
     if progress:
         progress("synth", 0.0, f"旧项目缺失 {len(entries)} 条 VoxCPM2 音频，开始补生成...")
-    result = _run_helper(python_path, request_path, log_path, progress)
-    if result["code"] != 0 and payload.get("denoise"):
-        payload["denoise"] = False
-        _write_request(request_path, payload)
+    result = _run_generation_entries(
+        python_path,
+        model_status,
+        prompt_text,
+        paths,
+        opts,
+        entries,
+        progress=progress,
+        progress_stage="synth",
+        log_stem="voxcpm_resume",
+    )
+    if result["code"] != 0 and bool(opts.denoise):
+        retry_opts = VoxCpmDistillOptions(**{**opts.__dict__, "denoise": False})
         if progress:
             progress("synth", 0.0, "VoxCPM2 denoiser 初始化失败，已自动关闭 denoiser 重试补生成。")
-        result = _run_helper(python_path, request_path, log_path, progress)
+        result = _run_generation_entries(
+            python_path,
+            model_status,
+            prompt_text,
+            paths,
+            retry_opts,
+            entries,
+            progress=progress,
+            progress_stage="synth",
+            log_stem="voxcpm_resume_retry",
+        )
     if result["code"] != 0:
         raise RuntimeError(str(result.get("message") or f"VoxCPM2 补生成失败，详见 {log_path}"))
     if progress:
