@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from . import asr, gsv_distill, packager, preprocess, training, vad, voxcpm_distill
+from . import packager, training
 from .config import DistillOptions, PipelineResult, ProgressCallback, ProjectPaths, TrainingOptions, VoxCpmDistillOptions
 from .project_state import (
     archive_input_audio,
@@ -137,6 +137,8 @@ def run_pipeline(
     opts: TrainingOptions,
     progress: Optional[ProgressCallback] = None,
 ) -> PipelineResult:
+    from . import asr, preprocess, vad
+
     _ensure_dirs(paths)
     archive_input_audio(paths)
     save_project_config(paths, "piper", opts)
@@ -158,6 +160,8 @@ def run_distill_pipeline(
     distill_opts: DistillOptions,
     progress: Optional[ProgressCallback] = None,
 ) -> PipelineResult:
+    from . import gsv_distill
+
     _ensure_dirs(paths)
     texts = gsv_distill.collect_distill_texts(distill_opts, paths.work_dir, progress)
     save_project_config(paths, "gsv_distill", opts, distill_opts=distill_opts, metadata_texts=texts)
@@ -171,6 +175,8 @@ def run_voxcpm_distill_pipeline(
     voxcpm_opts: VoxCpmDistillOptions,
     progress: Optional[ProgressCallback] = None,
 ) -> PipelineResult:
+    from . import gsv_distill, voxcpm_distill
+
     _ensure_dirs(paths)
 
     archive_voxcpm_reference(paths, voxcpm_opts)
@@ -221,6 +227,8 @@ def run_resume_project_pipeline(
         progress("collect", 0.5, f"旧项目检测到 {len(missing_entries)} 条音频缺失")
 
     if mode == "voxcpm_distill":
+        from . import voxcpm_distill
+
         voxcpm_opts = voxcpm_options_from_dict(config.get("voxcpm_options") or {})
         voxcpm_distill.generate_voxcpm_entries(paths, voxcpm_opts, opts, missing_entries, progress)
         still_missing = [(audio_path, text) for audio_path, text in entries if not audio_path.exists()]
@@ -231,6 +239,8 @@ def run_resume_project_pipeline(
         return _train_export_package(paths, opts, progress)
 
     if mode == "gsv_distill":
+        from . import gsv_distill
+
         distill_opts = distill_options_from_dict(config.get("distill_options") or {})
         try:
             gsv_distill.generate_distill_entries(paths, distill_opts, missing_entries, progress)
