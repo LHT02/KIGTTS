@@ -378,6 +378,14 @@ fun BuiltinFilePickerDialog(
             )
         }
     }
+    val selectableFileItems = remember(fileItems) {
+        fileItems.filterIsInstance<BuiltinBrowserEntry.FileItem>()
+    }
+    val selectableFileIds = remember(selectableFileItems) {
+        selectableFileItems.map { it.id }.toSet()
+    }
+    val allSelectableFilesSelected = selectableFileIds.isNotEmpty() &&
+            selectableFileIds.all { selectedUris.containsKey(it) }
 
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         KigttsFontScaleProvider {
@@ -456,6 +464,21 @@ fun BuiltinFilePickerDialog(
                                 }
                             }
                         }
+                    }
+
+                    if (multiSelect) {
+                        BuiltinFlatIconButton(
+                            onClick = {
+                                selectedUris = if (allSelectableFilesSelected) {
+                                    selectedUris - selectableFileIds
+                                } else {
+                                    selectedUris + selectableFileItems.associate { it.id to it.uri }
+                                }
+                            },
+                            enabled = selectableFileItems.isNotEmpty(),
+                            iconName = if (allSelectableFilesSelected) "deselect" else "select_all",
+                            contentDescription = if (allSelectableFilesSelected) "取消全选" else "全选"
+                        )
                     }
                 }
             }

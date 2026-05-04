@@ -300,8 +300,14 @@ class FloatingOverlayService : Service() {
         val items: List<String>
     )
 
+    private data class MiniQuickItemsScrollState(
+        val position: Int,
+        val offsetPx: Int
+    )
+
     private var quickSubtitleGroups = defaultQuickSubtitleGroups()
     private var quickSubtitleSelectedGroupId = 1L
+    private var miniQuickSubtitleSelectedGroupId: Long? = null
     private var quickSubtitleCurrentText = defaultQuickSubtitleText
     private var quickSubtitleFontSizeSp = 56f
     private var quickSubtitlePlayOnSend = true
@@ -314,6 +320,7 @@ class FloatingOverlayService : Service() {
     private var topStatusShowingText = false
     private var topStatusResetJob: Job? = null
     private var miniQuickItemsCollapsed = false
+    private val miniQuickItemsScrollStates = mutableMapOf<String, MiniQuickItemsScrollState>()
     private var miniMode = MiniOverlayMode.Subtitle
     private var miniPreviewMode = MiniPreviewMode.None
     private var miniPreviewQuickCardId: Long? = null
@@ -2867,6 +2874,7 @@ class FloatingOverlayService : Service() {
         panelNextPageButtonView = null
         panelPager = null
         panelPagerAdapter = null
+        saveMiniQuickItemsScrollState()
         miniRoot?.let { runCatching { windowManager.removeView(it) } }
         miniRoot = null
         miniContent = null
@@ -3243,6 +3251,7 @@ class FloatingOverlayService : Service() {
     private fun submitQuickSubtitleText(text: String) {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
+        saveMiniQuickItemsScrollState()
         overlayHintText = ""
         quickSubtitleCurrentText = normalized
         saveQuickSubtitleConfig()
@@ -3531,6 +3540,9 @@ class FloatingOverlayService : Service() {
 
     private fun hideMiniPanel() {
         if (!miniVisible) return
+        if (miniMode == MiniOverlayMode.Subtitle) {
+            saveMiniQuickItemsScrollState()
+        }
         closeMiniPreview()
         animateOverlayOut(miniContent) {
             miniVisible = false
@@ -4333,6 +4345,7 @@ class FloatingOverlayService : Service() {
             quickSubtitleBold = true
             quickSubtitleCentered = false
             quickSubtitleNextGroupId = 4L
+            reconcileMiniQuickSubtitleState()
             return
         }
         runCatching { parseQuickSubtitleConfig(raw) }
@@ -4377,6 +4390,19 @@ class FloatingOverlayService : Service() {
         quickSubtitleBold = root.optBoolean("fontBold", true)
         quickSubtitleCentered = root.optBoolean("textCentered", false)
         quickSubtitleNextGroupId = maxOf(maxId + 1L, 4L)
+        reconcileMiniQuickSubtitleState()
+    }
+
+    private fun reconcileMiniQuickSubtitleState() {
+        val validIds = quickSubtitleGroups.map { it.id }.toSet()
+        miniQuickSubtitleSelectedGroupId = when {
+            miniQuickSubtitleSelectedGroupId?.let { it in validIds } == true -> miniQuickSubtitleSelectedGroupId
+            quickSubtitleSelectedGroupId in validIds -> quickSubtitleSelectedGroupId
+            else -> quickSubtitleGroups.firstOrNull()?.id
+        }
+        miniQuickItemsScrollStates.keys
+            .filter { key -> key.substringBefore(':').toLongOrNull() !in validIds }
+            .forEach { key -> miniQuickItemsScrollStates.remove(key) }
     }
 
     private fun saveQuickSubtitleConfig() {
@@ -4554,20 +4580,71 @@ class FloatingOverlayService : Service() {
         )
     }
 
+    private fun currentMiniQuickSubtitleGroupId(): Long {
+        val selectedId = miniQuickSubtitleSelectedGroupId
+        if (selectedId != null && quickSubtitleGroups.any { it.id == selectedId }) {
+            return selectedId
+        }
+        val fallbackId =
+            quickSubtitleGroups.firstOrNull { it.id == quickSubtitleSelectedGroupId }?.id
+                ?: quickSubtitleGroups.firstOrNull()?.id
+                ?: defaultQuickSubtitleGroups().first().id
+        miniQuickSubtitleSelectedGroupId = fallbackId
+        return fallbackId
+    }
+
     private fun selectedQuickSubtitleGroup(): QuickSubtitleGroupConfig {
-        return quickSubtitleGroups.firstOrNull { it.id == quickSubtitleSelectedGroupId }
+        val selectedId = currentMiniQuickSubtitleGroupId()
+        return quickSubtitleGroups.firstOrNull { it.id == selectedId }
             ?: quickSubtitleGroups.firstOrNull()
             ?: defaultQuickSubtitleGroups().first()
     }
 
     private fun shiftQuickSubtitleGroup(delta: Int) {
         if (quickSubtitleGroups.isEmpty()) return
-        val currentIndex = quickSubtitleGroups.indexOfFirst { it.id == quickSubtitleSelectedGroupId }
+        saveMiniQuickItemsScrollState()
+        val currentGroupId = currentMiniQuickSubtitleGroupId()
+        val currentIndex = quickSubtitleGroups.indexOfFirst { it.id == currentGroupId }
             .coerceAtLeast(0)
         val nextIndex = (currentIndex + delta).floorMod(quickSubtitleGroups.size)
-        quickSubtitleSelectedGroupId = quickSubtitleGroups[nextIndex].id
-        saveQuickSubtitleConfig()
+        miniQuickSubtitleSelectedGroupId = quickSubtitleGroups[nextIndex].id
         refreshQuickSubtitleUi()
+    }
+
+    private fun miniQuickItemsScrollKey(groupId: Long): String {
+        return "${groupId}:${if (isPhoneLandscapeUi()) "landscape" else "portrait"}"
+    }
+
+    private fun saveMiniQuickItemsScrollState(groupId: Long = currentMiniQuickSubtitleGroupId()) {
+        val recycler = miniQuickItemsRecyclerView ?: return
+        val layoutManager = miniQuickItemsLayoutManager ?: return
+        val position = layoutManager.findFirstVisibleItemPosition()
+        if (position == RecyclerView.NO_POSITION) return
+        val child = layoutManager.findViewByPosition(position) ?: return
+        val offset = if (layoutManager.orientation == RecyclerView.VERTICAL) {
+            child.top - recycler.paddingTop
+        } else {
+            child.left - recycler.paddingLeft
+        }
+        miniQuickItemsScrollStates[miniQuickItemsScrollKey(groupId)] =
+            MiniQuickItemsScrollState(position = position, offsetPx = offset)
+    }
+
+    private fun restoreMiniQuickItemsScrollState(groupId: Long) {
+        val recycler = miniQuickItemsRecyclerView ?: return
+        val layoutManager = miniQuickItemsLayoutManager ?: return
+        val saved = miniQuickItemsScrollStates[miniQuickItemsScrollKey(groupId)]
+        recycler.post {
+            val itemCount = miniQuickItemsAdapter?.itemCount ?: 0
+            if (itemCount <= 0) {
+                updateMiniQuickItemsEdgeFade(false)
+                return@post
+            }
+            val position = (saved?.position ?: 0).coerceIn(0, itemCount - 1)
+            val offset = saved?.offsetPx ?: 0
+            layoutManager.scrollToPositionWithOffset(position, offset)
+            recycler.post { updateMiniQuickItemsEdgeFade(false) }
+        }
     }
 
     private fun refreshQuickSubtitleUi() {
@@ -4603,9 +4680,8 @@ class FloatingOverlayService : Service() {
         miniQuickRow?.visibility = if (miniQuickItemsCollapsed) View.GONE else View.VISIBLE
         miniQuickRow?.requestLayout()
         miniQuickItemsAdapter?.submitItems(group.items)
-        miniQuickItemsRecyclerView?.scrollToPosition(0)
-        miniQuickItemsRecyclerView?.post { updateMiniQuickItemsEdgeFade(false) }
         refreshMiniSubtitleLayoutMetrics()
+        restoreMiniQuickItemsScrollState(group.id)
         refreshMiniPreviewUi()
     }
 

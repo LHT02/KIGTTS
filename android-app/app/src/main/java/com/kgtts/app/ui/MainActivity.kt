@@ -11626,7 +11626,6 @@ private fun SoundboardScreen(
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val navBarsPadding = WindowInsets.navigationBars.asPaddingValues()
     val navBarsBottomInset = navBarsPadding.calculateBottomPadding()
-    val state = viewModel.uiState
     val groups = viewModel.soundboardGroups
     val selectedGroupIndex = viewModel.currentSoundboardGroupIndex().coerceIn(0, groups.lastIndex.coerceAtLeast(0))
     val layoutMode = viewModel.currentSoundboardLayout(isLandscape)
@@ -11702,34 +11701,6 @@ private fun SoundboardScreen(
                 } else {
                     listContent(targetItems)
                 }
-            }
-        }
-    }
-    val controlCard: @Composable (Modifier) -> Unit = { cardModifier ->
-        Card(
-            modifier = cardModifier,
-            shape = RoundedCornerShape(UiTokens.Radius),
-            backgroundColor = md2CardContainerColor(),
-            elevation = UiTokens.CardElevation
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("触发关键词时不进行朗读", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "命中音效板唤醒词时只上屏并播放音效，跳过本句 TTS。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f)
-                    )
-                }
-                Md2Switch(
-                    checked = state.soundboardSuppressTtsOnKeyword,
-                    onCheckedChange = { viewModel.setSoundboardSuppressTtsOnKeyword(it) }
-                )
             }
         }
     }
@@ -11870,7 +11841,6 @@ private fun SoundboardScreen(
                         .fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    controlCard(Modifier.fillMaxWidth())
                     contentCard(
                         Modifier
                             .fillMaxWidth()
@@ -11889,7 +11859,6 @@ private fun SoundboardScreen(
                 modifier = pageModifier,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                controlCard(Modifier.fillMaxWidth())
                 contentCard(
                     Modifier
                         .fillMaxWidth()
@@ -12211,6 +12180,11 @@ private fun SoundboardEditorScreen(
                                 onCheckedChange = { viewModel.setSoundboardSuppressTtsOnKeyword(it) }
                             )
                         }
+                        Text(
+                            "命中音效板唤醒词时只上屏并播放音效，跳过本句 TTS。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f)
+                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
@@ -17193,6 +17167,9 @@ fun DrawingBoardScreen(
     var viewportPanX by rememberSaveable { mutableFloatStateOf(0f) }
     var viewportPanY by rememberSaveable { mutableFloatStateOf(0f) }
     val toolbarCollapsed = viewModel.drawingToolbarCollapsed
+    val navigationBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val hasPortraitThreeButtonNav = !isLandscape && navigationBarBottomInset >= 32.dp
+    val portraitToolbarBottomInset = if (hasPortraitThreeButtonNav) navigationBarBottomInset else 0.dp
     val boardReserveEndTarget = if (isLandscape) {
         if (toolbarCollapsed) 76.dp else 128.dp
     } else {
@@ -17201,7 +17178,12 @@ fun DrawingBoardScreen(
     val boardReserveBottomTarget = if (isLandscape) {
         0.dp
     } else {
-        if (toolbarCollapsed) 76.dp else 168.dp
+        when {
+            toolbarCollapsed && hasPortraitThreeButtonNav -> 76.dp
+            toolbarCollapsed -> 66.dp
+            hasPortraitThreeButtonNav -> 168.dp
+            else -> 120.dp
+        }
     }
     val boardReserveEnd by animateDpAsState(
         targetValue = boardReserveEndTarget,
@@ -17551,8 +17533,7 @@ fun DrawingBoardScreen(
         } else {
             Modifier
                 .align(Alignment.BottomCenter)
-                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
-                .padding(bottom = 10.dp)
+                .padding(bottom = 10.dp + portraitToolbarBottomInset)
         }
 
         DrawingToolbar(
