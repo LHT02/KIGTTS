@@ -433,7 +433,11 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
         }
     }
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = env.createSession(voicePack.modelPath.absolutePath, OrtSession.SessionOptions())
+    private val sessionOptions = OrtSession.SessionOptions().apply {
+        setIntraOpNumThreads(1)
+        setInterOpNumThreads(1)
+    }
+    private val session: OrtSession = env.createSession(voicePack.modelPath.absolutePath, sessionOptions)
     override val sampleRate: Int = voicePack.sampleRate
     @Volatile private var noiseScale: Float = 0.667f
     @Volatile private var lengthScale: Float = 1.0f
@@ -1815,6 +1819,19 @@ class RealtimeController(
         return out
     }
 
+    private inline fun <T> withAndroidThreadPriority(priority: Int, block: () -> T): T {
+        val tid = android.os.Process.myTid()
+        val previous = runCatching { android.os.Process.getThreadPriority(tid) }.getOrNull()
+        runCatching { android.os.Process.setThreadPriority(tid, priority) }
+        return try {
+            block()
+        } finally {
+            if (previous != null) {
+                runCatching { android.os.Process.setThreadPriority(tid, previous) }
+            }
+        }
+    }
+
     private fun synthesizeByPunctuation(ttsEngine: TtsModule, text: String): FloatArray {
         val chunks = splitForPunctuationSynthesis(text)
         if (chunks.isEmpty()) return FloatArray(0)
@@ -2374,7 +2391,13 @@ class RealtimeController(
                     notifyProgress(next.id, 0f)
                     val ttsEngine = tts
                     val pcm = if (ttsEngine != null) {
-                        synthesizeByPunctuation(ttsEngine, next.text)
+                        if (ttsEngine is PiperTtsEngine) {
+                            withAndroidThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) {
+                                synthesizeByPunctuation(ttsEngine, next.text)
+                            }
+                        } else {
+                            synthesizeByPunctuation(ttsEngine, next.text)
+                        }
                     } else {
                         FloatArray(0)
                     }
@@ -3250,115 +3273,117 @@ class RealtimeController(
         val buffer = ShortArray(2048)
         val window = mutableListOf<Float>()
         loopJob = scope.launch(Dispatchers.Default) {
-            try {
-                rec.startRecording()
-                reportInputDevice(rec)
-                updateOutputDeviceFromSystem()
-                var silenceMs = 0
-                var voicedMs = 0
-                val minVoicedMs = 200
-                val minVoicedRatio = 0.2
-                val silenceThreshold = 0.015
-                val speechThreshold = 0.03
-                while (isActive) {
-                    val read = rec.read(buffer, 0, buffer.size)
-                    if (read <= 0) continue
-                    val floatBuf = FloatArray(read)
-                    for (i in 0 until read) {
-                        floatBuf[i] = buffer[i] / 32768f
-                    }
-                    if (useAec3) {
-                        aec3?.processCapture(floatBuf, 0, read)
-                        captureFrames.incrementAndGet()
-                        lastCaptureMs.set(SystemClock.uptimeMillis())
-                    }
-                    applyNoiseSuppression(floatBuf, read)
-                    var sumSq = 0.0
-                    for (i in 0 until read) {
-                        val v = floatBuf[i]
-                        sumSq += v * v
-                    }
-                    val bufRms = if (read > 0) sqrt(sumSq / read) else 0.0
-                    val now = SystemClock.uptimeMillis()
-                    if (now - lastLevelReportMs >= 60L) {
-                        lastLevelReportMs = now
-                        notifyLevel(bufRms.toFloat())
+            withAndroidThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) {
+                try {
+                    rec.startRecording()
+                    reportInputDevice(rec)
+                    updateOutputDeviceFromSystem()
+                    var silenceMs = 0
+                    var voicedMs = 0
+                    val minVoicedMs = 200
+                    val minVoicedRatio = 0.2
+                    val silenceThreshold = 0.015
+                    val speechThreshold = 0.03
+                    while (isActive) {
+                        val read = rec.read(buffer, 0, buffer.size)
+                        if (read <= 0) continue
+                        val floatBuf = FloatArray(read)
+                        for (i in 0 until read) {
+                            floatBuf[i] = buffer[i] / 32768f
+                        }
                         if (useAec3) {
-                            notifyAec3Diag(buildAec3Diag(now))
+                            aec3?.processCapture(floatBuf, 0, read)
+                            captureFrames.incrementAndGet()
+                            lastCaptureMs.set(SystemClock.uptimeMillis())
                         }
-                    }
-                    if (suppressWhilePlaying && (player.isPlaying || now < suppressUntilMs)) {
-                        window.clear()
-                        resetSileroPreRollState()
-                        silenceMs = 0
-                        voicedMs = 0
-                        continue
-                    }
-                    val recognitionBuf = processRealtimeSpeechEnhancement(floatBuf, sampleRate)
-                    if (recognitionBuf.isEmpty()) {
-                        continue
-                    }
-                    for (sample in recognitionBuf) {
-                        window.add(sample)
-                    }
-                    if (sileroVadEnabled) {
-                        acceptSileroVadWaveform(recognitionBuf)
-                        val segments = drainSileroVadSegments(flush = false)
-                        updateSileroPreRollState(recognitionBuf, isSileroSpeechDetected())
-                        segments.forEach { segment ->
-                            val audio = prependPendingSileroPreRoll(segment)
-                            if (classicVadEnabled && !passesClassicVadGate(audio)) return@forEach
-                            processRecognizedSegment(audio)
+                        applyNoiseSuppression(floatBuf, read)
+                        var sumSq = 0.0
+                        for (i in 0 until read) {
+                            val v = floatBuf[i]
+                            sumSq += v * v
                         }
-                        val maxStreamingWindowSamples = sampleRate * 3
-                        if (window.size > maxStreamingWindowSamples) {
-                            val overflow = window.size - maxStreamingWindowSamples
-                            if (overflow > 0) {
-                                window.subList(0, overflow).clear()
+                        val bufRms = if (read > 0) sqrt(sumSq / read) else 0.0
+                        val now = SystemClock.uptimeMillis()
+                        if (now - lastLevelReportMs >= 60L) {
+                            lastLevelReportMs = now
+                            notifyLevel(bufRms.toFloat())
+                            if (useAec3) {
+                                notifyAec3Diag(buildAec3Diag(now))
                             }
                         }
-                    } else {
-                        resetSileroPreRollState()
-                    }
-                    maybeDecodeStreamingSenseVoice(window, now)
-                    if (classicVadEnabled && !sileroVadEnabled) {
-                        val energy = sqrt(window.takeLast(min(400, window.size)).map { it * it }.average())
-                        val stepMs = recognitionBuf.size * 1000 / sampleRate
-                        if (energy < silenceThreshold) {
-                            silenceMs += stepMs
-                        } else {
+                        if (suppressWhilePlaying && (player.isPlaying || now < suppressUntilMs)) {
+                            window.clear()
+                            resetSileroPreRollState()
                             silenceMs = 0
+                            voicedMs = 0
+                            continue
                         }
-                        if (energy > speechThreshold) {
-                            voicedMs += stepMs
+                        val recognitionBuf = processRealtimeSpeechEnhancement(floatBuf, sampleRate)
+                        if (recognitionBuf.isEmpty()) {
+                            continue
                         }
-                        val minSpeechMs = 600
-                        val maxSpeechMs = 12000
-                        val durMs = window.size * 1000 / sampleRate
-                        if (silenceMs > 400 && durMs in minSpeechMs..maxSpeechMs && !player.isPlaying) {
-                            val voicedRatio = if (durMs > 0) voicedMs.toDouble() / durMs else 0.0
-                            if (voicedMs < minVoicedMs || voicedRatio < minVoicedRatio) {
+                        for (sample in recognitionBuf) {
+                            window.add(sample)
+                        }
+                        if (sileroVadEnabled) {
+                            acceptSileroVadWaveform(recognitionBuf)
+                            val segments = drainSileroVadSegments(flush = false)
+                            updateSileroPreRollState(recognitionBuf, isSileroSpeechDetected())
+                            segments.forEach { segment ->
+                                val audio = prependPendingSileroPreRoll(segment)
+                                if (classicVadEnabled && !passesClassicVadGate(audio)) return@forEach
+                                processRecognizedSegment(audio)
+                            }
+                            val maxStreamingWindowSamples = sampleRate * 3
+                            if (window.size > maxStreamingWindowSamples) {
+                                val overflow = window.size - maxStreamingWindowSamples
+                                if (overflow > 0) {
+                                    window.subList(0, overflow).clear()
+                                }
+                            }
+                        } else {
+                            resetSileroPreRollState()
+                        }
+                        maybeDecodeStreamingSenseVoice(window, now)
+                        if (classicVadEnabled && !sileroVadEnabled) {
+                            val energy = sqrt(window.takeLast(min(400, window.size)).map { it * it }.average())
+                            val stepMs = recognitionBuf.size * 1000 / sampleRate
+                            if (energy < silenceThreshold) {
+                                silenceMs += stepMs
+                            } else {
+                                silenceMs = 0
+                            }
+                            if (energy > speechThreshold) {
+                                voicedMs += stepMs
+                            }
+                            val minSpeechMs = 600
+                            val maxSpeechMs = 12000
+                            val durMs = window.size * 1000 / sampleRate
+                            if (silenceMs > 400 && durMs in minSpeechMs..maxSpeechMs && !player.isPlaying) {
+                                val voicedRatio = if (durMs > 0) voicedMs.toDouble() / durMs else 0.0
+                                if (voicedMs < minVoicedMs || voicedRatio < minVoicedRatio) {
+                                    window.clear()
+                                    silenceMs = 0
+                                    voicedMs = 0
+                                    continue
+                                }
+                                val audio = window.toFloatArray()
                                 window.clear()
                                 silenceMs = 0
                                 voicedMs = 0
-                                continue
+                                processRecognizedSegment(audio)
                             }
-                            val audio = window.toFloatArray()
-                            window.clear()
-                            silenceMs = 0
-                            voicedMs = 0
-                            processRecognizedSegment(audio)
-                        }
-                        if (durMs > maxSpeechMs) {
-                            window.clear()
-                            silenceMs = 0
-                            voicedMs = 0
+                            if (durMs > maxSpeechMs) {
+                                window.clear()
+                                silenceMs = 0
+                                voicedMs = 0
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    AppLogger.e("Realtime loop failed", e)
+                    notifyError("实时转换异常: ${e.message}")
                 }
-            } catch (e: Exception) {
-                AppLogger.e("Realtime loop failed", e)
-                notifyError("实时转换异常: ${e.message}")
             }
         }
     }
