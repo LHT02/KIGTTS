@@ -45,6 +45,7 @@ import android.text.TextWatcher
 import android.util.DisplayMetrics
 import android.util.TypedValue
 import android.view.Display
+import android.view.HapticFeedbackConstants
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.ViewConfiguration
@@ -659,6 +660,7 @@ class FloatingOverlayService : Service() {
             holder.textView.text = item
             holder.root.setOnClickListener {
                 if (item.isBlank()) return@setOnClickListener
+                performOverlayKeyHaptic(holder.root)
                 submitQuickSubtitleText(item)
             }
         }
@@ -1802,6 +1804,7 @@ class FloatingOverlayService : Service() {
                 symbolTextView("edit", 24f, overlayOnSurfaceColor()).apply {
                     panelEditButtonView = this
                     setOnClickListener {
+                        performOverlayKeyHaptic(this)
                         panelEditMode = !panelEditMode
                         refreshPanelUi()
                     }
@@ -1818,6 +1821,7 @@ class FloatingOverlayService : Service() {
                 symbolTextView("open_in_new", 24f, overlayOnSurfaceColor()).apply {
                     panelOpenButtonView = this
                     setOnClickListener {
+                        performOverlayKeyHaptic(this)
                         hidePanel()
                         launchQuickSubtitlePage()
                     }
@@ -2144,7 +2148,10 @@ class FloatingOverlayService : Service() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         foreground = selectableDrawable()
                     }
-                    setOnClickListener { openMainAppAndCollapseOverlay(fromMiniPanel = true) }
+                    setOnClickListener {
+                        performOverlayKeyHaptic(this)
+                        openMainAppAndCollapseOverlay(fromMiniPanel = true)
+                    }
                     addView(
                         miniStatusTextView,
                         FrameLayout.LayoutParams(
@@ -2166,7 +2173,10 @@ class FloatingOverlayService : Service() {
             )
             addView(spaceView(dp(10), 1))
             addView(miniStatusTriggerContainer)
-            setOnClickListener { returnFromMiniToPanel() }
+            setOnClickListener {
+                performOverlayKeyHaptic(this)
+                returnFromMiniToPanel()
+            }
         }
         miniTopStripView = topStrip
 
@@ -3389,6 +3399,7 @@ class FloatingOverlayService : Service() {
         val params = fabParams ?: return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                performOverlayKeyHaptic(fabButton)
                 fabTouchDockEdge = if (fabIdleDocked) resolveCurrentFabDockEdge(params) else null
                 cancelFabIdleDock(restoreFab = false, animateRestore = false)
                 cancelFabSnapAnimation()
@@ -3464,6 +3475,9 @@ class FloatingOverlayService : Service() {
 
     @SuppressLint("ClickableViewAccessibility")
     private fun handleSharedActionTouch(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            performOverlayKeyHaptic(activeConfirmFab())
+        }
         if (settings.pushToTalkMode) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -4678,6 +4692,8 @@ class FloatingOverlayService : Service() {
         val currentIndex = quickSubtitleGroups.indexOfFirst { it.id == currentGroupId }
             .coerceAtLeast(0)
         val nextIndex = (currentIndex + delta).floorMod(quickSubtitleGroups.size)
+        if (nextIndex == currentIndex) return
+        performOverlayKeyHaptic(miniQuickSwitcherView ?: miniGroupIconView)
         miniQuickSubtitleSelectedGroupId = quickSubtitleGroups[nextIndex].id
         refreshQuickSubtitleUi()
     }
@@ -7361,6 +7377,7 @@ class FloatingOverlayService : Service() {
             snapPanelToNearestPage()
             return
         }
+        performOverlayKeyHaptic(panelPager ?: panelRoot)
         panelPageIndex = targetIndex
         refreshPanelIndicators()
         scrollPanelToPage(targetIndex, animate = true)
@@ -7368,6 +7385,7 @@ class FloatingOverlayService : Service() {
 
     private fun handlePanelLauncherTileClick(tile: OverlayLauncherTile) {
         if (panelEditMode && !tile.isAddButton) return
+        performOverlayKeyHaptic(panelRoot)
         when {
             tile.isAddButton -> showShortcutPicker()
             tile.shortcut != null -> {
@@ -8901,6 +8919,12 @@ class FloatingOverlayService : Service() {
     }
 
     private fun overlayPrimaryColor(): Int = 0xFF038387.toInt()
+
+    private fun performOverlayKeyHaptic(anchor: View? = null) {
+        if (!settings.hapticFeedbackEnabled) return
+        (anchor ?: fabButton ?: panelActionFab ?: miniActionFab ?: panelRoot ?: miniRoot ?: fabRoot)
+            ?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+    }
 
     private fun overlayCardColor(): Int =
         if (overlayDarkTheme) 0xFF1D2023.toInt() else Color.WHITE

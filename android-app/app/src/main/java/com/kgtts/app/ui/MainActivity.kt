@@ -30,6 +30,7 @@ import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.Surface
@@ -582,6 +583,7 @@ data class UiState(
     val themeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val overlayThemeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val fontScaleBlockMode: Int = UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY,
+    val hapticFeedbackEnabled: Boolean = false,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val quickCardAutoSaveOnExit: Boolean = false,
     val useBuiltinFileManager: Boolean = true,
@@ -1108,11 +1110,16 @@ class MainViewModel(
         detachRealtimeHost()
         realtimeHost = service
         service.setQuickSubtitlePlayOnSend(quickSubtitlePlayOnSend)
+        val attachedSpeakerSimilarity = service.getSpeakerLastSimilarity()
+        if (attachedSpeakerSimilarity >= 0f) {
+            uiState = uiState.copy(speakerLastSimilarity = attachedSpeakerSimilarity)
+        }
         hostStateJob = viewModelScope.launch {
             service.stateFlow().collectLatest { snapshot ->
                 realtimeRecognized = snapshot.recognized
                 realtimeInputLevel = snapshot.inputLevel.coerceIn(0f, 1f)
                 realtimePlaybackProgress = snapshot.playbackProgress.coerceIn(0f, 1f)
+                val previousSpeakerSimilarity = uiState.speakerLastSimilarity
                 uiState = uiState.copy(
                     asrDir = snapshot.asrDir,
                     voiceDir = snapshot.voiceDir,
@@ -1123,7 +1130,11 @@ class MainViewModel(
                     aec3Diag = snapshot.aec3Diag,
                     pushToTalkPressed = snapshot.pushToTalkPressed,
                     pushToTalkStreamingText = snapshot.pushToTalkStreamingText,
-                    speakerLastSimilarity = snapshot.speakerLastSimilarity,
+                    speakerLastSimilarity = if (snapshot.speakerLastSimilarity >= 0f) {
+                        snapshot.speakerLastSimilarity
+                    } else {
+                        previousSpeakerSimilarity
+                    },
                     inputDeviceLabel = snapshot.inputDeviceLabel.ifBlank { uiState.inputDeviceLabel },
                     outputDeviceLabel = snapshot.outputDeviceLabel.ifBlank { uiState.outputDeviceLabel }
                 )
@@ -1294,6 +1305,7 @@ class MainViewModel(
             themeMode = settings.themeMode,
             overlayThemeMode = settings.overlayThemeMode,
             fontScaleBlockMode = settings.fontScaleBlockMode,
+            hapticFeedbackEnabled = settings.hapticFeedbackEnabled,
             drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
             quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
             useBuiltinFileManager = settings.useBuiltinFileManager,
@@ -3600,6 +3612,13 @@ class MainViewModel(
         uiState = uiState.copy(fontScaleBlockMode = normalized)
         viewModelScope.launch {
             UserPrefs.setFontScaleBlockMode(appContext, normalized)
+        }
+    }
+
+    fun setHapticFeedbackEnabled(enabled: Boolean) {
+        uiState = uiState.copy(hapticFeedbackEnabled = enabled)
+        viewModelScope.launch {
+            UserPrefs.setHapticFeedbackEnabled(appContext, enabled)
         }
     }
 
@@ -7512,6 +7531,8 @@ internal val LocalFontScaleBlockMode = staticCompositionLocalOf {
     UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY
 }
 
+private val LocalKigttsHapticFeedbackEnabled = staticCompositionLocalOf { false }
+
 @Composable
 internal fun KigttsFontScaleProvider(
     mode: Int = FontScaleBlockRuntime.mode,
@@ -7529,6 +7550,44 @@ internal fun KigttsFontScaleProvider(
         LocalDensity provides providedDensity,
         content = content
     )
+}
+
+private fun View.performKigttsKeyHaptic(enabled: Boolean) {
+    if (!enabled) return
+    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+}
+
+@Composable
+private fun rememberKigttsKeyHaptic(): () -> Unit {
+    val enabled = LocalKigttsHapticFeedbackEnabled.current
+    val view = LocalView.current
+    return remember(view, enabled) {
+        { view.performKigttsKeyHaptic(enabled) }
+    }
+}
+
+@Composable
+private fun rememberKigttsHapticClick(onClick: () -> Unit): () -> Unit {
+    val performHaptic = rememberKigttsKeyHaptic()
+    val currentOnClick by rememberUpdatedState(onClick)
+    return remember(performHaptic) {
+        {
+            performHaptic()
+            currentOnClick()
+        }
+    }
+}
+
+@Composable
+private fun <T> rememberKigttsHapticValueChange(onValueChange: (T) -> Unit): (T) -> Unit {
+    val performHaptic = rememberKigttsKeyHaptic()
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    return remember(performHaptic) {
+        { value ->
+            performHaptic()
+            currentOnValueChange(value)
+        }
+    }
 }
 
 @Composable
@@ -7763,7 +7822,10 @@ class MainActivity : ComponentActivity() {
                 val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
                 val textToolbarState = remember { KigttsTextToolbarState() }
                 val textToolbar = remember(textToolbarState) { KigttsTextToolbar(textToolbarState) }
-                CompositionLocalProvider(LocalMd2ExtraColors provides extraColors) {
+                CompositionLocalProvider(
+                    LocalMd2ExtraColors provides extraColors,
+                    LocalKigttsHapticFeedbackEnabled provides state.hapticFeedbackEnabled
+                ) {
                     CompositionLocalProvider(LocalTextToolbar provides textToolbar) {
                         MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
                             Surface(
@@ -8183,8 +8245,9 @@ private fun Md2Button(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     Button(
-        onClick = onClick,
+        onClick = hapticOnClick,
         modifier = modifier,
         enabled = enabled,
         shape = Md2ControlShape,
@@ -8211,8 +8274,9 @@ private fun Md2OutlinedButton(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     OutlinedButton(
-        onClick = onClick,
+        onClick = hapticOnClick,
         modifier = modifier,
         enabled = enabled,
         shape = Md2ControlShape,
@@ -8263,8 +8327,9 @@ private fun Md2TextButton(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     TextButton(
-        onClick = onClick,
+        onClick = hapticOnClick,
         modifier = modifier,
         enabled = enabled,
         shape = Md2ControlShape,
@@ -8284,8 +8349,9 @@ private fun Md2IconButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     IconButton(
-        onClick = onClick,
+        onClick = hapticOnClick,
         enabled = enabled,
         modifier = modifier.size(36.dp)
     ) {
@@ -8305,6 +8371,7 @@ private fun Md2Switch(
     enabled: Boolean = true
 ) {
     val dark = currentAppDarkTheme()
+    val hapticOnCheckedChange = rememberKigttsHapticValueChange(onCheckedChange)
     val uncheckedTrack = if (dark) Color(0xFF697378) else Color(0xFFB3C1C6)
     val uncheckedThumb = if (dark) Color(0xFFE6EFF2) else Color.White
     // Disabled state should look clearly gray, not transparent/faded-out.
@@ -8312,7 +8379,7 @@ private fun Md2Switch(
     val disabledThumb = if (dark) Color(0xFF99A2A9) else Color(0xFF8E979E)
     Switch(
         checked = checked,
-        onCheckedChange = onCheckedChange,
+        onCheckedChange = hapticOnCheckedChange,
         modifier = modifier,
         enabled = enabled,
         colors = SwitchDefaults.colors(
@@ -8454,6 +8521,7 @@ private fun Md2SettingSwitchRow(
     supportingText: String? = null
 ) {
     val contentAlpha = if (enabled) 1f else 0.56f
+    val hapticToggle = rememberKigttsHapticClick { onCheckedChange(!checked) }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -8462,7 +8530,7 @@ private fun Md2SettingSwitchRow(
                 enabled = enabled,
                 interactionSource = remember { MutableInteractionSource() },
                 indication = rememberRipple(bounded = true)
-            ) { onCheckedChange(!checked) }
+            ) { hapticToggle() }
             .padding(horizontal = 2.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -8507,6 +8575,7 @@ private fun Md2SettingDropdownRow(
     menuContent: @Composable ColumnScope.() -> Unit
 ) {
     val contentAlpha = if (enabled) 1f else 0.56f
+    val hapticExpand = rememberKigttsHapticClick { onExpandedChange(true) }
     Box(modifier = modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -8516,7 +8585,7 @@ private fun Md2SettingDropdownRow(
                     enabled = enabled,
                     interactionSource = remember { MutableInteractionSource() },
                     indication = rememberRipple(bounded = true)
-                ) { onExpandedChange(true) }
+                ) { hapticExpand() }
                 .padding(horizontal = 2.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -13486,6 +13555,7 @@ fun QuickSubtitleScreen(
     val compactQuickGroupSwipeThresholdPx = with(LocalDensity.current) { 18.dp.toPx() }
     var compactQuickGroupSuppressAnimation by remember { mutableStateOf(false) }
     val currentCompactSelectedGroupIndex by rememberUpdatedState(selectedGroupIndex)
+    val performKeyHaptic = rememberKigttsKeyHaptic()
     val rotatedSubtitleText: @Composable (
         text: String,
         color: Color,
@@ -13945,6 +14015,7 @@ fun QuickSubtitleScreen(
                                                                 shadowStyle = MdCardShadowStyle
                                                             )
                                                             .clickable {
+                                                                performKeyHaptic()
                                                                 viewModel.submitQuickSubtitlePreset(
                                                                     text = text,
                                                                     hasVoice = hasVoice
@@ -13977,7 +14048,10 @@ fun QuickSubtitleScreen(
                                                             shape = RoundedCornerShape(UiTokens.Radius),
                                                             shadowStyle = MdCardShadowStyle
                                                         )
-                                                        .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                        .clickable {
+                                                            performKeyHaptic()
+                                                            addCurrentTextToQuickItems(groupIndex)
+                                                        },
                                                     shape = RoundedCornerShape(UiTokens.Radius),
                                                     backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
                                                     elevation = 0.dp
@@ -14022,7 +14096,10 @@ fun QuickSubtitleScreen(
                                                         .height(44.dp)
                                                         .clip(RoundedCornerShape(UiTokens.Radius))
                                                         .background(tabBg)
-                                                        .clickable { viewModel.selectQuickSubtitleGroup(index) },
+                                                        .clickable {
+                                                            performKeyHaptic()
+                                                            viewModel.selectQuickSubtitleGroup(index)
+                                                        },
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     MsIcon(
@@ -14039,7 +14116,10 @@ fun QuickSubtitleScreen(
                                             color = MaterialTheme.colorScheme.primary
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
-                                                IconButton(onClick = onOpenEditor) {
+                                                IconButton(onClick = {
+                                                    performKeyHaptic()
+                                                    onOpenEditor()
+                                                }) {
                                                     MsIcon(
                                                         "edit",
                                                         contentDescription = "编辑快捷文本",
@@ -14284,6 +14364,7 @@ fun QuickSubtitleScreen(
                                                                     .width(148.dp)
                                                                     .height(94.dp)
                                                                     .clickable {
+                                                                        performKeyHaptic()
                                                                         viewModel.submitQuickSubtitlePreset(
                                                                             text = text,
                                                                             hasVoice = hasVoice,
@@ -14313,7 +14394,10 @@ fun QuickSubtitleScreen(
                                                             modifier = Modifier
                                                                 .width(86.dp)
                                                                 .height(94.dp)
-                                                                .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                                .clickable {
+                                                                    performKeyHaptic()
+                                                                    addCurrentTextToQuickItems(groupIndex)
+                                                                },
                                                             contentAlignment = Alignment.Center
                                                         ) {
                                                             MsIcon("add", contentDescription = "添加当前文本")
@@ -14384,6 +14468,7 @@ fun QuickSubtitleScreen(
                                                         } else {
                                                             if (currentCompactSelectedGroupIndex < groups.lastIndex) currentCompactSelectedGroupIndex + 1 else 0
                                                         }
+                                                        performKeyHaptic()
                                                         viewModel.selectQuickSubtitleGroup(target)
                                                         accumulatedDrag = 0f
                                                     }
@@ -14497,6 +14582,7 @@ fun QuickSubtitleScreen(
                                                         .width(148.dp)
                                                         .height(94.dp)
                                                         .clickable {
+                                                            performKeyHaptic()
                                                             viewModel.submitQuickSubtitlePreset(
                                                                 text = text,
                                                                 hasVoice = hasVoice
@@ -14526,7 +14612,10 @@ fun QuickSubtitleScreen(
                                                     .padding(vertical = 3.dp)
                                                     .width(86.dp)
                                                     .height(94.dp)
-                                                    .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                    .clickable {
+                                                        performKeyHaptic()
+                                                        addCurrentTextToQuickItems(groupIndex)
+                                                    },
                                                 shape = RoundedCornerShape(UiTokens.Radius),
                                                 backgroundColor = md2CardContainerColor(),
                                                 elevation = UiTokens.CardElevation
@@ -14580,7 +14669,10 @@ fun QuickSubtitleScreen(
                                                                 .height(48.dp)
                                                                 .clip(RoundedCornerShape(UiTokens.Radius))
                                                                 .background(tabBg)
-                                                                .clickable { viewModel.selectQuickSubtitleGroup(index) }
+                                                                .clickable {
+                                                                    performKeyHaptic()
+                                                                    viewModel.selectQuickSubtitleGroup(index)
+                                                                }
                                                                 .padding(horizontal = 10.dp),
                                                             verticalAlignment = Alignment.CenterVertically,
                                                             horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -14601,7 +14693,10 @@ fun QuickSubtitleScreen(
                                                     color = MaterialTheme.colorScheme.primary
                                                 ) {
                                                     Box(contentAlignment = Alignment.Center) {
-                                                        IconButton(onClick = onOpenEditor) {
+                                                        IconButton(onClick = {
+                                                            performKeyHaptic()
+                                                            onOpenEditor()
+                                                        }) {
                                                             MsIcon(
                                                                 "edit",
                                                                 contentDescription = "编辑快捷文本",
@@ -19038,6 +19133,12 @@ fun SettingsScreen(
                             ) { Text(label) }
                         }
                     }
+                    Md2SettingSwitchRow(
+                        title = "按键震动反馈",
+                        checked = state.hapticFeedbackEnabled,
+                        onCheckedChange = { viewModel.setHapticFeedbackEnabled(it) },
+                        supportingText = "开启后主界面和悬浮窗按键、快捷字幕分组滑动切换会调用系统原生按键触感反馈。"
+                    )
                     Md2SettingDropdownRow(
                         title = "横屏抽屉模式",
                         value = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second

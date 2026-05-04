@@ -313,6 +313,11 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setSpeakerVerifyThreshold(threshold)
     }
 
+    fun getSpeakerLastSimilarity(): Float {
+        val controllerSimilarity = controller?.latestSpeakerSimilarity() ?: -1f
+        return if (controllerSimilarity >= 0f) controllerSimilarity else currentState().speakerLastSimilarity
+    }
+
     fun setSpeakerProfiles(profiles: List<FloatArray>) {
         controller?.setSpeakerProfiles(profiles)
         updateState { it.copy(speakerLastSimilarity = -1f) }
