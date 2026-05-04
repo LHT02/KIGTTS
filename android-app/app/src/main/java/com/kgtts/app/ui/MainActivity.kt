@@ -591,6 +591,7 @@ data class UiState(
     val pushToTalkConfirmInputMode: Boolean = false,
     val floatingOverlayEnabled: Boolean = false,
     val floatingOverlayAutoDock: Boolean = true,
+    val floatingOverlayShowOnLockScreen: Boolean = false,
     val floatingOverlayHardcodedShortcutSupplement: Boolean = false,
     val volumeHotkeyUpDownEnabled: Boolean = false,
     val volumeHotkeyDownUpEnabled: Boolean = false,
@@ -1302,6 +1303,7 @@ class MainViewModel(
             pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
             floatingOverlayEnabled = settings.floatingOverlayEnabled,
             floatingOverlayAutoDock = settings.floatingOverlayAutoDock,
+            floatingOverlayShowOnLockScreen = settings.floatingOverlayShowOnLockScreen,
             floatingOverlayHardcodedShortcutSupplement =
                 settings.floatingOverlayHardcodedShortcutSupplement,
             volumeHotkeyUpDownEnabled = settings.volumeHotkeyUpDownEnabled,
@@ -3196,6 +3198,13 @@ class MainViewModel(
         uiState = uiState.copy(floatingOverlayAutoDock = enabled)
         viewModelScope.launch {
             UserPrefs.setFloatingOverlayAutoDock(appContext, enabled)
+        }
+    }
+
+    fun setFloatingOverlayShowOnLockScreen(enabled: Boolean) {
+        uiState = uiState.copy(floatingOverlayShowOnLockScreen = enabled)
+        viewModelScope.launch {
+            UserPrefs.setFloatingOverlayShowOnLockScreen(appContext, enabled)
         }
     }
 
@@ -16314,6 +16323,21 @@ fun FloatingOverlayScreen(
                 }
                 Text(
                     "开启后，悬浮 FAB 在 3 秒无操作时会自动吸附到屏幕边缘，仅露出半边并降低透明度。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.floatingOverlayShowOnLockScreen,
+                        onCheckedChange = { viewModel.setFloatingOverlayShowOnLockScreen(it) }
+                    )
+                    Text("锁屏时显示悬浮窗")
+                }
+                Text(
+                    "开启后会尝试让悬浮窗在锁屏界面上显示并响应操作。部分系统还需要在系统权限中允许锁屏显示或后台弹出界面。",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))

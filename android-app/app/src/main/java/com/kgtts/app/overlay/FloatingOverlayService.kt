@@ -278,7 +278,13 @@ class FloatingOverlayService : Service() {
                 realtimeHostStateJob = null
                 realtimeHost = null
                 realtimeHostBound = false
-                scope.launch { updateFabUi() }
+                scope.launch {
+                    updateFabUi()
+                    delay(800L)
+                    if (settings.floatingOverlayEnabled && realtimeHost == null) {
+                        ensureRealtimeHostBound()
+                    }
+                }
             }
         }
     private val runtimeBridgeListener =
@@ -316,6 +322,7 @@ class FloatingOverlayService : Service() {
     private var quickSubtitleInputText = ""
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
+    private var quickSubtitleConfigLoaded = false
     private var topStatusLastContent = ""
     private var topStatusShowingText = false
     private var topStatusResetJob: Job? = null
@@ -1281,11 +1288,12 @@ class FloatingOverlayService : Service() {
         RealtimeRuntimeBridge.addListener(runtimeBridgeListener)
         observeSettings()
         scope.launch {
+            settings = UserPrefs.getSettings(this@FloatingOverlayService)
+            applyOverlayWindowFlags()
             loadQuickSubtitleConfig()
             loadOverlayShortcuts()
             loadOverlayLauncherLayout()
             restoreFabPositionForCurrentOrientation(allowOppositeConversion = true)
-            loadLaunchableApps()
             refreshPanelUi()
             refreshQuickSubtitleUi()
             updateFabUi()
@@ -1310,11 +1318,11 @@ class FloatingOverlayService : Service() {
             ACTION_REFRESH -> {
                 scope.launch {
                     settings = UserPrefs.getSettings(this@FloatingOverlayService)
+                    applyOverlayWindowFlags()
                     loadQuickSubtitleConfig()
                     loadOverlayShortcuts()
                     loadOverlayLauncherLayout()
                     restoreFabPositionForCurrentOrientation(allowOppositeConversion = true)
-                    loadLaunchableApps()
                     refreshPanelUi()
                     refreshQuickSubtitleUi()
                     updateFabUi()
@@ -1341,6 +1349,14 @@ class FloatingOverlayService : Service() {
         removeWindows()
         scope.cancel()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (settings.floatingOverlayEnabled && canDrawOverlays(this)) {
+            runCatching { start(this) }
+                .onFailure { AppLogger.e("FloatingOverlayService restart after task removed failed", it) }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -1379,6 +1395,7 @@ class FloatingOverlayService : Service() {
             UserPrefs.observeSettings(this@FloatingOverlayService).collectLatest { next ->
                 val previousDarkTheme = overlayDarkTheme
                 val previousFontScaleBlockMode = settings.fontScaleBlockMode
+                val previousShowOnLockScreen = settings.floatingOverlayShowOnLockScreen
                 settings = next
                 if (!next.floatingOverlayEnabled) {
                     stopSelf()
@@ -1393,6 +1410,9 @@ class FloatingOverlayService : Service() {
                 if (next.fontScaleBlockMode != previousFontScaleBlockMode) {
                     rebuildWindowsPreservingState()
                     return@collectLatest
+                }
+                if (next.floatingOverlayShowOnLockScreen != previousShowOnLockScreen) {
+                    applyOverlayWindowFlags()
                 }
                 refreshQuickSubtitleUi()
                 refreshStatusDetailUi()
@@ -1435,9 +1455,49 @@ class FloatingOverlayService : Service() {
     }
 
     @Suppress("DEPRECATION")
+    private fun overlayWindowFlags(
+        notFocusable: Boolean = true,
+        notTouchable: Boolean = false
+    ): Int {
+        var flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        if (notFocusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        if (notTouchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if (settings.floatingOverlayShowOnLockScreen) {
+            flags = flags or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+        }
+        return flags
+    }
+
+    private fun updateOverlayWindowFlags(
+        view: View?,
+        params: WindowManager.LayoutParams?,
+        notFocusable: Boolean = true,
+        notTouchable: Boolean = false
+    ) {
+        if (view == null || params == null) return
+        params.flags = overlayWindowFlags(
+            notFocusable = notFocusable,
+            notTouchable = notTouchable
+        )
+        runCatching { windowManager.updateViewLayout(view, params) }
+            .onFailure { AppLogger.e("FloatingOverlayService.updateOverlayWindowFlags failed", it) }
+    }
+
+    private fun applyOverlayWindowFlags() {
+        updateOverlayWindowFlags(fabRoot, fabParams)
+        updateOverlayWindowFlags(panelRoot, panelParams)
+        updateOverlayWindowFlags(panelPickerOverlay, panelPickerParams, notFocusable = false)
+        updateOverlayWindowFlags(miniRoot, miniParams)
+        updateOverlayWindowFlags(confirmOverlay, confirmParams, notTouchable = true)
+    }
+
+    @Suppress("DEPRECATION")
     @SuppressLint("ClickableViewAccessibility")
     private fun ensureWindows() {
-        if (fabRoot != null) return
+        if (fabRoot != null && panelRoot != null && miniRoot != null && confirmOverlay != null) return
+        if (fabRoot != null || panelRoot != null || miniRoot != null || confirmOverlay != null) {
+            removeWindows()
+        }
 
         bubbleTextView = TextView(this).apply {
             setTextColor(overlayOnSurfaceColor())
@@ -1515,8 +1575,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -1900,8 +1959,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -1991,7 +2049,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(notFocusable = false),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -2737,8 +2795,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -2823,9 +2880,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(notTouchable = true),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -3452,6 +3507,12 @@ class FloatingOverlayService : Service() {
 
     private fun showPanel() {
         scope.launch {
+            if (!canDrawOverlays(this@FloatingOverlayService)) {
+                stopSelf()
+                return@launch
+            }
+            ensureWindows()
+            ensureRealtimeHostBound()
             collapseOverlayStatusExpanded(animate = false)
             val switchingFromMini = miniVisible
             panelVisible = true
@@ -3498,6 +3559,12 @@ class FloatingOverlayService : Service() {
 
     private fun showMiniPanel(mode: MiniOverlayMode = MiniOverlayMode.Subtitle) {
         scope.launch {
+            if (!canDrawOverlays(this@FloatingOverlayService)) {
+                stopSelf()
+                return@launch
+            }
+            ensureWindows()
+            ensureRealtimeHostBound()
             collapseOverlayStatusExpanded(animate = false)
             val switchingFromPanel = panelVisible
             miniMode = mode
@@ -3505,7 +3572,9 @@ class FloatingOverlayService : Service() {
             syncFabVisibility(false)
             when (miniMode) {
                 MiniOverlayMode.Subtitle -> {
-                    loadQuickSubtitleConfig()
+                    if (!quickSubtitleConfigLoaded) {
+                        loadQuickSubtitleConfig()
+                    }
                     refreshQuickSubtitleUi()
                 }
                 MiniOverlayMode.QuickCard -> {
@@ -4346,11 +4415,13 @@ class FloatingOverlayService : Service() {
             quickSubtitleCentered = false
             quickSubtitleNextGroupId = 4L
             reconcileMiniQuickSubtitleState()
+            quickSubtitleConfigLoaded = true
             return
         }
         runCatching { parseQuickSubtitleConfig(raw) }
             .onFailure { AppLogger.e("FloatingOverlayService.parseQuickSubtitleConfig failed", it) }
         quickSubtitleFontSizeSp = overlayFontSize ?: sharedFontFallback
+        quickSubtitleConfigLoaded = true
     }
 
     private fun parseQuickSubtitleConfig(raw: String) {

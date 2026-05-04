@@ -84,6 +84,8 @@ object UserPrefs {
     private val KEY_PUSH_TO_TALK_CONFIRM_INPUT = booleanPreferencesKey("push_to_talk_confirm_input")
     private val KEY_FLOATING_OVERLAY_ENABLED = booleanPreferencesKey("floating_overlay_enabled")
     private val KEY_FLOATING_OVERLAY_AUTO_DOCK = booleanPreferencesKey("floating_overlay_auto_dock")
+    private val KEY_FLOATING_OVERLAY_SHOW_ON_LOCK_SCREEN =
+        booleanPreferencesKey("floating_overlay_show_on_lock_screen")
     private val KEY_FLOATING_OVERLAY_HARDCODED_SHORTCUT_SUPPLEMENT =
         booleanPreferencesKey("floating_overlay_hardcoded_shortcut_supplement")
     private val KEY_VOLUME_HOTKEY_UP_DOWN_ENABLED = booleanPreferencesKey("volume_hotkey_up_down_enabled")
@@ -161,6 +163,7 @@ object UserPrefs {
         val pushToTalkConfirmInput: Boolean = false,
         val floatingOverlayEnabled: Boolean = false,
         val floatingOverlayAutoDock: Boolean = true,
+        val floatingOverlayShowOnLockScreen: Boolean = false,
         val floatingOverlayHardcodedShortcutSupplement: Boolean = false,
         val volumeHotkeyUpDownEnabled: Boolean = false,
         val volumeHotkeyDownUpEnabled: Boolean = false,
@@ -323,6 +326,7 @@ object UserPrefs {
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
             floatingOverlayEnabled = this[KEY_FLOATING_OVERLAY_ENABLED] ?: false,
             floatingOverlayAutoDock = this[KEY_FLOATING_OVERLAY_AUTO_DOCK] ?: true,
+            floatingOverlayShowOnLockScreen = this[KEY_FLOATING_OVERLAY_SHOW_ON_LOCK_SCREEN] ?: false,
             floatingOverlayHardcodedShortcutSupplement =
                 this[KEY_FLOATING_OVERLAY_HARDCODED_SHORTCUT_SUPPLEMENT] ?: false,
             volumeHotkeyUpDownEnabled = this[KEY_VOLUME_HOTKEY_UP_DOWN_ENABLED] ?: false,
@@ -586,6 +590,12 @@ object UserPrefs {
     suspend fun setFloatingOverlayAutoDock(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_FLOATING_OVERLAY_AUTO_DOCK] = enabled
+        }
+    }
+
+    suspend fun setFloatingOverlayShowOnLockScreen(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FLOATING_OVERLAY_SHOW_ON_LOCK_SCREEN] = enabled
         }
     }
 
