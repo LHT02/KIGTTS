@@ -13673,19 +13673,20 @@ fun QuickSubtitleScreen(
     val pttStatusStripBottomBleed = if (isLandscape) 12.dp else 14.dp
     val compactModeDetectionEnabled =
         isLandscape && state.pushToTalkMode && state.pushToTalkConfirmInputMode
-    val imeBottomInset =
+    val pttImeBottomInset =
         if (compactModeDetectionEnabled) WindowInsets.ime.asPaddingValues().calculateBottomPadding() else 0.dp
-    val navBottomInset =
+    val pttNavBottomInset =
         if (compactModeDetectionEnabled) WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() else 0.dp
-    val bottomObstructionInset = if (imeBottomInset > navBottomInset) imeBottomInset else navBottomInset
-    val imeVisible = imeBottomInset > 0.dp
+    val pttBottomObstructionInset =
+        if (pttImeBottomInset > pttNavBottomInset) pttImeBottomInset else pttNavBottomInset
+    val pttImeVisible = pttImeBottomInset > 0.dp
     val pttPendingText = state.pushToTalkStreamingText.ifBlank { "正在识别..." }
     val pttTopButtonsRequiredHeight = 96.dp
     val pttTopEstimatedAvailableHeight =
-        configuration.screenHeightDp.dp - bottomObstructionInset -
+        configuration.screenHeightDp.dp - pttBottomObstructionInset -
             (pttFabSize + pttFabBottomOffset + pttStatusStripBottomBleed + 72.dp)
     val compactPttSideButtonsMode =
-        compactModeDetectionEnabled && (imeVisible || pttTopEstimatedAvailableHeight < pttTopButtonsRequiredHeight)
+        compactModeDetectionEnabled && (pttImeVisible || pttTopEstimatedAvailableHeight < pttTopButtonsRequiredHeight)
     val pttGuideText = when (pttDragTarget) {
         PttConfirmDragTarget.DefaultSend ->
             if (compactPttSideButtonsMode) pttPendingText else "松开手指上屏"
@@ -13723,12 +13724,46 @@ fun QuickSubtitleScreen(
             )
         )
     }
+    var inputFieldFocused by remember { mutableStateOf(false) }
+    var keyboardSeenWhileInputFocused by remember { mutableStateOf(false) }
+    var bottomInputBarHeightPx by remember { mutableIntStateOf(0) }
+    val imeBottomInset = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val keyboardVisible = imeBottomInset > 0.dp
+    val inputPreviewActive = inputFieldFocused && inputFieldValue.text.isNotEmpty()
+    val landscapePhoneInputPreviewMode = isLandscape && configuration.screenHeightDp < 500
+    val inlineInputPreviewActive = inputPreviewActive && !landscapePhoneInputPreviewMode
+    val floatingInputPreviewActive = inputPreviewActive && landscapePhoneInputPreviewMode
+    val inputPreviewCursorIndex = inputFieldValue.selection.start.coerceIn(0, inputFieldValue.text.length)
+    val inputPreviewText = remember(inputFieldValue.text, inputPreviewCursorIndex) {
+        buildString {
+            append(inputFieldValue.text.substring(0, inputPreviewCursorIndex))
+            append("▌")
+            append(inputFieldValue.text.substring(inputPreviewCursorIndex))
+        }
+    }
+    val displayedSubtitleText = if (inlineInputPreviewActive) inputPreviewText else subtitleText
+    val subtitleControlsVisible = !keyboardVisible && !inlineInputPreviewActive
     LaunchedEffect(inputText) {
         if (inputText != inputFieldValue.text) {
             inputFieldValue = TextFieldValue(
                 text = inputText,
                 selection = TextRange(inputText.length)
             )
+        }
+    }
+    LaunchedEffect(inputFieldFocused) {
+        if (!inputFieldFocused) {
+            keyboardSeenWhileInputFocused = false
+        }
+    }
+    LaunchedEffect(keyboardVisible, inputFieldFocused, keyboardSeenWhileInputFocused) {
+        if (!inputFieldFocused) return@LaunchedEffect
+        if (keyboardVisible) {
+            keyboardSeenWhileInputFocused = true
+        } else if (keyboardSeenWhileInputFocused) {
+            focusManager.clearFocus(force = true)
+            inputFieldFocused = false
+            keyboardSeenWhileInputFocused = false
         }
     }
     val hasVoice = state.voiceDir != null
@@ -13744,10 +13779,57 @@ fun QuickSubtitleScreen(
     )
     val landscapeQuickPanelWidth = 220.dp
     val landscapeQuickPanelGap = 8.dp
-    val quickSubtitleBottomBlank = if (isLandscape) {
+    val quickSubtitleBottomBlankBase = if (isLandscape) {
         UiTokens.PageBottomBlank - 12.dp + navBarsBottomInset
     } else {
         UiTokens.PageBottomBlank + 50.dp + navBarsBottomInset
+    }
+    val bottomInputBarHeight = with(LocalDensity.current) { bottomInputBarHeightPx.toDp() }
+    val keyboardRaisedBottomBlank = imeBottomInset + bottomInputBarHeight + 8.dp
+    val quickSubtitleBottomBlankTarget = if (
+        keyboardVisible &&
+        !floatingInputPreviewActive &&
+        keyboardRaisedBottomBlank > quickSubtitleBottomBlankBase
+    ) {
+        keyboardRaisedBottomBlank
+    } else {
+        quickSubtitleBottomBlankBase
+    }
+    val quickSubtitleBottomBlank by animateDpAsState(
+        targetValue = quickSubtitleBottomBlankTarget,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "quick_subtitle_bottom_blank"
+    )
+    val subtitleDisplayContent: @Composable (Boolean, String, Modifier) -> Unit = { preview, displayText, modifier ->
+        AnimatedContent(
+            targetState = preview to displayText,
+            transitionSpec = {
+                ContentTransform(
+                    targetContentEnter = fadeIn(animationSpec = tween(180)) +
+                        slideInVertically(
+                            initialOffsetY = { full -> full / 8 },
+                            animationSpec = tween(200, easing = FastOutSlowInEasing)
+                        ),
+                    initialContentExit = fadeOut(animationSpec = tween(120)),
+                    sizeTransform = null
+                )
+            },
+            label = "quick_subtitle_display_text_change"
+        ) { (preview, text) ->
+            val textColor = when {
+                preview -> MaterialTheme.colorScheme.onSurface
+                text == QUICK_SUBTITLE_CLEARED_HINT -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                else -> MaterialTheme.colorScheme.onSurface
+            }
+            rotatedSubtitleText(
+                text,
+                textColor,
+                subtitleSize,
+                14f,
+                1.15f,
+                modifier
+            )
+        }
     }
     val quickPanelExpanded = !quickInputCollapsed
     val quickPanelAnimatedWidth by animateDpAsState(
@@ -13830,108 +13912,94 @@ fun QuickSubtitleScreen(
                                     Box(
                                         modifier = Modifier.fillMaxSize()
                                     ) {
-                                        AnimatedContent(
-                                            targetState = subtitleText,
-                                            transitionSpec = {
-                                                ContentTransform(
-                                                    targetContentEnter = fadeIn(animationSpec = tween(180)) +
-                                                        slideInVertically(
-                                                            initialOffsetY = { full -> full / 6 },
-                                                            animationSpec = tween(200, easing = FastOutSlowInEasing)
-                                                        ),
-                                                    initialContentExit = fadeOut(animationSpec = tween(120)),
-                                                    sizeTransform = null
-                                                )
-                                            },
-                                            label = "quick_subtitle_text_change"
-                                        ) { text ->
-                                            val textColor = if (text == QUICK_SUBTITLE_CLEARED_HINT) {
-                                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            }
-                                            rotatedSubtitleText(
-                                                text,
-                                                textColor,
-                                                subtitleSize,
-                                                14f,
-                                                1.15f,
-                                                Modifier.fillMaxSize()
-                                            )
-                                        }
+                                        subtitleDisplayContent(
+                                            inlineInputPreviewActive,
+                                            displayedSubtitleText,
+                                            Modifier.fillMaxSize()
+                                        )
                                     }
                                 }
-                                Row(
-                                    modifier = Modifier
-                                        .wrapContentWidth()
-                                        .fillMaxHeight(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                AnimatedVisibility(
+                                    visible = subtitleControlsVisible,
+                                    enter = fadeIn(animationSpec = tween(140)) + expandHorizontally(
+                                        animationSpec = tween(180, easing = FastOutSlowInEasing)
+                                    ),
+                                    exit = fadeOut(animationSpec = tween(120)) + shrinkHorizontally(
+                                        animationSpec = tween(160, easing = FastOutSlowInEasing)
+                                    )
                                 ) {
-                                    Column(
+                                    Row(
                                         modifier = Modifier
-                                            .width(40.dp)
+                                            .wrapContentWidth()
                                             .fillMaxHeight(),
-                                        horizontalAlignment = Alignment.CenterHorizontally
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Box(
+                                        Column(
                                             modifier = Modifier
-                                                .weight(1f)
-                                                .fillMaxWidth()
+                                                .width(40.dp)
+                                                .fillMaxHeight(),
+                                            horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
-                                            Crossfade(
-                                                targetState = showQuickSubtitleActionButtons,
-                                                animationSpec = tween(180),
-                                                label = "quick_subtitle_controls_landscape"
-                                            ) { showButtons ->
-                                                if (showButtons) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .fillMaxSize(),
-                                                        contentAlignment = Alignment.TopCenter
-                                                    ) {
-                                                        subtitleActionButtonsColumn(
-                                                            Modifier
-                                                                .fillMaxWidth()
-                                                                .verticalScroll(rememberScrollState())
-                                                                .padding(top = 4.dp, bottom = 4.dp)
-                                                        )
-                                                    }
-                                                } else {
-                                                    Column(
-                                                        modifier = Modifier
-                                                            .fillMaxSize(),
-                                                        horizontalAlignment = Alignment.CenterHorizontally
-                                                    ) {
-                                                        MsIcon("search", contentDescription = "字体大小")
-                                                        Spacer(Modifier.height(4.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxWidth()
+                                            ) {
+                                                Crossfade(
+                                                    targetState = showQuickSubtitleActionButtons,
+                                                    animationSpec = tween(180),
+                                                    label = "quick_subtitle_controls_landscape"
+                                                ) { showButtons ->
+                                                    if (showButtons) {
                                                         Box(
                                                             modifier = Modifier
-                                                                .padding(top = 4.dp, bottom = 4.dp)
-                                                                .weight(1f)
-                                                                .fillMaxWidth(),
-                                                            contentAlignment = Alignment.Center
+                                                                .fillMaxSize(),
+                                                            contentAlignment = Alignment.TopCenter
                                                         ) {
-                                                            Md2VerticalSlider(
-                                                                value = subtitleSize,
-                                                                onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
-                                                                valueRange = 28f..96f,
-                                                                modifier = Modifier
-                                                                    .fillMaxHeight()
-                                                                    .width(28.dp)
+                                                            subtitleActionButtonsColumn(
+                                                                Modifier
+                                                                    .fillMaxWidth()
+                                                                    .verticalScroll(rememberScrollState())
+                                                                    .padding(top = 4.dp, bottom = 4.dp)
                                                             )
+                                                        }
+                                                    } else {
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxSize(),
+                                                            horizontalAlignment = Alignment.CenterHorizontally
+                                                        ) {
+                                                            MsIcon("search", contentDescription = "字体大小")
+                                                            Spacer(Modifier.height(4.dp))
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .padding(top = 4.dp, bottom = 4.dp)
+                                                                    .weight(1f)
+                                                                    .fillMaxWidth(),
+                                                                contentAlignment = Alignment.Center
+                                                            ) {
+                                                                Md2VerticalSlider(
+                                                                    value = subtitleSize,
+                                                                    onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                                                    valueRange = 28f..96f,
+                                                                    modifier = Modifier
+                                                                        .fillMaxHeight()
+                                                                        .width(28.dp)
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
+                                            Md2IconButton(
+                                                icon = actionPanelToggleIcon,
+                                                contentDescription = actionPanelToggleDescription,
+                                                onClick = {
+                                                    viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
+                                                }
+                                            )
                                         }
-                                        Md2IconButton(
-                                    icon = actionPanelToggleIcon,
-                                    contentDescription = actionPanelToggleDescription,
-                                    onClick = {
-                                        viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
-                                    }
-                                )
                                     }
                                 }
                             }
@@ -14167,103 +14235,89 @@ fun QuickSubtitleScreen(
                                 Box(
                                     modifier = Modifier.fillMaxSize()
                                 ) {
-                                    AnimatedContent(
-                                        targetState = subtitleText,
-                                        transitionSpec = {
-                                            ContentTransform(
-                                                targetContentEnter = fadeIn(animationSpec = tween(180)) +
-                                                    slideInVertically(
-                                                        initialOffsetY = { full -> full / 6 },
-                                                        animationSpec = tween(200, easing = FastOutSlowInEasing)
-                                                    ),
-                                                initialContentExit = fadeOut(animationSpec = tween(120)),
-                                                sizeTransform = null
-                                            )
-                                        },
-                                        label = "quick_subtitle_text_change"
-                                    ) { text ->
-                                        val textColor = if (text == QUICK_SUBTITLE_CLEARED_HINT) {
-                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        }
-                                        rotatedSubtitleText(
-                                            text,
-                                            textColor,
-                                            subtitleSize,
-                                            14f,
-                                            1.15f,
-                                            Modifier.fillMaxSize()
-                                        )
-                                    }
+                                    subtitleDisplayContent(
+                                        inlineInputPreviewActive,
+                                        displayedSubtitleText,
+                                        Modifier.fillMaxSize()
+                                    )
                                 }
                             }
-                            Spacer(Modifier.height(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(portraitSubtitleControlAreaHeight)
+                            AnimatedVisibility(
+                                visible = subtitleControlsVisible,
+                                enter = fadeIn(animationSpec = tween(140)) +
+                                    expandVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+                                exit = fadeOut(animationSpec = tween(120)) +
+                                    shrinkVertically(animationSpec = tween(160, easing = FastOutSlowInEasing))
                             ) {
-                                Crossfade(
-                                    targetState = showQuickSubtitleActionButtons,
-                                    animationSpec = tween(180),
-                                    label = "quick_subtitle_controls_portrait"
-                                ) { showButtons ->
-                                    if (showButtons) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize(),
-                                            contentAlignment = Alignment.BottomStart
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(end = 44.dp)
-                                                    .offset(y = portraitSubtitleControlBaselineOffset),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                subtitleActionButtonsRow(Modifier.weight(1f))
-                                            }
-                                        }
-                                    } else {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize(),
-                                            contentAlignment = Alignment.BottomStart
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 4.dp, end = 44.dp)
-                                                    .offset(y = portraitSubtitleControlBaselineOffset),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                MsIcon("search", contentDescription = "字体大小")
-                                                CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
-                                                    Slider(
-                                                        value = subtitleSize,
-                                                        onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
-                                                        valueRange = 28f..96f,
+                                Column {
+                                    Spacer(Modifier.height(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(portraitSubtitleControlAreaHeight)
+                                    ) {
+                                        Crossfade(
+                                            targetState = showQuickSubtitleActionButtons,
+                                            animationSpec = tween(180),
+                                            label = "quick_subtitle_controls_portrait"
+                                        ) { showButtons ->
+                                            if (showButtons) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize(),
+                                                    contentAlignment = Alignment.BottomStart
+                                                ) {
+                                                    Row(
                                                         modifier = Modifier
-                                                            .weight(1f)
-                                                            .height(36.dp)
-                                                    )
+                                                            .fillMaxWidth()
+                                                            .padding(end = 44.dp)
+                                                            .offset(y = portraitSubtitleControlBaselineOffset),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        subtitleActionButtonsRow(Modifier.weight(1f))
+                                                    }
+                                                }
+                                            } else {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize(),
+                                                    contentAlignment = Alignment.BottomStart
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(start = 4.dp, end = 44.dp)
+                                                            .offset(y = portraitSubtitleControlBaselineOffset),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        MsIcon("search", contentDescription = "字体大小")
+                                                        CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+                                                            Slider(
+                                                                value = subtitleSize,
+                                                                onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                                                valueRange = 28f..96f,
+                                                                modifier = Modifier
+                                                                    .weight(1f)
+                                                                    .height(36.dp)
+                                                            )
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                        Md2IconButton(
+                                            icon = actionPanelToggleIcon,
+                                            contentDescription = actionPanelToggleDescription,
+                                            onClick = {
+                                                viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .offset(y = portraitSubtitleControlBaselineOffset)
+                                        )
                                     }
                                 }
-                                Md2IconButton(
-                                    icon = actionPanelToggleIcon,
-                                    contentDescription = actionPanelToggleDescription,
-                                    onClick = {
-                                        viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
-                                    },
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .offset(y = portraitSubtitleControlBaselineOffset)
-                                )
                             }
                         }
                     }
@@ -14718,6 +14772,55 @@ fun QuickSubtitleScreen(
             Spacer(Modifier.height(quickSubtitleBottomBlank))
         }
 
+        AnimatedVisibility(
+            visible = floatingInputPreviewActive,
+            modifier = Modifier
+                .zIndex(5.2f)
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight()
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = quickSubtitleTopBlank + 8.dp,
+                    bottom = imeBottomInset + bottomInputBarHeight + 8.dp
+                ),
+            enter = fadeIn(animationSpec = tween(150)) +
+                scaleIn(
+                    initialScale = 0.96f,
+                    animationSpec = tween(180, easing = FastOutSlowInEasing)
+                ),
+            exit = fadeOut(animationSpec = tween(120)) +
+                scaleOut(
+                    targetScale = 0.98f,
+                    animationSpec = tween(140, easing = FastOutSlowInEasing)
+                )
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .mdCenteredShadow(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        shadowStyle = MdCardShadowStyle
+                    ),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
+                elevation = 0.dp
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(14.dp)
+                ) {
+                    subtitleDisplayContent(
+                        true,
+                        inputPreviewText,
+                        Modifier.fillMaxSize()
+                    )
+                }
+            }
+        }
+
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -14778,6 +14881,7 @@ fun QuickSubtitleScreen(
             }
             Column(
                 modifier = Modifier
+                    .onSizeChanged { bottomInputBarHeightPx = it.height }
                     .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                     .padding(
                         start = 10.dp,
@@ -14805,7 +14909,9 @@ fun QuickSubtitleScreen(
                                 inputFieldValue = it
                                 viewModel.updateQuickSubtitleInputText(it.text)
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { inputFieldFocused = it.isFocused },
                             singleLine = true,
                             placeholder = { Text("请输入文本") },
                             keyboardOptions = KeyboardOptions(
@@ -14881,7 +14987,9 @@ fun QuickSubtitleScreen(
                                 inputFieldValue = it
                                 viewModel.updateQuickSubtitleInputText(it.text)
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { inputFieldFocused = it.isFocused },
                             singleLine = true,
                             placeholder = { Text("请输入文本") },
                             keyboardOptions = KeyboardOptions(

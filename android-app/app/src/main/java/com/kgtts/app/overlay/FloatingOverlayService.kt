@@ -345,6 +345,8 @@ class FloatingOverlayService : Service() {
     private var launchableAppsLoaded = false
     private var launchableAppsLoading = false
     private var panelPickerSearchQuery = ""
+    private var panelPickerCard: View? = null
+    private var panelPickerListRefreshToken = 0
     private val shortcutIconStateCache = linkedMapOf<String, Drawable.ConstantState?>()
     private var panelEditMode = false
     private var panelPageCount = 1
@@ -2006,7 +2008,12 @@ class FloatingOverlayService : Service() {
                     orientation = LinearLayout.VERTICAL
                     background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
                     elevation = dp(8).toFloat()
+                    isClickable = true
+                    alpha = 0f
+                    scaleX = 0.96f
+                    scaleY = 0.96f
                     setPadding(dp(16), dp(16), dp(16), dp(16))
+                    panelPickerCard = this
                     addView(
                         TextView(this@FloatingOverlayService).apply {
                             setTextColor(overlayOnSurfaceColor())
@@ -6720,6 +6727,9 @@ class FloatingOverlayService : Service() {
             return
         }
         launchableAppsLoading = true
+        if (panelPickerOverlay?.visibility == View.VISIBLE) {
+            refreshShortcutPickerUi()
+        }
         try {
             launchableAppsCache = withContext(Dispatchers.IO) {
                 val intents = listOf(
@@ -7970,14 +7980,59 @@ class FloatingOverlayService : Service() {
 
     private fun refreshShortcutPickerUi() {
         val container = panelPickerListContainer ?: return
+        val token = ++panelPickerListRefreshToken
+        val animate = panelPickerOverlay?.visibility == View.VISIBLE && container.childCount > 0
+        container.animate().cancel()
+        if (!animate) {
+            container.alpha = 1f
+            populateShortcutPickerUi(container)
+            return
+        }
+        container.animate()
+            .alpha(0f)
+            .setDuration(80L)
+            .withEndAction {
+                if (panelPickerListRefreshToken != token) return@withEndAction
+                populateShortcutPickerUi(container)
+                container.animate().cancel()
+                container.animate()
+                    .alpha(1f)
+                    .setDuration(140L)
+                    .start()
+            }
+            .start()
+    }
+
+    private fun populateShortcutPickerUi(container: LinearLayout) {
         container.removeAllViews()
-        if (launchableAppsLoading) {
+        if (launchableAppsLoading || (!launchableAppsLoaded && launchableAppsCache.isEmpty())) {
             container.addView(
-                TextView(this).apply {
-                    setTextColor(overlayOnSurfaceVariantColor())
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                LinearLayout(this).apply {
                     gravity = Gravity.CENTER
-                    text = "正在加载应用..."
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(0, dp(24), 0, dp(24))
+                    addView(
+                        ProgressBar(this@FloatingOverlayService).apply {
+                            isIndeterminate = true
+                            indeterminateTintList = ColorStateList.valueOf(overlayPrimaryColor())
+                        },
+                        LinearLayout.LayoutParams(dp(36), dp(36)).apply {
+                            gravity = Gravity.CENTER_HORIZONTAL
+                        }
+                    )
+                    addView(spaceView(1, dp(10)))
+                    addView(
+                        TextView(this@FloatingOverlayService).apply {
+                            setTextColor(overlayOnSurfaceVariantColor())
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                            gravity = Gravity.CENTER
+                            text = "正在加载应用..."
+                        },
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        )
+                    )
                 },
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -8079,9 +8134,25 @@ class FloatingOverlayService : Service() {
             panelPickerSearchInput?.setText(panelPickerSearchQuery)
             updatePickerLayout()
             val overlay = panelPickerOverlay ?: return@launch
+            val card = panelPickerCard
             overlay.visibility = View.VISIBLE
             overlay.animate().cancel()
-            overlay.animate().alpha(1f).setDuration(160L).start()
+            overlay.alpha = 0f
+            card?.animate()?.cancel()
+            card?.alpha = 0f
+            card?.scaleX = 0.96f
+            card?.scaleY = 0.96f
+            overlay.animate()
+                .alpha(1f)
+                .setDuration(150L)
+                .start()
+            card?.animate()
+                ?.alpha(1f)
+                ?.scaleX(1f)
+                ?.scaleY(1f)
+                ?.setDuration(190L)
+                ?.setInterpolator(DecelerateInterpolator())
+                ?.start()
             refreshShortcutPickerUi()
             if (!launchableAppsLoaded || launchableAppsCache.isEmpty()) {
                 loadLaunchableApps()
@@ -8091,11 +8162,28 @@ class FloatingOverlayService : Service() {
 
     private fun hideShortcutPicker() {
         val overlay = panelPickerOverlay ?: return
+        val card = panelPickerCard
         panelPickerSearchQuery = ""
         panelPickerSearchInput?.setText("")
         overlay.animate().cancel()
-        overlay.alpha = 0f
-        overlay.visibility = View.GONE
+        card?.animate()?.cancel()
+        overlay.animate()
+            .alpha(0f)
+            .setDuration(130L)
+            .withEndAction {
+                overlay.visibility = View.GONE
+                overlay.alpha = 0f
+                card?.alpha = 0f
+                card?.scaleX = 0.96f
+                card?.scaleY = 0.96f
+            }
+            .start()
+        card?.animate()
+            ?.alpha(0f)
+            ?.scaleX(0.96f)
+            ?.scaleY(0.96f)
+            ?.setDuration(130L)
+            ?.start()
     }
 
     private fun updatePickerLayout() {
