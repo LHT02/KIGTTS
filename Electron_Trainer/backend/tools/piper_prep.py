@@ -183,15 +183,29 @@ def phonemes_to_ids_espeak(
 def iter_metadata(path: Path) -> Iterable[Tuple[Path, str]]:
     if not path.exists():
         raise FileNotFoundError(f"metadata not found: {path}")
+    parsed = 0
+    ignored = 0
     with path.open("r", encoding="utf-8") as f:
-        for line in f:
+        for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
             if "|" not in line:
+                ignored += 1
+                logging.warning("metadata line %s ignored: missing '|'", line_no)
                 continue
             audio_str, text = line.split("|", 1)
+            audio_str = audio_str.strip()
+            text = text.strip()
+            if not audio_str or not text:
+                ignored += 1
+                logging.warning("metadata line %s ignored: empty audio path or text", line_no)
+                continue
+            parsed += 1
             yield Path(audio_str), text
+    if parsed == 0:
+        suffix = f" ignored={ignored}" if ignored else ""
+        raise RuntimeError(f"metadata has no valid audio_path|text rows: {path}{suffix}")
 
 
 def text_to_phonemes(text: str, mapping: Dict[str, List[str]]) -> List[str]:
@@ -338,6 +352,8 @@ def main() -> None:
     dataset_path = out_dir / "dataset.jsonl"
     missing_total: Dict[str, int] = {}
     missing_audio = 0
+    failed_audio = 0
+    written_entries = 0
     with dataset_path.open("w", encoding="utf-8") as out_f:
         for idx, (audio_path, text, phones) in enumerate(entries, 1):
             if not audio_path.exists() and not args.skip_audio:
@@ -365,6 +381,7 @@ def main() -> None:
                     )
                 except Exception as exc:
                     logging.warning("audio processing failed: %s (%s)", audio_path, exc)
+                    failed_audio += 1
                     continue
 
             utt = {
@@ -378,6 +395,7 @@ def main() -> None:
                 utt["speaker_id"] = args.speaker_id
             json.dump(utt, out_f, ensure_ascii=False)
             out_f.write("\n")
+            written_entries += 1
             if idx % 50 == 0 or idx == total_entries:
                 print(f"[prep] processed {idx}/{total_entries}", flush=True)
     if args.phoneme_type == "espeak" and missing_total:
@@ -385,6 +403,13 @@ def main() -> None:
         logging.warning("missing phonemes (sample): %s", sample)
     if missing_audio:
         print(f"[prep] missing_audio={missing_audio}", flush=True)
+    if failed_audio:
+        print(f"[prep] failed_audio={failed_audio}", flush=True)
+    if written_entries <= 0:
+        raise RuntimeError(
+            "Piper dataset is empty after audio preprocessing; "
+            f"entries={total_entries}, missing_audio={missing_audio}, failed_audio={failed_audio}"
+        )
 
 
 if __name__ == "__main__":

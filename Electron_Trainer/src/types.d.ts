@@ -282,6 +282,8 @@ declare global {
     config_summary?: string
     config_path?: string
     completion_state?: 'ready' | 'unfinished'
+    training_options?: Record<string, unknown>
+    mode_options?: Record<string, unknown>
   }
 
   type BackendResponsePayload = {

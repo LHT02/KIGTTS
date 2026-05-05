@@ -462,7 +462,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
         metadata_error = ""
         try:
             entries = read_metadata_entries(paths.training_manifest)
-            missing = [str(audio_path) for audio_path, _text in entries if not audio_path.exists()]
+            missing = [str(audio_path) for audio_path, _text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0]
             metadata_texts = [text for _audio_path, text in entries]
             metadata_message = f"语料 {len(entries)} 条，缺失音频 {len(missing)} 条"
         except Exception as metadata_exc:
@@ -483,6 +483,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
         if not isinstance(training_opts, dict):
             training_opts = {}
         config_summary = f"device={training_opts.get('device', 'cpu')} / batch={training_opts.get('batch_size', '默认')}"
+        mode_options: dict[str, Any] = {}
 
         if mode == "piper":
             can_rebuild_material = bool(input_audio_existing)
@@ -496,6 +497,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
             distill_opts = config.get("distill_options") or {}
             if not isinstance(distill_opts, dict):
                 distill_opts = {}
+            mode_options = distill_opts
             config_summary = (
                 f"{distill_opts.get('version', '未知版本')} / {distill_opts.get('speaker', '未知说话人')} / "
                 f"{distill_opts.get('prompt_lang', '未知语言')} / {distill_opts.get('emotion', '未知情感')}"
@@ -511,6 +513,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
             voxcpm_opts = config.get("voxcpm_options") or {}
             if not isinstance(voxcpm_opts, dict):
                 voxcpm_opts = {}
+            mode_options = voxcpm_opts
             config_summary = (
                 f"{voxcpm_opts.get('voice_mode', 'description')} / device={voxcpm_opts.get('device', 'cuda')} / "
                 f"denoise={'on' if voxcpm_opts.get('denoise') else 'off'}"
@@ -557,6 +560,8 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
                     "config_summary": config_summary,
                     "config_path": str(paths.work_dir / "kigtts_project.json"),
                     "completion_state": completion_state,
+                    "training_options": training_opts,
+                    "mode_options": mode_options,
                 },
             }
         )

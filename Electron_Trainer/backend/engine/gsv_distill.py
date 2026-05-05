@@ -314,6 +314,21 @@ def _write_metadata(paths: ProjectPaths, entries: list[tuple[Path, str]]) -> Non
     paths.training_manifest.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+def _ready_entries(entries: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
+    return [(audio_path, text) for audio_path, text in entries if audio_path.exists() and audio_path.stat().st_size > 0]
+
+
+def _require_generated_audio(entries: list[tuple[Path, str]], *, label: str) -> list[tuple[Path, str]]:
+    ready = _ready_entries(entries)
+    if len(ready) == len(entries):
+        return ready
+    missing = len(entries) - len(ready)
+    sample = next((str(audio_path) for audio_path, _text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0), "")
+    if not ready:
+        raise RuntimeError(f"{label} 未生成可用音频，无法继续训练。示例缺失文件: {sample}")
+    raise RuntimeError(f"{label} 有 {missing} 条音频缺失或为空，无法继续训练。示例缺失文件: {sample}")
+
+
 def _split_entries(entries: list[tuple[Path, str]], worker_count: int) -> list[list[tuple[Path, str]]]:
     if not entries:
         return []
@@ -480,10 +495,11 @@ def build_distill_corpus(
             log_stem="distill",
         )
         if result["code"] == 0:
-            _write_metadata(paths, entries)
+            ready_entries = _require_generated_audio(entries, label="GPT-SoVITS 蒸馏")
+            _write_metadata(paths, ready_entries)
             if progress:
-                progress("distill", 1.0, f"蒸馏语料生成完成，共 {result['generated']} 条")
-            return len(texts)
+                progress("distill", 1.0, f"蒸馏语料生成完成，共 {len(ready_entries)} 条")
+            return len(ready_entries)
 
         if not result.get("oom") or device != "cuda":
             raise RuntimeError(str(result.get("message") or f"蒸馏失败，详见 {log_path}"))
@@ -542,6 +558,7 @@ def generate_distill_entries(
     )
     if result["code"] != 0:
         raise RuntimeError(str(result.get("message") or f"GPT-SoVITS 补生成失败，详见 {log_path}"))
+    _require_generated_audio(entries, label="GPT-SoVITS 补生成")
     if progress:
         progress("distill", 1.0, f"GPT-SoVITS 缺失音频补生成完成，共 {result['generated']} 条")
     return int(result.get("generated") or 0)

@@ -115,6 +115,26 @@ def save_project_config(
     return path
 
 
+def archive_voicepack_avatar(paths: ProjectPaths, opts: TrainingOptions) -> None:
+    if not opts.voicepack_avatar:
+        return
+    source = opts.voicepack_avatar.expanduser().resolve()
+    if not source.exists():
+        return
+    assets_dir = paths.work_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    suffix = source.suffix or ".png"
+    target = assets_dir / f"voicepack_avatar{suffix}"
+    try:
+        if source == target.resolve():
+            opts.voicepack_avatar = target
+            return
+    except Exception:
+        pass
+    shutil.copy2(source, target)
+    opts.voicepack_avatar = target
+
+
 def load_project_config(project_root: Path) -> dict[str, Any]:
     path = project_config_path(project_root)
     if not path.exists():

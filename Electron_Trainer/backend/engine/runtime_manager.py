@@ -1449,20 +1449,12 @@ def resolve_cuda_python() -> Optional[Path]:
     python_path = _cuda_python_path()
     if not python_path.exists():
         return None
-    try:
-        _probe_env_python(python_path)
-    except Exception:
-        return None
     return python_path
 
 
 def resolve_piper_runtime_python() -> Optional[Path]:
     python_path = _piper_python_path()
     if not python_path.exists():
-        return None
-    try:
-        _probe_env_python(python_path)
-    except Exception:
         return None
     return python_path
 

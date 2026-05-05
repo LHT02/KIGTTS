@@ -80,6 +80,27 @@ def _piper_env(piper_python: Path) -> dict:
     return env
 
 
+def _same_python_runtime(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except Exception:
+        return str(left).lower() == str(right).lower()
+
+
+def _tail_log(path: Path, *, max_lines: int = 24, max_chars: int = 4000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    tail = "\n".join(lines[-max_lines:])
+    if len(tail) > max_chars:
+        tail = tail[-max_chars:]
+    return tail
+
+
 def _cuda_available(piper_python: Path) -> Optional[bool]:
     env = _piper_env(piper_python)
     env.setdefault("PYTORCH_NVML_BASED_CUDA_CHECK", "1")
@@ -404,8 +425,25 @@ def run_piper_training(
     work_dir.mkdir(parents=True, exist_ok=True)
     log_path = work_dir / "training.log"
     prefer_cuda = opts.device.lower() in {"cuda", "gpu"}
+    if progress:
+        progress("train", 0.0, "准备 Piper 训练运行时...")
+    try:
+        with log_path.open("w", encoding="utf-8") as log_file:
+            log_file.write("== Piper Runtime ==\n")
+            log_file.write(f"requested_device={opts.device}\n")
+            log_file.flush()
+    except Exception:
+        pass
     piper_python = _find_piper_python(prefer_cuda=prefer_cuda)
     if piper_python:
+        if progress:
+            progress("train", 0.0, f"已选择 Piper 运行时: {piper_python}")
+        try:
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"piper_python={piper_python}\n")
+                log_file.flush()
+        except Exception:
+            pass
         prep_script = _resources_dir() / "tools" / "piper_prep.py"
         if not prep_script.exists():
             raise RuntimeError("训练组件不完整，请重新安装 Piper 基础运行时后再试。")
@@ -484,6 +522,8 @@ def run_piper_training(
                 progress(stage, base_progress, label)
             env_block = env.copy()
             env_block["PYTHONUNBUFFERED"] = "1"
+            env_block["PYTHONIOENCODING"] = "utf-8"
+            env_block["PYTHONUTF8"] = "1"
             with log_path.open("a", encoding="utf-8") as log_file:
                 proc = subprocess.Popen(
                     cmd,
@@ -571,6 +611,19 @@ def run_piper_training(
                     return None
                 if re.match(r'^\s*File ".*", line \d+, in .+$', msg):
                     return None
+
+                prep_entries_match = re.match(r"^\[prep\]\s+entries=(\d+)", msg)
+                if prep_entries_match:
+                    return f"Piper 预处理开始，样本数 {prep_entries_match.group(1)}"
+
+                prep_progress_match = re.match(r"^\[prep\]\s+processed\s+(\d+)/(\d+)", msg)
+                if prep_progress_match:
+                    return f"Piper 预处理进度: {prep_progress_match.group(1)}/{prep_progress_match.group(2)}"
+
+                prep_missing_match = re.match(r"^\[prep\]\s+(missing_audio|failed_audio)=(\d+)", msg)
+                if prep_missing_match:
+                    label_text = "缺失音频" if prep_missing_match.group(1) == "missing_audio" else "处理失败音频"
+                    return f"Piper 预处理提示: {label_text} {prep_missing_match.group(2)} 条"
 
                 if msg.startswith("DEBUG:piper_train:Namespace("):
                     accelerator_match = re.search(r"accelerator='([^']+)'", msg)
@@ -779,18 +832,28 @@ def run_piper_training(
         if progress:
             progress("train", 0.0, "启动 Piper 预处理")
         with log_path.open("w", encoding="utf-8") as log_file:
+            log_file.write("== Piper Runtime ==\n")
+            log_file.write(f"piper_python={piper_python}\n")
+            log_file.write(f"requested_device={opts.device}\n")
             log_file.write("== Piper Preprocess ==\n")
             log_file.write("CMD: " + " ".join(prep_cmd) + "\n")
             log_file.flush()
-        # Prefer in-process preprocess in packaged Electron to avoid child process stalls.
-        use_inproc = bool(os.environ.get("KGTTS_PREP_INPROC")) or bool(os.environ.get("KGTTS_RESOURCES"))
+        # In-process prep is only safe when the backend itself is running inside
+        # the Piper runtime. The packaged app now uses a minimal bootstrap
+        # Python, so KGTTS_RESOURCES alone must not force runpy here.
+        prep_inproc_flag = str(os.environ.get("KGTTS_PREP_INPROC") or "").strip().lower()
+        use_inproc = prep_inproc_flag in {"1", "true", "yes"} or _same_python_runtime(Path(sys.executable), piper_python)
         if use_inproc:
             prep_args = prep_cmd[2:]  # drop python + script
             code = run_inprocess_prep(prep_script, prep_args, "train", 0.05, "Piper 预处理中...")
         else:
-            code = run_blocking(prep_cmd, "train", 0.05, "Piper 预处理中...")
+            code = run_with_stream(prep_cmd, "train", 0.05, "Piper 预处理中...")
         if code != 0:
-            raise RuntimeError(f"Piper 预处理失败，详见 {log_path}")
+            tail = _tail_log(log_path)
+            if progress and tail:
+                progress("train", 0.05, f"Piper 预处理失败：{tail.splitlines()[-1]}")
+            detail = f"\n\n最近日志：\n{tail}" if tail else ""
+            raise RuntimeError(f"Piper 预处理失败，详见 {log_path}{detail}")
         prep_dataset = prep_dir / "dataset.jsonl"
         if not prep_dataset.exists():
             raise RuntimeError(f"Piper 预处理未生成 dataset.jsonl：{prep_dataset}")
