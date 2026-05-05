@@ -234,6 +234,8 @@ import com.lhtstudio.kigtts.app.audio.SpeechEnhancementMode
 import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
 import com.lhtstudio.kigtts.app.audio.VadMode
 import com.lhtstudio.kigtts.app.data.ModelRepository
+import com.lhtstudio.kigtts.app.data.RecognitionResourceProgress
+import com.lhtstudio.kigtts.app.data.RecognitionResourceStatus
 import com.lhtstudio.kigtts.app.data.SoundboardGroup
 import com.lhtstudio.kigtts.app.data.SoundboardItem
 import com.lhtstudio.kigtts.app.data.SoundboardLayoutMode
@@ -572,6 +574,16 @@ data class UiState(
     val sileroVadEnabled: Boolean = true,
     val sileroVadThreshold: Float = UserPrefs.SILERO_VAD_DEFAULT_THRESHOLD,
     val sileroVadPreRollMs: Int = UserPrefs.SILERO_VAD_DEFAULT_PRE_ROLL_MS,
+    val recognitionResourceInstalled: Boolean = false,
+    val recognitionResourceName: String = "未安装",
+    val recognitionResourceVersion: String = "",
+    val recognitionResourceStatus: String = "未安装语音识别资源包",
+    val recognitionResourceBusy: Boolean = false,
+    val recognitionResourceProgressStage: String = "",
+    val recognitionResourceProgress: Float = -1f,
+    val recognitionResourceModelScopeUrl: String = UserPrefs.DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
+    val recognitionResourceHuggingFaceUrl: String = UserPrefs.DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
+    val recognitionResourcePreferredSource: Int = UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
     val piperNoiseScale: Float = 0.667f,
@@ -613,6 +625,7 @@ data class UiState(
     val quickSubtitleInterruptQueue: Boolean = true,
     val quickSubtitleAutoFit: Boolean = true,
     val quickSubtitleCompactControls: Boolean = false,
+    val quickSubtitleKeepInputPreview: Boolean = true,
     val drawingKeepCanvasOrientationToDevice: Boolean = true,
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
@@ -1023,6 +1036,8 @@ class MainViewModel(
         private set
     var quickSubtitleInputText by mutableStateOf("")
         private set
+    var quickSubtitleContentRevision by mutableLongStateOf(0L)
+        private set
     var quickSubtitlePlayOnSend by mutableStateOf(true)
         private set
     var quickSubtitleInputCollapsed by mutableStateOf(false)
@@ -1076,6 +1091,7 @@ class MainViewModel(
         loadQuickSubtitleConfig()
         loadSoundboardConfig()
         loadQuickCardConfig()
+        refreshRecognitionResourceStatus()
         observeSoundboardPlayback()
         observeSettingsChanges()
     }
@@ -1294,6 +1310,9 @@ class MainViewModel(
             sileroVadEnabled = settings.sileroVadEnabled,
             sileroVadThreshold = settings.sileroVadThreshold,
             sileroVadPreRollMs = settings.sileroVadPreRollMs,
+            recognitionResourceModelScopeUrl = settings.recognitionResourceModelScopeUrl,
+            recognitionResourceHuggingFaceUrl = settings.recognitionResourceHuggingFaceUrl,
+            recognitionResourcePreferredSource = settings.recognitionResourcePreferredSource,
             minVolumePercent = settings.minVolumePercent,
             playbackGainPercent = settings.playbackGainPercent,
             piperNoiseScale = settings.piperNoiseScale,
@@ -1334,6 +1353,7 @@ class MainViewModel(
             quickSubtitleInterruptQueue = settings.quickSubtitleInterruptQueue,
             quickSubtitleAutoFit = settings.quickSubtitleAutoFit,
             quickSubtitleCompactControls = settings.quickSubtitleCompactControls,
+            quickSubtitleKeepInputPreview = settings.quickSubtitleKeepInputPreview,
             drawingKeepCanvasOrientationToDevice = settings.drawingKeepCanvasOrientationToDevice,
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
@@ -1460,6 +1480,10 @@ class MainViewModel(
         }
     }
 
+    private fun markQuickSubtitleContentSubmitted() {
+        quickSubtitleContentRevision++
+    }
+
     fun currentQuickSubtitleGroupIndex(): Int {
         val idx = quickSubtitleGroups.indexOfFirst { it.id == quickSubtitleSelectedGroupId }
         return if (idx >= 0) idx else 0
@@ -1476,6 +1500,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        markQuickSubtitleContentSubmitted()
         if (enqueueSpeak) {
             speakText(
                 message,
@@ -1496,6 +1521,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        markQuickSubtitleContentSubmitted()
         if (quickSubtitlePlayOnSend && hasVoice) {
             speakText(
                 message,
@@ -1517,6 +1543,7 @@ class MainViewModel(
         val message = quickSubtitleInputText.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        markQuickSubtitleContentSubmitted()
         quickSubtitleInputText = ""
         if (playVoice) {
             speakText(
@@ -1538,15 +1565,31 @@ class MainViewModel(
         navigateToPage: Boolean = true
     ) {
         val normalized = text.trim()
-        if (requestId == lastHandledQuickSubtitleLaunchRequestId) return
+        val openPageTarget = isOverlayOpenTarget(target)
+        val effectiveRequestId = if (openPageTarget) {
+            nextQuickSubtitleLaunchRequestId()
+        } else {
+            requestId
+        }
+        if (effectiveRequestId == Long.MIN_VALUE) return
+        if (effectiveRequestId == lastHandledQuickSubtitleLaunchRequestId) return
         if (!isOverlayOpenTarget(target) && normalized.isEmpty()) return
-        lastHandledQuickSubtitleLaunchRequestId = requestId
+        lastHandledQuickSubtitleLaunchRequestId = effectiveRequestId
         pendingQuickSubtitleLaunchRequest = ExternalQuickSubtitleRequest(
-            requestId = requestId,
+            requestId = effectiveRequestId,
             target = target,
             text = normalized,
             navigateToPage = navigateToPage
         )
+    }
+
+    private fun nextQuickSubtitleLaunchRequestId(): Long {
+        val now = SystemClock.uptimeMillis()
+        return if (now <= lastHandledQuickSubtitleLaunchRequestId) {
+            lastHandledQuickSubtitleLaunchRequestId + 1
+        } else {
+            now
+        }
     }
 
     fun consumeQuickSubtitleLaunchRequest(requestId: Long) {
@@ -1675,6 +1718,7 @@ class MainViewModel(
             else -> {
                 if (normalized.isEmpty()) return
                 quickSubtitleCurrentText = normalized
+                markQuickSubtitleContentSubmitted()
                 saveQuickSubtitleConfig()
             }
         }
@@ -2671,19 +2715,204 @@ class MainViewModel(
     fun loadBundledAsr() {
         if (uiState.asrDir != null) return
         viewModelScope.launch {
-            val dir = withContext(Dispatchers.IO) { repo.ensureBundledAsr() }
+            val (dir, loadStatus) = withContext(Dispatchers.IO) {
+                val resolvedDir = repo.ensureBundledAsr()
+                val resourceStatus = repo.recognitionResourceStatus()
+                val statusText = if (
+                    resolvedDir != null &&
+                    resourceStatus.asrDir?.absolutePath == resolvedDir.absolutePath
+                ) {
+                    "已加载语音识别资源包"
+                } else {
+                    "已加载语音识别资源包"
+                }
+                resolvedDir to statusText
+            }
             if (dir != null) {
                 val host = realtimeHost
                 if (host != null) {
-                    host.updateSelectedAsrDir(dir, status = "已加载内置 ASR 模型", preload = true)
+                    host.updateSelectedAsrDir(dir, status = loadStatus, preload = true)
                 } else {
-                    uiState = uiState.copy(asrDir = dir, status = "已加载内置 ASR 模型")
+                    uiState = uiState.copy(asrDir = dir, status = loadStatus)
                     preloadAsr(dir)
                 }
             } else {
-                uiState = uiState.copy(status = "未找到内置 ASR 模型")
+                uiState = uiState.copy(status = "请先安装语音识别资源包")
             }
         }
+    }
+
+    fun refreshRecognitionResourceStatus() {
+        viewModelScope.launch {
+            val status = withContext(Dispatchers.IO) { repo.recognitionResourceStatus() }
+            val installedAsrDir = status.asrDir
+            val shouldApplyAsrDir =
+                installedAsrDir != null &&
+                    uiState.asrDir?.absolutePath != installedAsrDir.absolutePath
+            uiState = uiState.copy(
+                recognitionResourceInstalled = status.installed,
+                recognitionResourceName = status.name,
+                recognitionResourceVersion = status.version,
+                recognitionResourceStatus = recognitionResourceStatusText(status),
+                recognitionResourceBusy = false,
+                recognitionResourceProgressStage = "",
+                recognitionResourceProgress = -1f,
+                asrDir = installedAsrDir ?: uiState.asrDir
+            )
+            if (shouldApplyAsrDir && installedAsrDir != null) {
+                val host = realtimeHost
+                if (host != null) {
+                    host.updateSelectedAsrDir(installedAsrDir, status = "已加载语音识别资源包", preload = true)
+                } else {
+                    preloadAsr(installedAsrDir)
+                }
+            }
+        }
+    }
+
+    fun setRecognitionResourceSources(
+        modelScopeUrl: String,
+        huggingFaceUrl: String,
+        preferredSource: Int
+    ) {
+        viewModelScope.launch {
+            UserPrefs.setRecognitionResourceSources(
+                appContext,
+                modelScopeUrl = modelScopeUrl,
+                huggingFaceUrl = huggingFaceUrl,
+                preferredSource = preferredSource
+            )
+            uiState = uiState.copy(
+                recognitionResourceModelScopeUrl = modelScopeUrl.trim(),
+                recognitionResourceHuggingFaceUrl = huggingFaceUrl.trim(),
+                recognitionResourcePreferredSource = preferredSource.coerceIn(
+                    UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                    UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE
+                )
+            )
+        }
+    }
+
+    fun downloadRecognitionResources() {
+        if (uiState.recognitionResourceBusy) return
+        val url = preferredRecognitionResourceUrl()
+        if (url.isBlank()) {
+            uiState = uiState.copy(status = "请先配置语音识别资源包下载源")
+            return
+        }
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                recognitionResourceBusy = true,
+                recognitionResourceProgressStage = "准备下载",
+                recognitionResourceProgress = -1f,
+                recognitionResourceStatus = "准备下载语音识别资源包"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.downloadRecognitionResources(url) { progress ->
+                        postRecognitionResourceProgress(progress)
+                    }
+                }
+                applyInstalledRecognitionResource(status, "语音识别资源包安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("downloadRecognitionResources failed", e)
+                uiState = uiState.copy(
+                    recognitionResourceBusy = false,
+                    recognitionResourceProgressStage = "",
+                    recognitionResourceProgress = -1f,
+                    recognitionResourceStatus = "语音识别资源包安装失败：${e.message ?: "未知错误"}",
+                    status = "语音识别资源包安装失败"
+                )
+            }
+        }
+    }
+
+    fun installRecognitionResources(uri: android.net.Uri) {
+        if (uiState.recognitionResourceBusy) return
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                recognitionResourceBusy = true,
+                recognitionResourceProgressStage = "准备安装",
+                recognitionResourceProgress = -1f,
+                recognitionResourceStatus = "准备安装语音识别资源包"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.installRecognitionResources(uri, appContext.contentResolver) { progress ->
+                        postRecognitionResourceProgress(progress)
+                    }
+                }
+                applyInstalledRecognitionResource(status, "语音识别资源包安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("installRecognitionResources failed", e)
+                uiState = uiState.copy(
+                    recognitionResourceBusy = false,
+                    recognitionResourceProgressStage = "",
+                    recognitionResourceProgress = -1f,
+                    recognitionResourceStatus = "语音识别资源包安装失败：${e.message ?: "未知错误"}",
+                    status = "语音识别资源包安装失败"
+                )
+            }
+        }
+    }
+
+    private fun preferredRecognitionResourceUrl(): String {
+        val modelScope = uiState.recognitionResourceModelScopeUrl.trim()
+        val huggingFace = uiState.recognitionResourceHuggingFaceUrl.trim()
+        return if (uiState.recognitionResourcePreferredSource == UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE) {
+            huggingFace.ifBlank { modelScope }
+        } else {
+            modelScope.ifBlank { huggingFace }
+        }
+    }
+
+    private fun postRecognitionResourceProgress(progress: RecognitionResourceProgress) {
+        appContext.runOnUiThread {
+            uiState = uiState.copy(
+                recognitionResourceBusy = true,
+                recognitionResourceProgressStage = progress.stage,
+                recognitionResourceProgress = progress.fraction,
+                recognitionResourceStatus = if (progress.fraction in 0f..1f) {
+                    "${progress.stage} ${(progress.fraction * 100f).roundToInt()}%"
+                } else {
+                    progress.stage
+                }
+            )
+        }
+    }
+
+    private fun recognitionResourceStatusText(status: RecognitionResourceStatus): String {
+        if (!status.installed) return "未安装语音识别资源包，请先从下载源或本地文件安装。"
+        val version = status.version.takeIf { it.isNotBlank() }?.let { "，版本 $it" }.orEmpty()
+        val asr = if (status.asrDir != null) "，ASR 可用" else "，ASR 未找到"
+        return "${status.name}$version 已安装$asr"
+    }
+
+    private suspend fun applyInstalledRecognitionResource(
+        status: RecognitionResourceStatus,
+        message: String
+    ) {
+        val asrDir = status.asrDir
+        if (asrDir != null) {
+            UserPrefs.clearLastAsrName(appContext)
+            val host = realtimeHost
+            if (host != null) {
+                host.updateSelectedAsrDir(asrDir, status = message, preload = true)
+            } else {
+                uiState = uiState.copy(asrDir = asrDir)
+                preloadAsr(asrDir)
+            }
+        }
+        uiState = uiState.copy(
+            recognitionResourceInstalled = status.installed,
+            recognitionResourceName = status.name,
+            recognitionResourceVersion = status.version,
+            recognitionResourceStatus = recognitionResourceStatusText(status),
+            recognitionResourceBusy = false,
+            recognitionResourceProgressStage = "",
+            recognitionResourceProgress = -1f,
+            status = message
+        )
     }
 
     fun loadLastVoice() {
@@ -3174,8 +3403,12 @@ class MainViewModel(
     fun setPushToTalkMode(enabled: Boolean) {
         pttSessionLastText = ""
         resetPttHistoryDedup()
+        if (enabled && uiState.running) {
+            stop()
+        }
         uiState = uiState.copy(
             pushToTalkMode = enabled,
+            running = if (enabled) false else uiState.running,
             pushToTalkPressed = false,
             pushToTalkStreamingText = ""
         )
@@ -3325,6 +3558,13 @@ class MainViewModel(
         uiState = uiState.copy(quickSubtitleCompactControls = enabled)
         viewModelScope.launch {
             UserPrefs.setQuickSubtitleCompactControls(appContext, enabled)
+        }
+    }
+
+    fun setQuickSubtitleKeepInputPreview(enabled: Boolean) {
+        uiState = uiState.copy(quickSubtitleKeepInputPreview = enabled)
+        viewModelScope.launch {
+            UserPrefs.setQuickSubtitleKeepInputPreview(appContext, enabled)
         }
     }
 
@@ -3993,16 +4233,36 @@ class MainViewModel(
     }
 
     fun start() {
-        val host = requestRealtimeHost("音频宿主初始化中")
-        val asr = uiState.asrDir
         val voice = uiState.voiceDir
         val requireVoice = !uiState.ttsDisabled
-        if (asr == null || (requireVoice && voice == null)) {
+        if (requireVoice && voice == null) {
             uiState = uiState.copy(
-                status = if (requireVoice) "请先导入 ASR 模型和 voicepack" else "请先导入 ASR 模型"
+                status = "请先选择语音包"
             )
             return
         }
+        val asr = uiState.asrDir
+        if (asr == null) {
+            uiState = uiState.copy(status = "正在加载语音识别资源包")
+            viewModelScope.launch {
+                val dir = withContext(Dispatchers.IO) { repo.ensureBundledAsr() }
+                if (dir == null) {
+                    refreshRecognitionResourceStatus()
+                    uiState = uiState.copy(status = "请先安装语音识别资源包")
+                    return@launch
+                }
+                uiState = uiState.copy(asrDir = dir, status = "已加载语音识别资源包")
+                val host = realtimeHost
+                if (host != null) {
+                    host.updateSelectedAsrDir(dir, status = "已加载语音识别资源包", preload = true)
+                } else {
+                    preloadAsr(dir)
+                }
+                start()
+            }
+            return
+        }
+        val host = requestRealtimeHost("音频宿主初始化中")
         if (host != null) {
             restartJob?.cancel()
             restartJob = null
@@ -8372,6 +8632,180 @@ private fun Md2IconButton(
 }
 
 @Composable
+private fun RecognitionResourceSourceDialog(
+    modelScopeUrl: String,
+    huggingFaceUrl: String,
+    preferredSource: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, Int) -> Unit
+) {
+    var modelScope by remember(modelScopeUrl) { mutableStateOf(modelScopeUrl) }
+    var huggingFace by remember(huggingFaceUrl) { mutableStateOf(huggingFaceUrl) }
+    var preferred by remember(preferredSource) {
+        mutableIntStateOf(
+            preferredSource.coerceIn(
+                UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE
+            )
+        )
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text("语音识别资源包下载源") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "下载的资源包会安装到软件内部目录；安装完成后会自动清理下载得到的 7z 包。本地安装不会删除原文件。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Md2OutlinedField(
+                    value = modelScope,
+                    onValueChange = { modelScope = it },
+                    label = "魔搭下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Md2OutlinedField(
+                    value = huggingFace,
+                    onValueChange = { huggingFace = it },
+                    label = "Hugging Face 下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("优先下载源", style = MaterialTheme.typography.bodySmall)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                        onClick = { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE }
+                    )
+                    Text("魔搭")
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE,
+                        onClick = { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE }
+                    )
+                    Text("Hugging Face")
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(
+                onClick = { onConfirm(modelScope, huggingFace, preferred) }
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            Md2TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun RecognitionResourceRequiredDialog(
+    state: UiState,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit,
+    onPickLocalPackage: () -> Unit,
+    onOpenSources: () -> Unit
+) {
+    val busy = state.recognitionResourceBusy
+    val installed = state.recognitionResourceInstalled
+    AlertDialog(
+        onDismissRequest = {
+            if (!busy) onDismiss()
+        },
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text(if (installed) "语音识别资源包已安装" else "需要语音识别资源包") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = if (installed) {
+                        "资源包安装完成，可以继续开启语音识别。"
+                    } else {
+                        "当前未安装语音识别资源包。语音识别、Silero VAD 和 AI 语音增强模型已经从 APK 解耦，需要先下载或从本地安装资源包。"
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    text = state.recognitionResourceStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (busy) {
+                    val progress = state.recognitionResourceProgress
+                    if (progress in 0f..1f) {
+                        LinearProgressIndicator(
+                            progress = progress.coerceIn(0f, 1f),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                    Text(
+                        text = state.recognitionResourceProgressStage.ifBlank { "处理中" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (!installed) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2Button(
+                            onClick = onDownload,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("下载并安装")
+                        }
+                        Md2OutlinedButton(
+                            onClick = onPickLocalPackage,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("本地安装")
+                        }
+                    }
+                    Md2TextButton(
+                        onClick = onOpenSources,
+                        enabled = !busy
+                    ) {
+                        Text("管理下载源")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(
+                onClick = onDismiss,
+                enabled = !busy
+            ) {
+                Text(if (installed) "完成" else "稍后再说")
+            }
+        }
+    )
+}
+
+@Composable
 private fun Md2Switch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
@@ -8795,6 +9229,10 @@ fun AppScaffold(viewModel: MainViewModel) {
     var soundboardPresetExportDialog by remember { mutableStateOf(false) }
     var showBuiltinQuickSubtitlePresetPicker by remember { mutableStateOf(false) }
     var showBuiltinSoundboardPresetPicker by remember { mutableStateOf(false) }
+    var showBuiltinRecognitionResourcePicker by remember { mutableStateOf(false) }
+    var recognitionResourceSourceDialog by remember { mutableStateOf(false) }
+    var recognitionResourceRequiredDialog by remember { mutableStateOf(false) }
+    var startRealtimeAfterRecognitionResourceInstall by remember { mutableStateOf(false) }
     var quickCardWebMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var quickCardNavReady by remember { mutableStateOf(false) }
     var quickSubtitleFloatingInputPreview by remember {
@@ -9232,7 +9670,13 @@ fun AppScaffold(viewModel: MainViewModel) {
         startRealtimeAfterPermissionGrant = false
         if (granted) {
             if (shouldStartRealtime) {
-                viewModel.start()
+                if (state.asrDir == null && !state.recognitionResourceInstalled) {
+                    startRealtimeAfterRecognitionResourceInstall = true
+                    recognitionResourceRequiredDialog = true
+                    viewModel.refreshRecognitionResourceStatus()
+                } else {
+                    viewModel.start()
+                }
             }
         } else {
             toast(context, "需要麦克风权限")
@@ -9254,7 +9698,53 @@ fun AppScaffold(viewModel: MainViewModel) {
     val soundboardPresetPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.importSoundboardPresetPackage(uri) else toast(context, "未选择文件")
     }
+    val recognitionResourcePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.installRecognitionResources(uri) else toast(context, "未选择文件")
+    }
     var showBuiltinVoicePicker by remember { mutableStateOf(false) }
+    val recognitionResourceMissing = state.asrDir == null && !state.recognitionResourceInstalled
+
+    fun requestRecordAudioPermissionAndStart() {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            viewModel.start()
+        } else {
+            startRealtimeAfterPermissionGrant = true
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    fun requestRealtimeStartWithResourceCheck(autoStartAfterInstall: Boolean) {
+        if (recognitionResourceMissing) {
+            startRealtimeAfterPermissionGrant = false
+            startRealtimeAfterRecognitionResourceInstall = autoStartAfterInstall
+            recognitionResourceRequiredDialog = true
+            viewModel.refreshRecognitionResourceStatus()
+            return
+        }
+        requestRecordAudioPermissionAndStart()
+    }
+
+    LaunchedEffect(
+        recognitionResourceRequiredDialog,
+        startRealtimeAfterRecognitionResourceInstall,
+        state.recognitionResourceInstalled,
+        state.recognitionResourceBusy
+    ) {
+        if (
+            recognitionResourceRequiredDialog &&
+            startRealtimeAfterRecognitionResourceInstall &&
+            state.recognitionResourceInstalled &&
+            !state.recognitionResourceBusy
+        ) {
+            recognitionResourceRequiredDialog = false
+            startRealtimeAfterRecognitionResourceInstall = false
+            requestRecordAudioPermissionAndStart()
+        }
+    }
 
     val onToggleRun = {
         if (!state.running && state.ttsDisabled) {
@@ -9263,8 +9753,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         if (state.running) {
             viewModel.stop()
         } else {
-            startRealtimeAfterPermissionGrant = true
-            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            requestRealtimeStartWithResourceCheck(autoStartAfterInstall = true)
         }
     }
     var pttConfirmOwnedByMainPanel by remember { mutableStateOf(false) }
@@ -9280,7 +9769,19 @@ fun AppScaffold(viewModel: MainViewModel) {
             pttConfirmOwnedByMainPanel = false
             pttTemporaryStartByMainPanel = false
             startRealtimeAfterPermissionGrant = false
-            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            if (recognitionResourceMissing) {
+                recognitionResourceRequiredDialog = true
+                startRealtimeAfterRecognitionResourceInstall = false
+                viewModel.refreshRecognitionResourceStatus()
+            } else {
+                permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        } else if (recognitionResourceMissing) {
+            pttConfirmOwnedByMainPanel = false
+            pttTemporaryStartByMainPanel = false
+            recognitionResourceRequiredDialog = true
+            startRealtimeAfterRecognitionResourceInstall = false
+            viewModel.refreshRecognitionResourceStatus()
         } else {
             pttTemporaryStartByMainPanel = !state.running
             if (pttTemporaryStartByMainPanel) {
@@ -9348,6 +9849,53 @@ fun AppScaffold(viewModel: MainViewModel) {
             onOpenSystemPicker = {
                 showBuiltinSoundboardPresetPicker = false
                 soundboardPresetPicker.launch("*/*")
+            }
+        )
+    }
+    if (showBuiltinRecognitionResourcePicker) {
+        BuiltinFilePickerDialog(
+            title = "选择语音识别资源包",
+            allowedExtensions = setOf("7z", "zip"),
+            onDismiss = { showBuiltinRecognitionResourcePicker = false },
+            onPicked = { uri ->
+                showBuiltinRecognitionResourcePicker = false
+                viewModel.installRecognitionResources(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinRecognitionResourcePicker = false
+                recognitionResourcePicker.launch("*/*")
+            }
+        )
+    }
+    if (recognitionResourceSourceDialog) {
+        RecognitionResourceSourceDialog(
+            modelScopeUrl = state.recognitionResourceModelScopeUrl,
+            huggingFaceUrl = state.recognitionResourceHuggingFaceUrl,
+            preferredSource = state.recognitionResourcePreferredSource,
+            onDismiss = { recognitionResourceSourceDialog = false },
+            onConfirm = { modelScopeUrl, huggingFaceUrl, preferredSource ->
+                recognitionResourceSourceDialog = false
+                viewModel.setRecognitionResourceSources(modelScopeUrl, huggingFaceUrl, preferredSource)
+            }
+        )
+    }
+    if (recognitionResourceRequiredDialog) {
+        RecognitionResourceRequiredDialog(
+            state = state,
+            onDismiss = {
+                if (!state.recognitionResourceBusy) {
+                    recognitionResourceRequiredDialog = false
+                    startRealtimeAfterRecognitionResourceInstall = false
+                }
+            },
+            onDownload = {
+                viewModel.downloadRecognitionResources()
+            },
+            onPickLocalPackage = {
+                showBuiltinRecognitionResourcePicker = true
+            },
+            onOpenSources = {
+                recognitionResourceSourceDialog = true
             }
         )
     }
@@ -10096,7 +10644,10 @@ fun AppScaffold(viewModel: MainViewModel) {
                         navController = settingsNavController,
                         viewModel = viewModel,
                         state = state,
-                        onTopBarActionsChange = { logTopBarActions = it }
+                        onTopBarActionsChange = { logTopBarActions = it },
+                        onOpenRecognitionResourceSources = { recognitionResourceSourceDialog = true },
+                        onPickRecognitionResourcePackage = { showBuiltinRecognitionResourcePicker = true },
+                        onDownloadRecognitionResources = { viewModel.downloadRecognitionResources() }
                     )
                 }
             }
@@ -10701,8 +11252,8 @@ fun ModelScreen(state: UiState) {
             elevation = UiTokens.CardElevation
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("ASR 模型已由应用内置与自动管理", fontWeight = FontWeight.SemiBold)
-                Text("当前 Android 版本默认随应用提供内置 ASR 资源，无需再通过设置页单独导入。")
+                Text("ASR 模型由语音识别资源包管理", fontWeight = FontWeight.SemiBold)
+                Text("当前 Android 版本不再内置 ASR / 语音增强模型，请在“设置 - 识别”安装语音识别资源包。")
                 Spacer(Modifier.height(8.dp))
                 Text("当前 ASR 路径：", style = MaterialTheme.typography.labelSmall)
                 Text(state.asrDir?.absolutePath ?: "未导入")
@@ -13376,7 +13927,10 @@ private fun SettingsNavHost(
     navController: NavHostController,
     viewModel: MainViewModel,
     state: UiState,
-    onTopBarActionsChange: (LogTopBarActions?) -> Unit
+    onTopBarActionsChange: (LogTopBarActions?) -> Unit,
+    onOpenRecognitionResourceSources: () -> Unit,
+    onPickRecognitionResourcePackage: () -> Unit,
+    onDownloadRecognitionResources: () -> Unit
 ) {
     fun isSettingsSubPage(route: String?): Boolean = route != null && route != SettingsRoutes.Main
     NavHost(
@@ -13445,7 +13999,10 @@ private fun SettingsNavHost(
                 },
                 onOpenPrivacy = {
                     navController.navigate(SettingsRoutes.Privacy) { launchSingleTop = true }
-                }
+                },
+                onOpenRecognitionResourceSources = onOpenRecognitionResourceSources,
+                onPickRecognitionResourcePackage = onPickRecognitionResourcePackage,
+                onDownloadRecognitionResources = onDownloadRecognitionResources
             )
         }
         composable(SettingsRoutes.Log) {
@@ -13660,8 +14217,10 @@ fun QuickSubtitleScreen(
     val quickInputCollapsed = viewModel.quickSubtitleInputCollapsed
     val subtitleFullscreenDialogVisible = viewModel.quickSubtitlePreviewVisible
     val quickSubtitleAutoFit = state.quickSubtitleAutoFit
+    val quickSubtitleContentRevision = viewModel.quickSubtitleContentRevision
     val useCompactQuickTextControls = state.quickSubtitleCompactControls && !isLandscape
     val showQuickSubtitleActionButtons = viewModel.quickSubtitleShowActionButtons
+    val density = LocalDensity.current
     val actionPanelToggleIcon =
         if (showQuickSubtitleActionButtons) {
             "search"
@@ -13685,7 +14244,7 @@ fun QuickSubtitleScreen(
         if (showQuickSubtitleActionButtons) "切换到字体缩放" else "切换到快捷操作"
     val portraitSubtitleControlAreaHeight = 48.dp
     val portraitSubtitleControlBaselineOffset = (-6).dp
-    val compactQuickGroupSwipeThresholdPx = with(LocalDensity.current) { 18.dp.toPx() }
+    val compactQuickGroupSwipeThresholdPx = with(density) { 18.dp.toPx() }
     var compactQuickGroupSuppressAnimation by remember { mutableStateOf(false) }
     val currentCompactSelectedGroupIndex by rememberUpdatedState(selectedGroupIndex)
     val performKeyHaptic = rememberKigttsKeyHaptic()
@@ -13863,19 +14422,46 @@ fun QuickSubtitleScreen(
     var inputFieldFocused by remember { mutableStateOf(false) }
     var keyboardSeenWhileInputFocused by remember { mutableStateOf(false) }
     var bottomInputBarHeightPx by remember { mutableIntStateOf(0) }
+    var inputPreviewBlockedRevision by remember { mutableLongStateOf(Long.MIN_VALUE) }
     val imeBottomInset = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
     val keyboardVisible = imeBottomInset > 0.dp
-    val inputPreviewActive = inputFieldFocused && inputFieldValue.text.isNotEmpty()
+    val bottomInputBarHeight = with(density) { bottomInputBarHeightPx.toDp() }
+    val inputTextHasContent = inputFieldValue.text.isNotEmpty()
+    LaunchedEffect(quickSubtitleContentRevision) {
+        if (quickSubtitleContentRevision > 0L && inputTextHasContent) {
+            inputPreviewBlockedRevision = quickSubtitleContentRevision
+        }
+    }
+    LaunchedEffect(inputFieldValue.text) {
+        if (inputFieldValue.text.isNotEmpty()) {
+            inputPreviewBlockedRevision = Long.MIN_VALUE
+        }
+    }
+    val inputPreviewAllowed =
+        inputTextHasContent && inputPreviewBlockedRevision != quickSubtitleContentRevision
+    val persistentInputPreviewActive =
+        state.quickSubtitleKeepInputPreview && inputPreviewAllowed && !inputFieldFocused
+    val editingInputPreviewActive = inputPreviewAllowed && inputFieldFocused
     val screenLongSideDp = maxOf(configuration.screenWidthDp, configuration.screenHeightDp)
-    val phoneUa = screenLongSideDp < 900
+    val screenShortSideDp = minOf(configuration.screenWidthDp, configuration.screenHeightDp)
+    val portraitKeyboardAvailableHeight =
+        (configuration.screenHeightDp.dp - imeBottomInset - bottomInputBarHeight - 24.dp)
+            .coerceAtLeast(0.dp)
+    val phoneUa =
+        screenShortSideDp < 600 ||
+        screenLongSideDp < 900 ||
+        (!isLandscape && keyboardVisible && portraitKeyboardAvailableHeight < 620.dp)
     val landscapePhoneInputPreviewMode = isLandscape && phoneUa && configuration.screenHeightDp < 500
     val portraitPhoneKeyboardInputMode = !isLandscape && phoneUa && keyboardVisible && inputFieldFocused
-    val inlineInputPreviewActive = inputPreviewActive && !landscapePhoneInputPreviewMode
-    val floatingInputPreviewActive = inputPreviewActive && landscapePhoneInputPreviewMode
+    val floatingInputPreviewActive = editingInputPreviewActive && landscapePhoneInputPreviewMode
+    val inlineInputPreviewActive =
+        (editingInputPreviewActive && !landscapePhoneInputPreviewMode) ||
+            (persistentInputPreviewActive && !floatingInputPreviewActive)
     val inputPreviewCursorIndex = inputFieldValue.selection.start.coerceIn(0, inputFieldValue.text.length)
     val inputPreviewText = remember(inputFieldValue.text) { AnnotatedString(inputFieldValue.text) }
     val displayedSubtitleText = if (inlineInputPreviewActive) inputPreviewText else AnnotatedString(subtitleText)
-    val shouldHideSubtitleControlsForInput = inputPreviewActive && phoneUa && !floatingInputPreviewActive
+    val shouldHideSubtitleControlsForInput =
+        !floatingInputPreviewActive && (editingInputPreviewActive && phoneUa || portraitPhoneKeyboardInputMode)
     val subtitleControlsVisible = floatingInputPreviewActive || !shouldHideSubtitleControlsForInput
     LaunchedEffect(inputText) {
         if (inputText != inputFieldValue.text) {
@@ -13918,7 +14504,6 @@ fun QuickSubtitleScreen(
     } else {
         UiTokens.PageBottomBlank + 50.dp + navBarsBottomInset
     }
-    val bottomInputBarHeight = with(LocalDensity.current) { bottomInputBarHeightPx.toDp() }
     val keyboardRaisedBottomBlank = imeBottomInset + bottomInputBarHeight + 8.dp
     val quickSubtitleBottomBlankTarget = if (
         keyboardVisible &&
@@ -14081,7 +14666,7 @@ fun QuickSubtitleScreen(
                                         subtitleDisplayContent(
                                             inlineInputPreviewActive,
                                             displayedSubtitleText,
-                                            if (inlineInputPreviewActive) inputPreviewCursorIndex else null,
+                                            if (editingInputPreviewActive && inlineInputPreviewActive) inputPreviewCursorIndex else null,
                                             Modifier.fillMaxSize()
                                         )
                                     }
@@ -14405,7 +14990,7 @@ fun QuickSubtitleScreen(
                                     subtitleDisplayContent(
                                         inlineInputPreviewActive,
                                         displayedSubtitleText,
-                                        if (inlineInputPreviewActive) inputPreviewCursorIndex else null,
+                                        if (editingInputPreviewActive && inlineInputPreviewActive) inputPreviewCursorIndex else null,
                                         Modifier.fillMaxSize()
                                     )
                                 }
@@ -18430,7 +19015,10 @@ fun SettingsScreen(
     viewModel: MainViewModel,
     state: UiState,
     onOpenLicenses: () -> Unit,
-    onOpenPrivacy: () -> Unit
+    onOpenPrivacy: () -> Unit,
+    onOpenRecognitionResourceSources: () -> Unit,
+    onPickRecognitionResourcePackage: () -> Unit,
+    onDownloadRecognitionResources: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -18822,6 +19410,76 @@ fun SettingsScreen(
     fun RecognitionSettingsContent() {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "语音识别资源包") {
+                    Text(
+                        text = state.recognitionResourceStatus,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (state.recognitionResourceInstalled) {
+                        Text(
+                            text = buildString {
+                                append("当前资源：")
+                                append(state.recognitionResourceName)
+                                if (state.recognitionResourceVersion.isNotBlank()) {
+                                    append(" / ")
+                                    append(state.recognitionResourceVersion)
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = "资源包用于统一管理 ASR、Silero VAD、GTCRN/DPDFNet 语音增强模型；未安装时语音识别与 AI 语音增强不可用。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (state.recognitionResourceBusy) {
+                        val progress = state.recognitionResourceProgress
+                        if (progress in 0f..1f) {
+                            LinearProgressIndicator(
+                                progress = progress.coerceIn(0f, 1f),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            text = state.recognitionResourceProgressStage.ifBlank { "处理中" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2Button(
+                            onClick = onDownloadRecognitionResources,
+                            enabled = !state.recognitionResourceBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("下载资源包")
+                        }
+                        Md2OutlinedButton(
+                            onClick = onPickRecognitionResourcePackage,
+                            enabled = !state.recognitionResourceBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("本地安装")
+                        }
+                    }
+                    Md2TextButton(
+                        onClick = onOpenRecognitionResourceSources,
+                        enabled = !state.recognitionResourceBusy
+                    ) {
+                        Text("管理下载源")
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 1) {
                 Md2SettingsCard(title = "识别与转换") {
                     Md2SettingSwitchRow(
                         title = "识别结果自动上屏大字幕",
@@ -18992,7 +19650,7 @@ fun SettingsScreen(
                 }
             }
 
-            Md2StaggeredFloatIn(index = 1) {
+            Md2StaggeredFloatIn(index = 2) {
                 Md2SettingsCard(title = "说话人验证") {
                     Md2SettingSwitchRow(
                         title = "说话人验证",
@@ -19423,6 +20081,12 @@ fun SettingsScreen(
                         checked = state.quickSubtitleCompactControls,
                         onCheckedChange = { viewModel.setQuickSubtitleCompactControls(it) },
                         supportingText = "仅影响主界面竖屏便捷字幕。开启后会改为类似迷你快捷字幕的紧凑快捷文本区，并把编辑入口移到顶栏。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "输入框内容保持预览",
+                        checked = state.quickSubtitleKeepInputPreview,
+                        onCheckedChange = { viewModel.setQuickSubtitleKeepInputPreview(it) },
+                        supportingText = "开启后输入框有内容时，键盘收起后大字幕仍显示输入预览；直到下一次语音或快捷文本提交前保持。"
                     )
                     Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
                     Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)

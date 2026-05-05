@@ -42,6 +42,12 @@ object UserPrefs {
     const val VOLUME_HOTKEY_MIN_WINDOW_MS = 500
     const val VOLUME_HOTKEY_MAX_WINDOW_MS = 3000
     const val VOLUME_HOTKEY_DEFAULT_WINDOW_MS = 1500
+    const val RECOGNITION_RESOURCE_SOURCE_MODELSCOPE = 0
+    const val RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE = 1
+    const val DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL =
+        "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_ASR_Resource/resolve/master/kigtts-recognition-resources-20260505.7z"
+    const val DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL =
+        "https://huggingface.co/LHT02/KIGTTS_ASR_Resource/resolve/main/kigtts-recognition-resources-20260505.7z"
 
     private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
@@ -62,6 +68,12 @@ object UserPrefs {
     private val KEY_SILERO_VAD_ENABLED = booleanPreferencesKey("silero_vad_enabled")
     private val KEY_SILERO_VAD_THRESHOLD = floatPreferencesKey("silero_vad_threshold")
     private val KEY_SILERO_VAD_PRE_ROLL_MS = intPreferencesKey("silero_vad_pre_roll_ms")
+    private val KEY_RECOGNITION_RESOURCE_MODELSCOPE_URL =
+        stringPreferencesKey("recognition_resource_modelscope_url")
+    private val KEY_RECOGNITION_RESOURCE_HUGGINGFACE_URL =
+        stringPreferencesKey("recognition_resource_huggingface_url")
+    private val KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE =
+        intPreferencesKey("recognition_resource_preferred_source")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -113,6 +125,8 @@ object UserPrefs {
     private val KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE = booleanPreferencesKey("quick_subtitle_interrupt_queue")
     private val KEY_QUICK_SUBTITLE_AUTO_FIT = booleanPreferencesKey("quick_subtitle_auto_fit")
     private val KEY_QUICK_SUBTITLE_COMPACT_CONTROLS = booleanPreferencesKey("quick_subtitle_compact_controls")
+    private val KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW =
+        booleanPreferencesKey("quick_subtitle_keep_input_preview")
     private val KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE =
         booleanPreferencesKey("drawing_keep_canvas_orientation_to_device")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
@@ -142,6 +156,9 @@ object UserPrefs {
         val sileroVadEnabled: Boolean = true,
         val sileroVadThreshold: Float = SILERO_VAD_DEFAULT_THRESHOLD,
         val sileroVadPreRollMs: Int = SILERO_VAD_DEFAULT_PRE_ROLL_MS,
+        val recognitionResourceModelScopeUrl: String = DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
+        val recognitionResourceHuggingFaceUrl: String = DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
+        val recognitionResourcePreferredSource: Int = RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
         val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
@@ -183,6 +200,7 @@ object UserPrefs {
         val quickSubtitleInterruptQueue: Boolean = true,
         val quickSubtitleAutoFit: Boolean = true,
         val quickSubtitleCompactControls: Boolean = false,
+        val quickSubtitleKeepInputPreview: Boolean = true,
         val drawingKeepCanvasOrientationToDevice: Boolean = true,
         val speakerVerifyEnabled: Boolean = false,
         val speakerVerifyThreshold: Float = 0.5f,
@@ -302,6 +320,15 @@ object UserPrefs {
                 .coerceIn(SILERO_VAD_MIN_THRESHOLD, SILERO_VAD_MAX_THRESHOLD),
             sileroVadPreRollMs = (this[KEY_SILERO_VAD_PRE_ROLL_MS] ?: SILERO_VAD_DEFAULT_PRE_ROLL_MS)
                 .coerceIn(SILERO_VAD_MIN_PRE_ROLL_MS, SILERO_VAD_MAX_PRE_ROLL_MS),
+            recognitionResourceModelScopeUrl = this[KEY_RECOGNITION_RESOURCE_MODELSCOPE_URL]
+                ?.takeIf { it.isNotBlank() }
+                ?: DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
+            recognitionResourceHuggingFaceUrl = this[KEY_RECOGNITION_RESOURCE_HUGGINGFACE_URL]
+                ?.takeIf { it.isNotBlank() }
+                ?: DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
+            recognitionResourcePreferredSource = (this[KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE]
+                ?: RECOGNITION_RESOURCE_SOURCE_MODELSCOPE)
+                .coerceIn(RECOGNITION_RESOURCE_SOURCE_MODELSCOPE, RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE),
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
@@ -355,6 +382,7 @@ object UserPrefs {
             quickSubtitleInterruptQueue = this[KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE] ?: true,
             quickSubtitleAutoFit = this[KEY_QUICK_SUBTITLE_AUTO_FIT] ?: true,
             quickSubtitleCompactControls = this[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] ?: false,
+            quickSubtitleKeepInputPreview = this[KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW] ?: true,
             drawingKeepCanvasOrientationToDevice = this[KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE] ?: true,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
             speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
@@ -458,6 +486,22 @@ object UserPrefs {
             prefs[KEY_SILERO_VAD_PRE_ROLL_MS] = preRollMs.coerceIn(
                 SILERO_VAD_MIN_PRE_ROLL_MS,
                 SILERO_VAD_MAX_PRE_ROLL_MS
+            )
+        }
+    }
+
+    suspend fun setRecognitionResourceSources(
+        context: Context,
+        modelScopeUrl: String,
+        huggingFaceUrl: String,
+        preferredSource: Int
+    ) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_RECOGNITION_RESOURCE_MODELSCOPE_URL] = modelScopeUrl.trim()
+            prefs[KEY_RECOGNITION_RESOURCE_HUGGINGFACE_URL] = huggingFaceUrl.trim()
+            prefs[KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE] = preferredSource.coerceIn(
+                RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE
             )
         }
     }
@@ -701,6 +745,12 @@ object UserPrefs {
     suspend fun setQuickSubtitleCompactControls(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] = enabled
+        }
+    }
+
+    suspend fun setQuickSubtitleKeepInputPreview(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW] = enabled
         }
     }
 

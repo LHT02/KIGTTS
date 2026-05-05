@@ -861,6 +861,7 @@ private val BuiltinImageFileExtensions = setOf(
 )
 
 private val BuiltinArchiveFileExtensions = setOf(
+    "7z",
     "zip",
     "json",
     "kigvpk",

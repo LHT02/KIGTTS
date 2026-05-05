@@ -8655,8 +8655,12 @@ class FloatingOverlayService : Service() {
             )
             addView(pttIcon)
             setOnClickListener {
-                scope.launch(Dispatchers.IO) {
-                    UserPrefs.setPushToTalkMode(this@FloatingOverlayService, !settings.pushToTalkMode)
+                scope.launch {
+                    val nextEnabled = !settings.pushToTalkMode
+                    if (nextEnabled && effectiveRunningState()) {
+                        stopListeningInternal()
+                    }
+                    UserPrefs.setPushToTalkMode(this@FloatingOverlayService, nextEnabled)
                 }
             }
         }

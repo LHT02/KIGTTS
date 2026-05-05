@@ -37,6 +37,7 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingManager
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import com.lhtstudio.kigtts.app.data.EspeakData
+import com.lhtstudio.kigtts.app.data.RecognitionResourceRepository
 import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
 import com.lhtstudio.kigtts.app.util.AppLogger
@@ -1267,11 +1268,8 @@ private object SpeakerVerifier {
 }
 
 internal object SherpaSpeechEnhancer {
-    private const val GTCRN_ASSET_PATH = "speech_enhancement/gtcrn_simple.onnx"
     private const val GTCRN_FILE_NAME = "gtcrn_simple.onnx"
-    private const val DPDFNET2_ASSET_PATH = "speech_enhancement/dpdfnet2.onnx"
     private const val DPDFNET2_FILE_NAME = "dpdfnet2.onnx"
-    private const val DPDFNET4_ASSET_PATH = "speech_enhancement/dpdfnet4.onnx"
     private const val DPDFNET4_FILE_NAME = "dpdfnet4.onnx"
 
     private val lock = Any()
@@ -1453,20 +1451,20 @@ internal object SherpaSpeechEnhancer {
                 SpeechEnhancementMode.GTCRN_OFFLINE,
                 SpeechEnhancementMode.GTCRN_STREAMING -> {
                     gtcrn = OfflineSpeechDenoiserGtcrnModelConfig(
-                        ensureModelFileLocked(context, GTCRN_ASSET_PATH, GTCRN_FILE_NAME).absolutePath
+                        ensureModelFileLocked(context, GTCRN_FILE_NAME).absolutePath
                     )
                     dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig()
                 }
                 SpeechEnhancementMode.DPDFNET2_STREAMING -> {
                     gtcrn = OfflineSpeechDenoiserGtcrnModelConfig()
                     dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
-                        ensureModelFileLocked(context, DPDFNET2_ASSET_PATH, DPDFNET2_FILE_NAME).absolutePath
+                        ensureModelFileLocked(context, DPDFNET2_FILE_NAME).absolutePath
                     )
                 }
                 SpeechEnhancementMode.DPDFNET4_STREAMING -> {
                     gtcrn = OfflineSpeechDenoiserGtcrnModelConfig()
                     dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
-                        ensureModelFileLocked(context, DPDFNET4_ASSET_PATH, DPDFNET4_FILE_NAME).absolutePath
+                        ensureModelFileLocked(context, DPDFNET4_FILE_NAME).absolutePath
                     )
                 }
                 else -> {
@@ -1477,22 +1475,16 @@ internal object SherpaSpeechEnhancer {
         }
     }
 
-    private fun ensureModelFileLocked(context: Context, assetPath: String, fileName: String): File {
+    private fun ensureModelFileLocked(context: Context, fileName: String): File {
         val cached = cachedModelFiles[fileName]
         if (cached != null && cached.exists() && cached.length() > 0L) {
             return cached
         }
-        val outDir = File(context.filesDir, "models/speech_enhancement").apply { mkdirs() }
-        val outFile = File(outDir, fileName)
-        if (!outFile.exists() || outFile.length() <= 0L) {
-            context.assets.open(assetPath).use { input ->
-                outFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
+        RecognitionResourceRepository.resolveSpeechEnhancementModel(context, fileName)?.let { installed ->
+            cachedModelFiles[fileName] = installed
+            return installed
         }
-        cachedModelFiles[fileName] = outFile
-        return outFile
+        throw IllegalStateException("缺少语音增强模型 $fileName，请先安装语音识别资源包")
     }
 
     private fun concatFloatArrays(first: FloatArray, second: FloatArray): FloatArray {
@@ -2452,6 +2444,7 @@ class RealtimeController(
                 if (asr == null || currentAsrDir?.absolutePath != asrDir.absolutePath) {
                     releaseSileroVadProcessor()
                     currentSileroVadModelFile = resolveSileroVadModel(asrDir)
+                        ?: RecognitionResourceRepository.resolveSileroVadModel(context)
                     asr = moduleFactory.createAsr(context, asrDir)
                     currentAsrDir = asrDir
                     AppLogger.i("ASR loaded dir=${asrDir.absolutePath}")
@@ -2812,7 +2805,17 @@ class RealtimeController(
 
     private fun ensureSileroVadProcessorLocked(): SileroVadProcessor? {
         sileroVadProcessor?.let { return it }
-        val modelFile = currentSileroVadModelFile ?: return null
+        val modelFile = currentSileroVadModelFile
+            ?: RecognitionResourceRepository.resolveSileroVadModel(context)?.also {
+                currentSileroVadModelFile = it
+            }
+            ?: run {
+                AppLogger.e("Silero VAD model missing")
+                notifyError("Silero VAD 模型缺失，已回退阈值式 VAD")
+                sileroVadEnabled = false
+                classicVadEnabled = true
+                return null
+            }
         return runCatching {
             SileroVadProcessor(
                 modelFile = modelFile,

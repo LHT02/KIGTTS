@@ -28,11 +28,10 @@ cd android-app
 - [MODEL_ASSETS.md](../MODEL_ASSETS.md)
 
 导入项：
-- ASR：`sosv.zip` 或 `sosv-int8.zip`
+- 语音识别资源包：`.7z` 或兼容 `.zip`，可统一包含 ASR、Silero VAD、GTCRN / DPDFNet 语音增强模型
 - 音色包：`.kigvpk`（当前导出格式）或兼容 `.zip`
 
 安卓 APK 当前内置：
-- `sosv-int8.zip`（SenseVoice + Silero VAD + 标点模型）
 - `speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
 - `espeak-ng-data.zip`
 

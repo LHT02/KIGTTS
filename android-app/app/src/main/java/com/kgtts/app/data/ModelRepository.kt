@@ -46,7 +46,7 @@ class ModelRepository(private val context: Context) {
     private val root = File(context.filesDir, "models")
     private val asrRoot = File(root, "asr")
     private val voiceRoot = File(root, "voice")
-    private val bundledAsrAsset = "sosv-int8.zip"
+    private val recognitionResources = RecognitionResourceRepository(context)
 
     init {
         root.mkdirs()
@@ -110,6 +110,23 @@ class ModelRepository(private val context: Context) {
     fun resolveAsr(name: String): File? {
         val dir = File(asrRoot, name)
         return if (dir.isDirectory) dir else null
+    }
+
+    fun recognitionResourceStatus(): RecognitionResourceStatus = recognitionResources.status()
+
+    fun installRecognitionResources(
+        uri: Uri,
+        resolver: ContentResolver,
+        onProgress: (RecognitionResourceProgress) -> Unit
+    ): RecognitionResourceStatus {
+        return recognitionResources.installFromUri(uri, resolver, onProgress)
+    }
+
+    fun downloadRecognitionResources(
+        url: String,
+        onProgress: (RecognitionResourceProgress) -> Unit
+    ): RecognitionResourceStatus {
+        return recognitionResources.downloadAndInstall(url, onProgress)
     }
 
     fun resolveVoicePack(name: String): File? {
@@ -179,20 +196,12 @@ class ModelRepository(private val context: Context) {
     }
 
     fun ensureBundledAsr(): File? {
-        val targetDir = File(asrRoot, "bundled-sosv-int8")
-        if (hasOnnx(targetDir)) {
-            AppLogger.i("bundledAsr already present: ${targetDir.absolutePath}")
-            return targetDir
+        recognitionResources.installedAsrDir()?.let { dir ->
+            AppLogger.i("recognitionResourceAsr present: ${dir.absolutePath}")
+            return dir
         }
-        targetDir.mkdirs()
-        return try {
-            AppLogger.i("bundledAsr extracting asset=$bundledAsrAsset to ${targetDir.absolutePath}")
-            unzipAssetToDir(bundledAsrAsset, targetDir)
-            if (hasOnnx(targetDir)) targetDir else null
-        } catch (e: Exception) {
-            AppLogger.e("bundledAsr extract failed", e)
-            null
-        }
+        AppLogger.e("recognitionResourceAsr missing; external resource package required")
+        return null
     }
 
     private fun requireManagedVoicePackDir(dir: File): File {
@@ -254,32 +263,6 @@ class ModelRepository(private val context: Context) {
             lower.endsWith(".zip") -> name.dropLast(4)
             else -> name
         }
-    }
-
-    private fun unzipAssetToDir(assetName: String, outDir: File) {
-        context.assets.open(assetName).use { stream ->
-            ZipInputStream(stream).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    val outPath = entryOutputFile(outDir, entry)
-                    if (entry.isDirectory) {
-                        outPath.mkdirs()
-                    } else {
-                        outPath.parentFile?.mkdirs()
-                        FileOutputStream(outPath).use { fos ->
-                            zis.copyTo(fos)
-                        }
-                    }
-                    zis.closeEntry()
-                    entry = zis.nextEntry
-                }
-            }
-        }
-    }
-
-    private fun hasOnnx(dir: File): Boolean {
-        if (!dir.exists()) return false
-        return dir.walkTopDown().any { it.isFile && it.extension.lowercase() == "onnx" }
     }
 
     private fun isValidVoicePackDir(dir: File): Boolean {
