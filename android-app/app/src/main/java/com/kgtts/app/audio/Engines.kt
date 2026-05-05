@@ -19,6 +19,11 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.k2fsa.sherpa.onnx.DenoisedAudio
 import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.GenerationConfig
+import com.k2fsa.sherpa.onnx.OfflineTts
+import com.k2fsa.sherpa.onnx.OfflineTtsConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiser
 import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiserConfig
@@ -39,6 +44,7 @@ import com.k2fsa.sherpa.onnx.VadModelConfig
 import com.lhtstudio.kigtts.app.data.EspeakData
 import com.lhtstudio.kigtts.app.data.RecognitionResourceRepository
 import com.lhtstudio.kigtts.app.data.UserPrefs
+import com.lhtstudio.kigtts.app.data.isKokoroVoiceDir
 import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
 import com.lhtstudio.kigtts.app.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
@@ -91,6 +97,7 @@ interface TtsModule {
     fun synthesize(text: String): FloatArray
     fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray = synthesize(text)
     fun close() {}
+    fun setKokoroVoice(speakerId: Int) {}
     fun setSynthesisTuning(
         noiseScale: Float,
         lengthScale: Float,
@@ -107,10 +114,10 @@ interface SpeechModuleFactory {
 object DefaultSpeechModuleFactory : SpeechModuleFactory {
     override fun createAsr(context: Context, modelDir: File): AsrModule = AsrEngine(context, modelDir)
     override fun createTts(context: Context, packDir: File): TtsModule {
-        return if (isSystemTtsVoiceDir(packDir)) {
-            SystemTtsEngine(context)
-        } else {
-            PiperTtsEngine(context, packDir)
+        return when {
+            isSystemTtsVoiceDir(packDir) -> SystemTtsEngine(context)
+            isKokoroVoiceDir(packDir) -> SherpaKokoroTtsEngine(context, packDir)
+            else -> PiperTtsEngine(context, packDir)
         }
     }
 }
@@ -521,6 +528,109 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
     override fun close() {
         runCatching { session.close() }
         runCatching { sessionOptions.close() }
+    }
+}
+
+class SherpaKokoroTtsEngine(context: Context, packDir: File) : TtsModule {
+    private val appContext = context.applicationContext
+    private val baseDir = resolveKokoroBaseDir(packDir)
+    private val tts: OfflineTts
+    @Volatile private var speakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID
+    @Volatile private var speed: Float = 1.0f
+    @Volatile private var silenceScale: Float = 0.2f
+
+    init {
+        val modelFile = listOf("model.int8.onnx", "model.onnx")
+            .map { File(baseDir, it) }
+            .firstOrNull { it.isFile }
+            ?: throw IllegalStateException("Kokoro 模型文件缺失")
+        val voicesFile = File(baseDir, "voices.bin").takeIf { it.isFile }
+            ?: throw IllegalStateException("Kokoro voices.bin 缺失")
+        val tokensFile = File(baseDir, "tokens.txt").takeIf { it.isFile }
+            ?: throw IllegalStateException("Kokoro tokens.txt 缺失")
+        val dataDir = File(baseDir, "espeak-ng-data").takeIf { it.isDirectory }
+            ?: throw IllegalStateException("Kokoro espeak-ng-data 缺失")
+        val dictDir = File(baseDir, "dict").takeIf { it.isDirectory }
+        val lexicons = listOf("lexicon-us-en.txt", "lexicon-zh.txt")
+            .map { File(baseDir, it) }
+            .filter { it.isFile }
+        if (lexicons.size < 2) throw IllegalStateException("Kokoro 中英文词典缺失")
+        val ruleFsts = listOf("date-zh.fst", "number-zh.fst")
+            .map { File(baseDir, it) }
+            .filter { it.isFile }
+            .joinToString(",") { it.absolutePath }
+        val config = OfflineTtsConfig(
+            model = OfflineTtsModelConfig(
+                kokoro = OfflineTtsKokoroModelConfig(
+                    model = modelFile.absolutePath,
+                    voices = voicesFile.absolutePath,
+                    tokens = tokensFile.absolutePath,
+                    dataDir = dataDir.absolutePath,
+                    lexicon = lexicons.joinToString(",") { it.absolutePath },
+                    dictDir = dictDir?.absolutePath.orEmpty(),
+                    lang = "zh",
+                    lengthScale = 1.0f
+                ),
+                numThreads = 1,
+                debug = false,
+                provider = "cpu"
+            ),
+            ruleFsts = ruleFsts,
+            maxNumSentences = 1,
+            silenceScale = silenceScale
+        )
+        tts = OfflineTts(appContext.assets, config)
+        AppLogger.i("Kokoro TTS loaded dir=${baseDir.absolutePath} sampleRate=${tts.sampleRate()} speakers=${tts.numSpeakers()}")
+    }
+
+    override val sampleRate: Int
+        get() = tts.sampleRate()
+
+    override fun setKokoroVoice(speakerId: Int) {
+        val maxSpeaker = (tts.numSpeakers() - 1).coerceAtLeast(UserPrefs.KOKORO_MIN_SPEAKER_ID)
+        this.speakerId = speakerId.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, maxSpeaker)
+    }
+
+    override fun setSynthesisTuning(
+        noiseScale: Float,
+        lengthScale: Float,
+        noiseW: Float,
+        sentenceSilenceSec: Float
+    ) {
+        speed = (1f / lengthScale.coerceIn(0.1f, 5f)).coerceIn(0.2f, 4f)
+        silenceScale = sentenceSilenceSec.coerceIn(0f, 2f)
+    }
+
+    override fun synthesize(text: String): FloatArray = synthesizeInternal(text, null)
+
+    override fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray {
+        return synthesizeInternal(text, sentenceSilenceSec.coerceAtLeast(0f))
+    }
+
+    private fun synthesizeInternal(text: String, sentenceSilenceOverride: Float?): FloatArray {
+        val content = text.trim()
+        if (content.isEmpty()) return FloatArray(0)
+        val config = GenerationConfig(
+            sid = speakerId,
+            speed = speed,
+            silenceScale = sentenceSilenceOverride ?: silenceScale
+        )
+        return tts.generateWithConfig(content, config).samples
+    }
+
+    override fun close() {
+        runCatching { tts.release() }
+    }
+
+    private fun resolveKokoroBaseDir(root: File): File {
+        return root.walkTopDown()
+            .filter { it.isDirectory }
+            .firstOrNull { dir ->
+                (File(dir, "model.int8.onnx").isFile || File(dir, "model.onnx").isFile) &&
+                    File(dir, "voices.bin").isFile &&
+                    File(dir, "tokens.txt").isFile
+            }
+            ?: throw IllegalStateException("Kokoro 语音包未安装或文件不完整")
     }
 }
 
@@ -1587,6 +1697,7 @@ class RealtimeController(
     initialPiperLengthScale: Float,
     initialPiperNoiseW: Float,
     initialPiperSentenceSilenceSec: Float,
+    initialKokoroSpeakerId: Int,
     initialSuppressDelaySec: Float,
     initialPreferredInputType: Int,
     initialPreferredOutputType: Int,
@@ -1625,6 +1736,10 @@ class RealtimeController(
     @Volatile private var piperLengthScale = initialPiperLengthScale.coerceIn(0.1f, 5f)
     @Volatile private var piperNoiseW = initialPiperNoiseW.coerceIn(0f, 2f)
     @Volatile private var piperSentenceSilenceSec = initialPiperSentenceSilenceSec.coerceIn(0f, 2f)
+    @Volatile private var kokoroSpeakerId = initialKokoroSpeakerId.coerceIn(
+        UserPrefs.KOKORO_MIN_SPEAKER_ID,
+        UserPrefs.KOKORO_MAX_SPEAKER_ID
+    )
     @Volatile private var suppressUntilMs: Long = 0L
     @Volatile private var preferredInputType = initialPreferredInputType
     @Volatile private var preferredOutputType = initialPreferredOutputType
@@ -2019,6 +2134,12 @@ class RealtimeController(
             noiseW = piperNoiseW,
             sentenceSilenceSec = piperSentenceSilenceSec
         )
+        target?.setKokoroVoice(kokoroSpeakerId)
+    }
+
+    fun setKokoroSpeakerId(value: Int) {
+        kokoroSpeakerId = value.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, UserPrefs.KOKORO_MAX_SPEAKER_ID)
+        tts?.setKokoroVoice(kokoroSpeakerId)
     }
 
     fun setPiperNoiseScale(value: Float) {

@@ -47,6 +47,7 @@ class ModelRepository(private val context: Context) {
     private val asrRoot = File(root, "asr")
     private val voiceRoot = File(root, "voice")
     private val recognitionResources = RecognitionResourceRepository(context)
+    private val kokoroVoice = KokoroVoiceRepository(context)
 
     init {
         root.mkdirs()
@@ -106,6 +107,29 @@ class ModelRepository(private val context: Context) {
     }
 
     fun systemTtsVirtualDir(): File = File(root, SYSTEM_TTS_VIRTUAL_DIR_NAME)
+
+    fun kokoroVoiceDir(): File = kokoroVoice.voiceDir()
+
+    fun kokoroVoiceStatus(): KokoroVoiceStatus = kokoroVoice.status()
+
+    fun installKokoroVoice(
+        uri: Uri,
+        resolver: ContentResolver,
+        onProgress: (RecognitionResourceProgress) -> Unit
+    ): KokoroVoiceStatus {
+        return kokoroVoice.installFromUri(uri, resolver, onProgress)
+    }
+
+    fun downloadKokoroVoice(
+        url: String,
+        onProgress: (RecognitionResourceProgress) -> Unit
+    ): KokoroVoiceStatus {
+        return kokoroVoice.downloadAndInstall(url, onProgress)
+    }
+
+    fun deleteKokoroVoice() {
+        kokoroVoice.delete()
+    }
 
     fun resolveAsr(name: String): File? {
         val dir = File(asrRoot, name)

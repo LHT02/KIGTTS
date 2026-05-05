@@ -41,6 +41,7 @@ import android.view.inputmethod.InputMethodManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.NumberPicker
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -236,16 +237,19 @@ import com.lhtstudio.kigtts.app.audio.VadMode
 import com.lhtstudio.kigtts.app.data.ModelRepository
 import com.lhtstudio.kigtts.app.data.RecognitionResourceProgress
 import com.lhtstudio.kigtts.app.data.RecognitionResourceStatus
+import com.lhtstudio.kigtts.app.data.KokoroVoiceStatus
 import com.lhtstudio.kigtts.app.data.SoundboardGroup
 import com.lhtstudio.kigtts.app.data.SoundboardItem
 import com.lhtstudio.kigtts.app.data.SoundboardLayoutMode
 import com.lhtstudio.kigtts.app.data.SoundboardConfig
 import com.lhtstudio.kigtts.app.data.SoundboardPresetIo
+import com.lhtstudio.kigtts.app.data.KOKORO_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.VoicePackInfo
 import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.data.VoicePackMeta
 import com.lhtstudio.kigtts.app.data.defaultSoundboardGroups
+import com.lhtstudio.kigtts.app.data.isKokoroVoiceDir
 import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
 import com.lhtstudio.kigtts.app.data.parseSoundboardConfig
 import com.lhtstudio.kigtts.app.data.serializeSoundboardConfig
@@ -584,6 +588,15 @@ data class UiState(
     val recognitionResourceModelScopeUrl: String = UserPrefs.DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
     val recognitionResourceHuggingFaceUrl: String = UserPrefs.DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
     val recognitionResourcePreferredSource: Int = UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+    val kokoroInstalled: Boolean = false,
+    val kokoroStatus: String = "未安装 Kokoro 语音包",
+    val kokoroBusy: Boolean = false,
+    val kokoroProgressStage: String = "",
+    val kokoroProgress: Float = -1f,
+    val kokoroHfUrl: String = UserPrefs.DEFAULT_KOKORO_HF_URL,
+    val kokoroHfMirrorUrl: String = UserPrefs.DEFAULT_KOKORO_HFMIRROR_URL,
+    val kokoroPreferredSource: Int = UserPrefs.KOKORO_SOURCE_HFMIRROR,
+    val kokoroSpeakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
     val piperNoiseScale: Float = 0.667f,
@@ -1092,6 +1105,7 @@ class MainViewModel(
         loadSoundboardConfig()
         loadQuickCardConfig()
         refreshRecognitionResourceStatus()
+        refreshKokoroVoiceStatus()
         observeSoundboardPlayback()
         observeSettingsChanges()
     }
@@ -1313,6 +1327,10 @@ class MainViewModel(
             recognitionResourceModelScopeUrl = settings.recognitionResourceModelScopeUrl,
             recognitionResourceHuggingFaceUrl = settings.recognitionResourceHuggingFaceUrl,
             recognitionResourcePreferredSource = settings.recognitionResourcePreferredSource,
+            kokoroHfUrl = settings.kokoroHfUrl,
+            kokoroHfMirrorUrl = settings.kokoroHfMirrorUrl,
+            kokoroPreferredSource = settings.kokoroPreferredSource,
+            kokoroSpeakerId = settings.kokoroSpeakerId,
             minVolumePercent = settings.minVolumePercent,
             playbackGainPercent = settings.playbackGainPercent,
             piperNoiseScale = settings.piperNoiseScale,
@@ -2663,14 +2681,18 @@ class MainViewModel(
 
     private fun isSystemTtsVoicePack(pack: VoicePackInfo): Boolean = isSystemTtsVoiceDir(pack.dir)
 
+    private fun isKokoroVoicePack(pack: VoicePackInfo): Boolean = isKokoroVoiceDir(pack.dir)
+
     private suspend fun resolvePreferredVoiceDir(lastName: String?): File? {
         val resolved = when (lastName) {
             SYSTEM_TTS_VOICE_NAME -> systemTtsVoiceDir()
+            KOKORO_VOICE_NAME -> repo.kokoroVoiceDir().takeIf { repo.kokoroVoiceStatus().installed }
             null -> null
             else -> repo.resolveVoicePack(lastName)
         }
         if (resolved != null) return resolved
         return withContext(Dispatchers.IO) { repo.listVoicePacks().firstOrNull()?.dir }
+            ?: repo.kokoroVoiceDir().takeIf { repo.kokoroVoiceStatus().installed }
             ?: systemTtsVoiceDir()
     }
 
@@ -2693,8 +2715,25 @@ class MainViewModel(
 
     private suspend fun loadVoicePackList(): List<VoicePackInfo> {
         val physical = withContext(Dispatchers.IO) { repo.listVoicePacks() }
+        val kokoroStatus = withContext(Dispatchers.IO) { repo.kokoroVoiceStatus() }
+        val kokoro = if (kokoroStatus.installed) {
+            listOf(
+                VoicePackInfo(
+                    dir = repo.kokoroVoiceDir(),
+                    meta = VoicePackMeta(
+                        name = "Kokoro",
+                        remark = "中英混合 Kokoro v1.1，103 个音色",
+                        avatar = "avatar.png",
+                        pinned = false,
+                        order = -1L
+                    )
+                )
+            )
+        } else {
+            emptyList()
+        }
         val system = loadSystemTtsVoicePackInfo(physical)
-        return sortVoicePacks(physical + system)
+        return sortVoicePacks(kokoro + physical + system)
     }
 
     private suspend fun findFallbackVoicePack(excludingDir: File): File? {
@@ -2703,7 +2742,19 @@ class MainViewModel(
             .firstOrNull { it.dir.absolutePath != excludedPath }
             ?.dir
         if (listed != null) return listed
+        val kokoro = repo.kokoroVoiceDir()
+        if (kokoro.absolutePath != excludedPath && repo.kokoroVoiceStatus().installed) {
+            return kokoro
+        }
         return systemTtsVoiceDir().takeIf { it.absolutePath != excludedPath }
+    }
+
+    private fun fallbackVoiceStatus(dir: File): String {
+        return when {
+            isSystemTtsVoiceDir(dir) -> "已切换到系统 TTS"
+            isKokoroVoiceDir(dir) -> "已切换备用语音包：Kokoro"
+            else -> "已切换备用语音包：${dir.name}"
+        }
     }
 
     private suspend fun stopRealtimeImmediatelyForVoicePackDeletion() {
@@ -2867,6 +2918,149 @@ class MainViewModel(
         }
     }
 
+    fun refreshKokoroVoiceStatus() {
+        viewModelScope.launch {
+            val status = withContext(Dispatchers.IO) { repo.kokoroVoiceStatus() }
+            uiState = uiState.copy(
+                kokoroInstalled = status.installed,
+                kokoroStatus = kokoroStatusText(status),
+                kokoroBusy = false,
+                kokoroProgressStage = "",
+                kokoroProgress = -1f
+            )
+            refreshVoicePacks()
+        }
+    }
+
+    fun setKokoroSources(hfUrl: String, hfMirrorUrl: String, preferredSource: Int) {
+        viewModelScope.launch {
+            UserPrefs.setKokoroSources(appContext, hfUrl, hfMirrorUrl, preferredSource)
+            uiState = uiState.copy(
+                kokoroHfUrl = hfUrl.trim(),
+                kokoroHfMirrorUrl = hfMirrorUrl.trim(),
+                kokoroPreferredSource = preferredSource.coerceIn(UserPrefs.KOKORO_SOURCE_HF, UserPrefs.KOKORO_SOURCE_HFMIRROR)
+            )
+        }
+    }
+
+    fun setKokoroSpeakerId(speakerId: Int) {
+        val normalized = speakerId.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, UserPrefs.KOKORO_MAX_SPEAKER_ID)
+        uiState = uiState.copy(kokoroSpeakerId = normalized)
+        realtimeHost?.setKokoroSpeakerId(normalized)
+        viewModelScope.launch {
+            UserPrefs.setKokoroSpeakerId(appContext, normalized)
+        }
+    }
+
+    fun downloadKokoroVoice() {
+        if (uiState.kokoroBusy) return
+        val url = preferredKokoroSourceUrl()
+        if (url.isBlank()) {
+            uiState = uiState.copy(status = "请先配置 Kokoro 下载源")
+            return
+        }
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                kokoroBusy = true,
+                kokoroProgressStage = "准备下载",
+                kokoroProgress = -1f,
+                kokoroStatus = "准备下载 Kokoro 语音包"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.downloadKokoroVoice(url) { progress -> postKokoroProgress(progress) }
+                }
+                applyInstalledKokoroVoice(status, "Kokoro 语音包安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("downloadKokoroVoice failed", e)
+                uiState = uiState.copy(
+                    kokoroBusy = false,
+                    kokoroProgressStage = "",
+                    kokoroProgress = -1f,
+                    kokoroStatus = "Kokoro 语音包安装失败：${e.message ?: "未知错误"}",
+                    status = "Kokoro 语音包安装失败"
+                )
+            }
+        }
+    }
+
+    fun installKokoroVoice(uri: android.net.Uri) {
+        if (uiState.kokoroBusy) return
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                kokoroBusy = true,
+                kokoroProgressStage = "准备安装",
+                kokoroProgress = -1f,
+                kokoroStatus = "准备安装 Kokoro 语音包"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.installKokoroVoice(uri, appContext.contentResolver) { progress -> postKokoroProgress(progress) }
+                }
+                applyInstalledKokoroVoice(status, "Kokoro 语音包安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("installKokoroVoice failed", e)
+                uiState = uiState.copy(
+                    kokoroBusy = false,
+                    kokoroProgressStage = "",
+                    kokoroProgress = -1f,
+                    kokoroStatus = "Kokoro 语音包安装失败：${e.message ?: "未知错误"}",
+                    status = "Kokoro 语音包安装失败"
+                )
+            }
+        }
+    }
+
+    private fun preferredKokoroSourceUrl(): String {
+        val hf = uiState.kokoroHfUrl.trim()
+        val mirror = uiState.kokoroHfMirrorUrl.trim()
+        return if (uiState.kokoroPreferredSource == UserPrefs.KOKORO_SOURCE_HF) {
+            hf.ifBlank { mirror }
+        } else {
+            mirror.ifBlank { hf }
+        }
+    }
+
+    private fun postKokoroProgress(progress: RecognitionResourceProgress) {
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            uiState = uiState.copy(
+                kokoroBusy = true,
+                kokoroProgressStage = progress.stage,
+                kokoroProgress = progress.fraction,
+                kokoroStatus = if (progress.fraction in 0f..1f) {
+                    "${progress.stage} ${(progress.fraction * 100f).roundToInt()}%"
+                } else {
+                    progress.stage
+                }
+            )
+        }
+    }
+
+    private suspend fun applyInstalledKokoroVoice(status: KokoroVoiceStatus, message: String) {
+        uiState = uiState.copy(
+            kokoroInstalled = status.installed,
+            kokoroStatus = kokoroStatusText(status),
+            kokoroBusy = false,
+            kokoroProgressStage = "",
+            kokoroProgress = -1f,
+            status = message
+        )
+        refreshVoicePacks()
+    }
+
+    private fun kokoroStatusText(status: KokoroVoiceStatus): String {
+        if (!status.installed) return "未安装 Kokoro 语音包，请在设置中下载或本地安装。"
+        return buildString {
+            append("已安装 ")
+            append(status.name)
+            if (status.version.isNotBlank()) {
+                append(" / ")
+                append(status.version)
+            }
+            append("，103 个音色，24kHz。")
+        }
+    }
+
     private fun preferredRecognitionResourceUrl(): String {
         val modelScope = uiState.recognitionResourceModelScopeUrl.trim()
         val huggingFace = uiState.recognitionResourceHuggingFaceUrl.trim()
@@ -2931,13 +3125,22 @@ class MainViewModel(
             val lastName = UserPrefs.getLastVoiceName(appContext)
             val lastDir = resolvePreferredVoiceDir(lastName)
             if (lastDir != null) {
+                val voiceStatus = when {
+                    isSystemTtsVoiceDir(lastDir) -> "已加载系统 TTS"
+                    isKokoroVoiceDir(lastDir) -> "已加载 Kokoro"
+                    else -> "已加载音色包"
+                }
                 uiState = uiState.copy(
                     voiceDir = lastDir,
-                    status = if (isSystemTtsVoiceDir(lastDir)) "已加载系统 TTS" else "已加载音色包"
+                    status = voiceStatus
                 )
                 UserPrefs.setLastVoiceName(
                     appContext,
-                    if (isSystemTtsVoiceDir(lastDir)) SYSTEM_TTS_VOICE_NAME else lastDir.name
+                    when {
+                        isSystemTtsVoiceDir(lastDir) -> SYSTEM_TTS_VOICE_NAME
+                        isKokoroVoiceDir(lastDir) -> KOKORO_VOICE_NAME
+                        else -> lastDir.name
+                    }
                 )
             }
             val selectedVoice = uiState.voiceDir
@@ -3004,9 +3207,17 @@ class MainViewModel(
         viewModelScope.launch {
             UserPrefs.setLastVoiceName(
                 appContext,
-                if (isSystemTtsVoiceDir(dir)) SYSTEM_TTS_VOICE_NAME else dir.name
+                when {
+                    isSystemTtsVoiceDir(dir) -> SYSTEM_TTS_VOICE_NAME
+                    isKokoroVoiceDir(dir) -> KOKORO_VOICE_NAME
+                    else -> dir.name
+                }
             )
-            val status = if (isSystemTtsVoiceDir(dir)) "已选择系统 TTS" else "已选择音色包"
+            val status = when {
+                isSystemTtsVoiceDir(dir) -> "已选择系统 TTS"
+                isKokoroVoiceDir(dir) -> "已选择 Kokoro"
+                else -> "已选择音色包"
+            }
             val host = realtimeHost
             if (host != null) {
                 host.updateSelectedVoiceDir(dir, status = status, preload = true)
@@ -3032,7 +3243,7 @@ class MainViewModel(
     }
 
     fun updateVoiceMeta(pack: VoicePackInfo, name: String, remark: String) {
-        if (isSystemTtsVoicePack(pack)) return
+        if (isSystemTtsVoicePack(pack) || isKokoroVoicePack(pack)) return
         val trimmedName = name.trim().ifEmpty { "未命名" }
         val trimmedRemark = remark.trim()
         viewModelScope.launch {
@@ -3044,7 +3255,7 @@ class MainViewModel(
     }
 
     fun updateVoiceAvatar(pack: VoicePackInfo, uri: android.net.Uri) {
-        if (isSystemTtsVoicePack(pack)) return
+        if (isSystemTtsVoicePack(pack) || isKokoroVoicePack(pack)) return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 repo.updateVoiceAvatar(pack.dir, appContext.contentResolver, uri, "avatar.png")
@@ -3054,7 +3265,7 @@ class MainViewModel(
     }
 
     fun toggleVoicePin(pack: VoicePackInfo) {
-        if (isSystemTtsVoicePack(pack)) return
+        if (isSystemTtsVoicePack(pack) || isKokoroVoicePack(pack)) return
         viewModelScope.launch {
             repo.updateVoiceMeta(pack.dir) { meta ->
                 meta.copy(pinned = !meta.pinned)
@@ -3075,11 +3286,15 @@ class MainViewModel(
         viewModelScope.launch {
             if (isSystemTtsVoiceDir(a.dir)) {
                 UserPrefs.setSystemTtsOrder(appContext, b.meta.order)
+            } else if (isKokoroVoiceDir(a.dir)) {
+                // Kokoro is managed by the resource installer and has fixed metadata.
             } else {
                 repo.updateVoiceMeta(a.dir) { meta -> meta.copy(order = b.meta.order) }
             }
             if (isSystemTtsVoiceDir(b.dir)) {
                 UserPrefs.setSystemTtsOrder(appContext, a.meta.order)
+            } else if (isKokoroVoiceDir(b.dir)) {
+                // Kokoro is managed by the resource installer and has fixed metadata.
             } else {
                 repo.updateVoiceMeta(b.dir) { meta -> meta.copy(order = a.meta.order) }
             }
@@ -3095,6 +3310,8 @@ class MainViewModel(
                 newOrder.forEachIndexed { index, pack ->
                     if (isSystemTtsVoiceDir(pack.dir)) {
                         UserPrefs.setSystemTtsOrder(appContext, index.toLong())
+                    } else if (isKokoroVoiceDir(pack.dir)) {
+                        // Kokoro is exposed as a special managed voice pack and is not reordered on disk.
                     } else {
                         repo.updateVoiceMeta(pack.dir) { meta ->
                             meta.copy(order = index.toLong())
@@ -3120,11 +3337,7 @@ class MainViewModel(
                     val switched = if (host != null) {
                         host.updateSelectedVoiceDir(
                             fallbackVoice,
-                            status = if (isSystemTtsVoiceDir(fallbackVoice)) {
-                                "已切换到系统 TTS"
-                            } else {
-                                "已切换备用语音包：${fallbackVoice.name}"
-                            },
+                            status = fallbackVoiceStatus(fallbackVoice),
                             preload = true
                         )
                         true
@@ -3139,15 +3352,15 @@ class MainViewModel(
                     }
                     UserPrefs.setLastVoiceName(
                         appContext,
-                        if (isSystemTtsVoiceDir(fallbackVoice)) SYSTEM_TTS_VOICE_NAME else fallbackVoice.name
+                        when {
+                            isSystemTtsVoiceDir(fallbackVoice) -> SYSTEM_TTS_VOICE_NAME
+                            isKokoroVoiceDir(fallbackVoice) -> KOKORO_VOICE_NAME
+                            else -> fallbackVoice.name
+                        }
                     )
                     uiState = uiState.copy(
                         voiceDir = fallbackVoice,
-                        status = if (isSystemTtsVoiceDir(fallbackVoice)) {
-                            "已切换到系统 TTS"
-                        } else {
-                            "已切换备用语音包：${fallbackVoice.name}"
-                        }
+                        status = fallbackVoiceStatus(fallbackVoice)
                     )
                 } else {
                     if (uiState.running || host?.isMicActive() == true) {
@@ -3162,7 +3375,11 @@ class MainViewModel(
             }
             try {
                 withContext(Dispatchers.IO) {
-                    repo.deleteVoicePack(pack.dir)
+                    if (isKokoroVoicePack(pack)) {
+                        repo.deleteKokoroVoice()
+                    } else {
+                        repo.deleteVoicePack(pack.dir)
+                    }
                 }
             } catch (e: SecurityException) {
                 uiState = uiState.copy(status = e.message ?: "语音包删除失败")
@@ -3177,6 +3394,7 @@ class MainViewModel(
                 uiState = uiState.copy(status = "语音包已删除")
             }
             refreshVoicePacks()
+            refreshKokoroVoiceStatus()
             if (uiState.floatingOverlayEnabled) {
                 FloatingOverlayService.refresh(appContext)
             }
@@ -3186,6 +3404,10 @@ class MainViewModel(
     fun shareVoice(pack: VoicePackInfo) {
         if (isSystemTtsVoicePack(pack)) {
             uiState = uiState.copy(status = "系统 TTS 不能分享")
+            return
+        }
+        if (isKokoroVoicePack(pack)) {
+            uiState = uiState.copy(status = "Kokoro 语音包由设置中的资源安装器管理，不能作为普通语音包分享")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -8723,6 +8945,166 @@ private fun RecognitionResourceSourceDialog(
 }
 
 @Composable
+private fun KokoroSourceDialog(
+    hfUrl: String,
+    hfMirrorUrl: String,
+    preferredSource: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, Int) -> Unit
+) {
+    var hf by remember(hfUrl) { mutableStateOf(hfUrl) }
+    var hfMirror by remember(hfMirrorUrl) { mutableStateOf(hfMirrorUrl) }
+    var preferred by remember(preferredSource) {
+        mutableIntStateOf(
+            preferredSource.coerceIn(
+                UserPrefs.KOKORO_SOURCE_HF,
+                UserPrefs.KOKORO_SOURCE_HFMIRROR
+            )
+        )
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text("Kokoro 下载源") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Kokoro 是特殊语音包，只能从这里下载或本地安装资源包；不会走普通 .kigvpk 语音包导入入口。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Md2OutlinedField(
+                    value = hf,
+                    onValueChange = { hf = it },
+                    label = "Hugging Face 源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Md2OutlinedField(
+                    value = hfMirror,
+                    onValueChange = { hfMirror = it },
+                    label = "HF-Mirror 源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("优先下载源", style = MaterialTheme.typography.bodySmall)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.KOKORO_SOURCE_HFMIRROR,
+                        onClick = { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
+                    )
+                    Text("HF-Mirror")
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.KOKORO_SOURCE_HF }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.KOKORO_SOURCE_HF,
+                        onClick = { preferred = UserPrefs.KOKORO_SOURCE_HF }
+                    )
+                    Text("Hugging Face")
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(
+                onClick = { onConfirm(hf, hfMirror, preferred) }
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            Md2TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun KokoroVoiceSettingsDialog(
+    state: UiState,
+    onDismiss: () -> Unit,
+    onSpeakerChange: (Int) -> Unit
+) {
+    val onSpeakerChangeState = rememberUpdatedState(onSpeakerChange)
+    val speakerId = state.kokoroSpeakerId.coerceIn(
+        UserPrefs.KOKORO_MIN_SPEAKER_ID,
+        UserPrefs.KOKORO_MAX_SPEAKER_ID
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text("Kokoro 设置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "模型说明",
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Kokoro multi-lang v1.1 int8，采样率 24kHz，支持中英混合朗读，通过 sherpa-onnx OfflineTts 本地推理。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "音色说明",
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "官方资源包包含 103 个音色，编号范围 0-102。不同编号对应不同说话人音色，修改后会立即影响 Kokoro 朗读。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text("当前音色编号：$speakerId", style = MaterialTheme.typography.bodyMedium)
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    factory = { ctx ->
+                        NumberPicker(ctx).apply {
+                            minValue = UserPrefs.KOKORO_MIN_SPEAKER_ID
+                            maxValue = UserPrefs.KOKORO_MAX_SPEAKER_ID
+                            wrapSelectorWheel = false
+                            value = speakerId
+                            setOnValueChangedListener { _, _, newVal ->
+                                onSpeakerChangeState.value(newVal)
+                            }
+                        }
+                    },
+                    update = { picker ->
+                        if (picker.minValue != UserPrefs.KOKORO_MIN_SPEAKER_ID) {
+                            picker.minValue = UserPrefs.KOKORO_MIN_SPEAKER_ID
+                        }
+                        if (picker.maxValue != UserPrefs.KOKORO_MAX_SPEAKER_ID) {
+                            picker.maxValue = UserPrefs.KOKORO_MAX_SPEAKER_ID
+                        }
+                        if (picker.value != speakerId) {
+                            picker.value = speakerId
+                        }
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            Md2TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+@Composable
 private fun RecognitionResourceRequiredDialog(
     state: UiState,
     onDismiss: () -> Unit,
@@ -9234,7 +9616,9 @@ fun AppScaffold(viewModel: MainViewModel) {
     var showBuiltinQuickSubtitlePresetPicker by remember { mutableStateOf(false) }
     var showBuiltinSoundboardPresetPicker by remember { mutableStateOf(false) }
     var showBuiltinRecognitionResourcePicker by remember { mutableStateOf(false) }
+    var showBuiltinKokoroVoicePicker by remember { mutableStateOf(false) }
     var recognitionResourceSourceDialog by remember { mutableStateOf(false) }
+    var kokoroSourceDialog by remember { mutableStateOf(false) }
     var recognitionResourceRequiredDialog by remember { mutableStateOf(false) }
     var startRealtimeAfterRecognitionResourceInstall by remember { mutableStateOf(false) }
     var quickCardWebMenuExpanded by rememberSaveable { mutableStateOf(false) }
@@ -9705,6 +10089,9 @@ fun AppScaffold(viewModel: MainViewModel) {
     val recognitionResourcePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.installRecognitionResources(uri) else toast(context, "未选择文件")
     }
+    val kokoroVoicePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.installKokoroVoice(uri) else toast(context, "未选择文件")
+    }
     var showBuiltinVoicePicker by remember { mutableStateOf(false) }
     val recognitionResourceMissing = state.asrDir == null && !state.recognitionResourceInstalled
 
@@ -9871,6 +10258,21 @@ fun AppScaffold(viewModel: MainViewModel) {
             }
         )
     }
+    if (showBuiltinKokoroVoicePicker) {
+        BuiltinFilePickerDialog(
+            title = "选择 Kokoro 语音包",
+            allowedExtensions = setOf("zip", "tar", "bz2", "tbz2"),
+            onDismiss = { showBuiltinKokoroVoicePicker = false },
+            onPicked = { uri ->
+                showBuiltinKokoroVoicePicker = false
+                viewModel.installKokoroVoice(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinKokoroVoicePicker = false
+                kokoroVoicePicker.launch("*/*")
+            }
+        )
+    }
     if (recognitionResourceSourceDialog) {
         RecognitionResourceSourceDialog(
             modelScopeUrl = state.recognitionResourceModelScopeUrl,
@@ -9880,6 +10282,18 @@ fun AppScaffold(viewModel: MainViewModel) {
             onConfirm = { modelScopeUrl, huggingFaceUrl, preferredSource ->
                 recognitionResourceSourceDialog = false
                 viewModel.setRecognitionResourceSources(modelScopeUrl, huggingFaceUrl, preferredSource)
+            }
+        )
+    }
+    if (kokoroSourceDialog) {
+        KokoroSourceDialog(
+            hfUrl = state.kokoroHfUrl,
+            hfMirrorUrl = state.kokoroHfMirrorUrl,
+            preferredSource = state.kokoroPreferredSource,
+            onDismiss = { kokoroSourceDialog = false },
+            onConfirm = { hfUrl, hfMirrorUrl, preferredSource ->
+                kokoroSourceDialog = false
+                viewModel.setKokoroSources(hfUrl, hfMirrorUrl, preferredSource)
             }
         )
     }
@@ -10651,7 +11065,10 @@ fun AppScaffold(viewModel: MainViewModel) {
                         onTopBarActionsChange = { logTopBarActions = it },
                         onOpenRecognitionResourceSources = { recognitionResourceSourceDialog = true },
                         onPickRecognitionResourcePackage = { showBuiltinRecognitionResourcePicker = true },
-                        onDownloadRecognitionResources = { viewModel.downloadRecognitionResources() }
+                        onDownloadRecognitionResources = { viewModel.downloadRecognitionResources() },
+                        onOpenKokoroSources = { kokoroSourceDialog = true },
+                        onPickKokoroVoicePackage = { showBuiltinKokoroVoicePicker = true },
+                        onDownloadKokoroVoice = { viewModel.downloadKokoroVoice() }
                     )
                 }
             }
@@ -11432,7 +11849,13 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
             }
     }
 
-    if (detailPack != null) {
+    if (detailPack != null && isKokoroVoiceDir(detailPack.dir)) {
+        KokoroVoiceSettingsDialog(
+            state = state,
+            onDismiss = { detailPackPath = null },
+            onSpeakerChange = { viewModel.setKokoroSpeakerId(it) }
+        )
+    } else if (detailPack != null) {
         val avatarFile = remember(detailPack.dir.absolutePath, detailPack.meta.avatar) {
             File(detailPack.dir, detailPack.meta.avatar)
         }
@@ -11910,7 +12333,8 @@ private class VoicePackRecyclerAdapter(
 
     fun isDraggableAdapterPosition(position: Int): Boolean {
         if (position == RecyclerView.NO_POSITION) return false
-        return position in items.indices
+        if (position !in items.indices) return false
+        return !isKokoroVoiceDir(items[position].dir)
     }
 
     fun moveWithinPinnedGroupAdapterPositions(fromAdapter: Int, toAdapter: Int): Boolean {
@@ -11984,6 +12408,7 @@ private fun VoicePackCardContent(
     onStartDrag: () -> Unit
 ) {
     val isSystemPack = isSystemTtsVoiceDir(pack.dir)
+    val isKokoroPack = isKokoroVoiceDir(pack.dir)
     val avatarFile = File(pack.dir, pack.meta.avatar)
     val avatarBitmap = rememberAvatarBitmap(avatarFile)
     val cardElevation by animateDpAsState(
@@ -12029,6 +12454,10 @@ private fun VoicePackCardContent(
                                 Spacer(Modifier.width(6.dp))
                                 Text("系统", style = MaterialTheme.typography.bodySmall)
                             }
+                            if (isKokoroPack) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("Kokoro", style = MaterialTheme.typography.bodySmall)
+                            }
                             if (pack.meta.pinned) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("置顶", style = MaterialTheme.typography.bodySmall)
@@ -12046,7 +12475,9 @@ private fun VoicePackCardContent(
                         icon = "drag_indicator",
                         contentDescription = "按住拖动排序",
                         onClick = {},
+                        enabled = !isKokoroPack,
                         modifier = Modifier.pointerInteropFilter { ev ->
+                            if (isKokoroPack) return@pointerInteropFilter false
                             when (ev.actionMasked) {
                                 MotionEvent.ACTION_DOWN -> {
                                     onStartDrag()
@@ -12078,11 +12509,11 @@ private fun VoicePackCardContent(
                         icon = if (pack.meta.pinned) "keep_off" else "push_pin",
                         contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
                         onClick = onTogglePin,
-                        enabled = !isSystemPack
+                        enabled = !isSystemPack && !isKokoroPack
                     )
                     Md2IconButton(
-                        icon = "info",
-                        contentDescription = "语音包详细信息",
+                        icon = if (isKokoroPack) "settings" else "info",
+                        contentDescription = if (isKokoroPack) "Kokoro 设置" else "语音包详细信息",
                         onClick = onDetail,
                         enabled = !isSystemPack
                     )
@@ -12090,7 +12521,7 @@ private fun VoicePackCardContent(
                         icon = "share",
                         contentDescription = "分享语音包",
                         onClick = onShare,
-                        enabled = !isSystemPack
+                        enabled = !isSystemPack && !isKokoroPack
                     )
                     Md2IconButton(
                         icon = "delete",
@@ -13934,7 +14365,10 @@ private fun SettingsNavHost(
     onTopBarActionsChange: (LogTopBarActions?) -> Unit,
     onOpenRecognitionResourceSources: () -> Unit,
     onPickRecognitionResourcePackage: () -> Unit,
-    onDownloadRecognitionResources: () -> Unit
+    onDownloadRecognitionResources: () -> Unit,
+    onOpenKokoroSources: () -> Unit,
+    onPickKokoroVoicePackage: () -> Unit,
+    onDownloadKokoroVoice: () -> Unit
 ) {
     fun isSettingsSubPage(route: String?): Boolean = route != null && route != SettingsRoutes.Main
     NavHost(
@@ -14006,7 +14440,10 @@ private fun SettingsNavHost(
                 },
                 onOpenRecognitionResourceSources = onOpenRecognitionResourceSources,
                 onPickRecognitionResourcePackage = onPickRecognitionResourcePackage,
-                onDownloadRecognitionResources = onDownloadRecognitionResources
+                onDownloadRecognitionResources = onDownloadRecognitionResources,
+                onOpenKokoroSources = onOpenKokoroSources,
+                onPickKokoroVoicePackage = onPickKokoroVoicePackage,
+                onDownloadKokoroVoice = onDownloadKokoroVoice
             )
         }
         composable(SettingsRoutes.Log) {
@@ -19022,7 +19459,10 @@ fun SettingsScreen(
     onOpenPrivacy: () -> Unit,
     onOpenRecognitionResourceSources: () -> Unit,
     onPickRecognitionResourcePackage: () -> Unit,
-    onDownloadRecognitionResources: () -> Unit
+    onDownloadRecognitionResources: () -> Unit,
+    onOpenKokoroSources: () -> Unit,
+    onPickKokoroVoicePackage: () -> Unit,
+    onDownloadKokoroVoice: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -19190,6 +19630,7 @@ fun SettingsScreen(
     val numberReplaceOptions = remember { listOf("不替换", "数字替换为中文字符", "数字替换为中文表达") }
     var numberReplaceExpanded by remember { mutableStateOf(false) }
     val isSystemTtsSelected = isSystemTtsVoiceDir(state.voiceDir)
+    val isKokoroTtsSelected = isKokoroVoiceDir(state.voiceDir)
 
     LaunchedEffect(selectedCategory) {
         scroll.animateScrollTo(0)
@@ -19774,7 +20215,11 @@ fun SettingsScreen(
             Md2StaggeredFloatIn(index = 1) {
                 Md2SettingsCard(title = "播放与合成") {
                     Text(
-                        "当前朗读后端：${if (isSystemTtsSelected) SYSTEM_TTS_DEFAULT_LABEL else "语音包"}",
+                        "当前朗读后端：${when {
+                            isSystemTtsSelected -> SYSTEM_TTS_DEFAULT_LABEL
+                            isKokoroTtsSelected -> "Kokoro"
+                            else -> "语音包"
+                        }}",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Md2SettingSwitchRow(
@@ -19802,6 +20247,11 @@ fun SettingsScreen(
                         ) {
                             Text("打开系统 TTS 设置")
                         }
+                    } else if (isKokoroTtsSelected) {
+                        Text(
+                            "Kokoro 使用语音包页的设置按钮选择音色。Piper 专属随机度参数在 Kokoro 下不生效。",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     } else {
                         Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
                         Slider(
@@ -19840,6 +20290,61 @@ fun SettingsScreen(
             }
 
             Md2StaggeredFloatIn(index = 2) {
+                Md2SettingsCard(title = "Kokoro 语音包") {
+                    Text(
+                        text = state.kokoroStatus,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "Kokoro 是特殊语音包。安装后会出现在语音包页面，详细信息按钮会变为设置按钮；普通语音包文件选择入口不会安装 Kokoro。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (state.kokoroBusy) {
+                        val progress = state.kokoroProgress
+                        if (progress in 0f..1f) {
+                            LinearProgressIndicator(
+                                progress = progress.coerceIn(0f, 1f),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            text = state.kokoroProgressStage.ifBlank { "处理中" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2Button(
+                            onClick = onDownloadKokoroVoice,
+                            enabled = !state.kokoroBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (state.kokoroInstalled) "重新下载" else "下载 Kokoro")
+                        }
+                        Md2OutlinedButton(
+                            onClick = onPickKokoroVoicePackage,
+                            enabled = !state.kokoroBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("本地安装")
+                        }
+                    }
+                    Md2TextButton(
+                        onClick = onOpenKokoroSources,
+                        enabled = !state.kokoroBusy
+                    ) {
+                        Text("管理下载源")
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 3) {
                 Md2SettingsCard(title = "回声与降噪") {
                     Md2SettingSwitchRow(
                         title = "回声抑制",
@@ -19881,7 +20386,7 @@ fun SettingsScreen(
                 }
             }
 
-            Md2StaggeredFloatIn(index = 3) {
+            Md2StaggeredFloatIn(index = 4) {
                 Md2SettingsCard(title = "设备路由") {
                     Md2SettingDropdownRow(
                         title = "优先选择的音频输入设备类型",

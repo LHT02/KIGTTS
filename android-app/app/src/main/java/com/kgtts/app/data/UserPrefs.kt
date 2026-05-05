@@ -44,10 +44,19 @@ object UserPrefs {
     const val VOLUME_HOTKEY_DEFAULT_WINDOW_MS = 1500
     const val RECOGNITION_RESOURCE_SOURCE_MODELSCOPE = 0
     const val RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE = 1
+    const val KOKORO_SOURCE_HF = 0
+    const val KOKORO_SOURCE_HFMIRROR = 1
+    const val KOKORO_MIN_SPEAKER_ID = 0
+    const val KOKORO_MAX_SPEAKER_ID = 102
+    const val KOKORO_DEFAULT_SPEAKER_ID = 3
     const val DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL =
         "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_ASR_Resource/resolve/master/kigtts-recognition-resources-20260505.7z"
     const val DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL =
         "https://huggingface.co/LHT02/KIGTTS_ASR_Resource/resolve/main/kigtts-recognition-resources-20260505.7z"
+    const val DEFAULT_KOKORO_HF_URL =
+        "https://huggingface.co/csukuangfj/kokoro-int8-multi-lang-v1_1"
+    const val DEFAULT_KOKORO_HFMIRROR_URL =
+        "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1"
 
     private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
@@ -74,6 +83,10 @@ object UserPrefs {
         stringPreferencesKey("recognition_resource_huggingface_url")
     private val KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE =
         intPreferencesKey("recognition_resource_preferred_source")
+    private val KEY_KOKORO_HF_URL = stringPreferencesKey("kokoro_hf_url")
+    private val KEY_KOKORO_HFMIRROR_URL = stringPreferencesKey("kokoro_hfmirror_url")
+    private val KEY_KOKORO_PREFERRED_SOURCE = intPreferencesKey("kokoro_preferred_source")
+    private val KEY_KOKORO_SPEAKER_ID = intPreferencesKey("kokoro_speaker_id")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -159,6 +172,10 @@ object UserPrefs {
         val recognitionResourceModelScopeUrl: String = DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
         val recognitionResourceHuggingFaceUrl: String = DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
         val recognitionResourcePreferredSource: Int = RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+        val kokoroHfUrl: String = DEFAULT_KOKORO_HF_URL,
+        val kokoroHfMirrorUrl: String = DEFAULT_KOKORO_HFMIRROR_URL,
+        val kokoroPreferredSource: Int = KOKORO_SOURCE_HFMIRROR,
+        val kokoroSpeakerId: Int = KOKORO_DEFAULT_SPEAKER_ID,
         val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
@@ -329,6 +346,12 @@ object UserPrefs {
             recognitionResourcePreferredSource = (this[KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE]
                 ?: RECOGNITION_RESOURCE_SOURCE_MODELSCOPE)
                 .coerceIn(RECOGNITION_RESOURCE_SOURCE_MODELSCOPE, RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE),
+            kokoroHfUrl = this[KEY_KOKORO_HF_URL]?.takeIf { it.isNotBlank() } ?: DEFAULT_KOKORO_HF_URL,
+            kokoroHfMirrorUrl = this[KEY_KOKORO_HFMIRROR_URL]?.takeIf { it.isNotBlank() } ?: DEFAULT_KOKORO_HFMIRROR_URL,
+            kokoroPreferredSource = (this[KEY_KOKORO_PREFERRED_SOURCE] ?: KOKORO_SOURCE_HFMIRROR)
+                .coerceIn(KOKORO_SOURCE_HF, KOKORO_SOURCE_HFMIRROR),
+            kokoroSpeakerId = (this[KEY_KOKORO_SPEAKER_ID] ?: KOKORO_DEFAULT_SPEAKER_ID)
+                .coerceIn(KOKORO_MIN_SPEAKER_ID, KOKORO_MAX_SPEAKER_ID),
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
@@ -503,6 +526,28 @@ object UserPrefs {
                 RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
                 RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE
             )
+        }
+    }
+
+    suspend fun setKokoroSources(
+        context: Context,
+        hfUrl: String,
+        hfMirrorUrl: String,
+        preferredSource: Int
+    ) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_KOKORO_HF_URL] = hfUrl.trim()
+            prefs[KEY_KOKORO_HFMIRROR_URL] = hfMirrorUrl.trim()
+            prefs[KEY_KOKORO_PREFERRED_SOURCE] = preferredSource.coerceIn(
+                KOKORO_SOURCE_HF,
+                KOKORO_SOURCE_HFMIRROR
+            )
+        }
+    }
+
+    suspend fun setKokoroSpeakerId(context: Context, speakerId: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_KOKORO_SPEAKER_ID] = speakerId.coerceIn(KOKORO_MIN_SPEAKER_ID, KOKORO_MAX_SPEAKER_ID)
         }
     }
 
