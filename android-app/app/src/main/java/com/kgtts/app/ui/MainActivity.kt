@@ -149,6 +149,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -170,6 +171,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -583,7 +585,7 @@ data class UiState(
     val themeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val overlayThemeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val fontScaleBlockMode: Int = UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY,
-    val hapticFeedbackEnabled: Boolean = false,
+    val hapticFeedbackEnabled: Boolean = true,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val quickCardAutoSaveOnExit: Boolean = false,
     val useBuiltinFileManager: Boolean = true,
@@ -7700,6 +7702,12 @@ private object QuickSubtitleRoutes {
     const val History = "quick_subtitle/history"
 }
 
+data class QuickSubtitleFloatingInputPreviewState(
+    val text: AnnotatedString,
+    val cursorIndex: Int,
+    val bottomPadding: Dp
+)
+
 private object SoundboardRoutes {
     const val Main = "soundboard/main"
     const val Editor = "soundboard/editor"
@@ -8789,6 +8797,9 @@ fun AppScaffold(viewModel: MainViewModel) {
     var showBuiltinSoundboardPresetPicker by remember { mutableStateOf(false) }
     var quickCardWebMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var quickCardNavReady by remember { mutableStateOf(false) }
+    var quickSubtitleFloatingInputPreview by remember {
+        mutableStateOf<QuickSubtitleFloatingInputPreviewState?>(null)
+    }
     var pendingQuickCardOverlayTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val quickSubtitleNavController = rememberNavController()
     val soundboardNavController = rememberNavController()
@@ -10056,6 +10067,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                         onPushToTalkPressStart = onPushToTalkPressStart,
                         onPushToTalkPressEnd = onPushToTalkPressEnd,
                         pttConfirmOwnedByMainPanel = pttConfirmOwnedByMainPanel,
+                        onFloatingInputPreviewChange = { quickSubtitleFloatingInputPreview = it },
                         onOpenHistory = {
                             quickSubtitleNavController.navigate(QuickSubtitleRoutes.History) {
                                 launchSingleTop = true
@@ -10435,6 +10447,124 @@ fun AppScaffold(viewModel: MainViewModel) {
                         )
                     }
                 }
+        }
+        QuickSubtitleFloatingInputPreviewOverlay(
+            preview = if (
+                basePage == pageQuickSubtitle &&
+                quickSubtitleRoute == QuickSubtitleRoutes.Main
+            ) {
+                quickSubtitleFloatingInputPreview
+            } else {
+                null
+            },
+            textAlign = if (viewModel.quickSubtitleCentered) TextAlign.Center else TextAlign.Start,
+            fontWeight = if (viewModel.quickSubtitleBold) FontWeight.Bold else FontWeight.Normal,
+            maxFontSizeSp = viewModel.quickSubtitleFontSizeSp,
+            autoFitEnabled = state.quickSubtitleAutoFit,
+            rotated180 = viewModel.quickSubtitleRotated180,
+            startPadding = landscapeChromeStartInset + 16.dp,
+            endPadding = landscapeChromeEndInset + 16.dp,
+            topPadding = statusTopInset + 6.dp,
+            modifier = Modifier
+                .matchParentSize()
+                .zIndex(20f)
+        )
+    }
+}
+
+@Composable
+private fun QuickSubtitleFloatingInputPreviewOverlay(
+    preview: QuickSubtitleFloatingInputPreviewState?,
+    textAlign: TextAlign,
+    fontWeight: FontWeight,
+    maxFontSizeSp: Float,
+    autoFitEnabled: Boolean,
+    rotated180: Boolean,
+    startPadding: Dp,
+    endPadding: Dp,
+    topPadding: Dp,
+    modifier: Modifier = Modifier
+) {
+    var retainedPreview by remember { mutableStateOf<QuickSubtitleFloatingInputPreviewState?>(null) }
+    LaunchedEffect(preview) {
+        if (preview != null) retainedPreview = preview
+    }
+    AnimatedVisibility(
+        visible = preview != null,
+        modifier = modifier.padding(
+            start = startPadding,
+            end = endPadding,
+            top = topPadding,
+            bottom = retainedPreview?.bottomPadding ?: 0.dp
+        ),
+        enter = fadeIn(animationSpec = tween(150)) +
+            scaleIn(
+                initialScale = 0.96f,
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            ),
+        exit = fadeOut(animationSpec = tween(120)) +
+            scaleOut(
+                targetScale = 0.98f,
+                animationSpec = tween(140, easing = FastOutSlowInEasing)
+            )
+    ) {
+        val activePreview = retainedPreview
+        if (activePreview != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .mdCenteredShadow(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        shadowStyle = MdCardShadowStyle
+                    ),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
+                elevation = 0.dp
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(14.dp)
+                ) {
+                    AnimatedContent(
+                        targetState = activePreview.text to activePreview.cursorIndex,
+                        transitionSpec = {
+                            ContentTransform(
+                                targetContentEnter = fadeIn(initialAlpha = 0.45f, animationSpec = tween(140)),
+                                initialContentExit = fadeOut(targetAlpha = 0.45f, animationSpec = tween(160)),
+                                sizeTransform = null
+                            )
+                        },
+                        label = "quick_subtitle_root_input_preview_text_change"
+                    ) { (text, cursorIndex) ->
+                        Crossfade(
+                            targetState = rotated180,
+                            animationSpec = tween(160),
+                            label = "quick_subtitle_root_input_preview_rotation"
+                        ) { rotated ->
+                            QuickSubtitleAdaptiveText(
+                                text = text,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = textAlign,
+                                fontWeight = fontWeight,
+                                maxFontSizeSp = maxFontSizeSp,
+                                minFontSizeSp = 14f,
+                                lineHeightMultiplier = 1.15f,
+                                autoFitEnabled = autoFitEnabled,
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = if (rotated) {
+                                    if (textAlign == TextAlign.Center) Alignment.BottomCenter else Alignment.BottomStart
+                                } else {
+                                    Alignment.TopStart
+                                },
+                                textRotationZ = if (rotated) 180f else 0f,
+                                cursorIndex = cursorIndex,
+                                cursorColor = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -11472,6 +11602,7 @@ private fun QuickSubtitleNavHost(
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
     pttConfirmOwnedByMainPanel: Boolean,
+    onFloatingInputPreviewChange: (QuickSubtitleFloatingInputPreviewState?) -> Unit,
     onOpenHistory: () -> Unit,
     fullscreenMode: Boolean
 ) {
@@ -11540,6 +11671,7 @@ private fun QuickSubtitleNavHost(
                 onPushToTalkPressStart = onPushToTalkPressStart,
                 onPushToTalkPressEnd = onPushToTalkPressEnd,
                 pttConfirmOwnedByMainPanel = pttConfirmOwnedByMainPanel,
+                onFloatingInputPreviewChange = onFloatingInputPreviewChange,
                 onOpenHistory = onOpenHistory,
                 onOpenEditor = { navController.navigate(QuickSubtitleRoutes.Editor) },
                 fullscreenMode = fullscreenMode
@@ -13498,6 +13630,7 @@ fun QuickSubtitleScreen(
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
     pttConfirmOwnedByMainPanel: Boolean,
+    onFloatingInputPreviewChange: (QuickSubtitleFloatingInputPreviewState?) -> Unit = {},
     onOpenHistory: () -> Unit,
     onOpenEditor: () -> Unit,
     fullscreenMode: Boolean
@@ -13557,13 +13690,14 @@ fun QuickSubtitleScreen(
     val currentCompactSelectedGroupIndex by rememberUpdatedState(selectedGroupIndex)
     val performKeyHaptic = rememberKigttsKeyHaptic()
     val rotatedSubtitleText: @Composable (
-        text: String,
+        text: AnnotatedString,
         color: Color,
         maxFontSizeSp: Float,
         minFontSizeSp: Float,
         lineHeightMultiplier: Float,
-        modifier: Modifier
-    ) -> Unit = { text, color, maxFontSizeSp, minFontSizeSp, lineHeightMultiplier, modifier ->
+        modifier: Modifier,
+        cursorIndex: Int?
+    ) -> Unit = { text, color, maxFontSizeSp, minFontSizeSp, lineHeightMultiplier, modifier, cursorIndex ->
         Crossfade(
             targetState = subtitleRotated180,
             animationSpec = tween(160),
@@ -13584,7 +13718,9 @@ fun QuickSubtitleScreen(
                 } else {
                     Alignment.TopStart
                 },
-                textRotationZ = if (rotated) 180f else 0f
+                textRotationZ = if (rotated) 180f else 0f,
+                cursorIndex = cursorIndex,
+                cursorColor = MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -13730,19 +13866,17 @@ fun QuickSubtitleScreen(
     val imeBottomInset = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
     val keyboardVisible = imeBottomInset > 0.dp
     val inputPreviewActive = inputFieldFocused && inputFieldValue.text.isNotEmpty()
-    val landscapePhoneInputPreviewMode = isLandscape && configuration.screenHeightDp < 500
+    val screenLongSideDp = maxOf(configuration.screenWidthDp, configuration.screenHeightDp)
+    val phoneUa = screenLongSideDp < 900
+    val landscapePhoneInputPreviewMode = isLandscape && phoneUa && configuration.screenHeightDp < 500
+    val portraitPhoneKeyboardInputMode = !isLandscape && phoneUa && keyboardVisible && inputFieldFocused
     val inlineInputPreviewActive = inputPreviewActive && !landscapePhoneInputPreviewMode
     val floatingInputPreviewActive = inputPreviewActive && landscapePhoneInputPreviewMode
     val inputPreviewCursorIndex = inputFieldValue.selection.start.coerceIn(0, inputFieldValue.text.length)
-    val inputPreviewText = remember(inputFieldValue.text, inputPreviewCursorIndex) {
-        buildString {
-            append(inputFieldValue.text.substring(0, inputPreviewCursorIndex))
-            append("▌")
-            append(inputFieldValue.text.substring(inputPreviewCursorIndex))
-        }
-    }
-    val displayedSubtitleText = if (inlineInputPreviewActive) inputPreviewText else subtitleText
-    val subtitleControlsVisible = !keyboardVisible && !inlineInputPreviewActive
+    val inputPreviewText = remember(inputFieldValue.text) { AnnotatedString(inputFieldValue.text) }
+    val displayedSubtitleText = if (inlineInputPreviewActive) inputPreviewText else AnnotatedString(subtitleText)
+    val shouldHideSubtitleControlsForInput = inputPreviewActive && phoneUa && !floatingInputPreviewActive
+    val subtitleControlsVisible = floatingInputPreviewActive || !shouldHideSubtitleControlsForInput
     LaunchedEffect(inputText) {
         if (inputText != inputFieldValue.text) {
             inputFieldValue = TextFieldValue(
@@ -13788,7 +13922,6 @@ fun QuickSubtitleScreen(
     val keyboardRaisedBottomBlank = imeBottomInset + bottomInputBarHeight + 8.dp
     val quickSubtitleBottomBlankTarget = if (
         keyboardVisible &&
-        !floatingInputPreviewActive &&
         keyboardRaisedBottomBlank > quickSubtitleBottomBlankBase
     ) {
         keyboardRaisedBottomBlank
@@ -13800,25 +13933,57 @@ fun QuickSubtitleScreen(
         animationSpec = tween(180, easing = FastOutSlowInEasing),
         label = "quick_subtitle_bottom_blank"
     )
-    val subtitleDisplayContent: @Composable (Boolean, String, Modifier) -> Unit = { preview, displayText, modifier ->
+    LaunchedEffect(
+        floatingInputPreviewActive,
+        inputPreviewText,
+        inputPreviewCursorIndex,
+        imeBottomInset,
+        bottomInputBarHeight
+    ) {
+        onFloatingInputPreviewChange(
+            if (floatingInputPreviewActive) {
+                QuickSubtitleFloatingInputPreviewState(
+                    text = inputPreviewText,
+                    cursorIndex = inputPreviewCursorIndex,
+                    bottomPadding = imeBottomInset + bottomInputBarHeight + 8.dp
+                )
+            } else {
+                null
+            }
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onFloatingInputPreviewChange(null) }
+    }
+    val subtitleDisplayContent: @Composable (Boolean, AnnotatedString, Int?, Modifier) -> Unit =
+        { preview, displayText, cursorIndex, modifier ->
         AnimatedContent(
-            targetState = preview to displayText,
+            targetState = Triple(preview, displayText, cursorIndex),
             transitionSpec = {
+                val previewTextEditTransition = initialState.first && targetState.first
                 ContentTransform(
-                    targetContentEnter = fadeIn(animationSpec = tween(180)) +
-                        slideInVertically(
-                            initialOffsetY = { full -> full / 8 },
-                            animationSpec = tween(200, easing = FastOutSlowInEasing)
-                        ),
-                    initialContentExit = fadeOut(animationSpec = tween(120)),
+                    targetContentEnter = if (previewTextEditTransition) {
+                        fadeIn(initialAlpha = 0.45f, animationSpec = tween(140))
+                    } else {
+                        fadeIn(animationSpec = tween(180)) +
+                            slideInVertically(
+                                initialOffsetY = { full -> full / 8 },
+                                animationSpec = tween(200, easing = FastOutSlowInEasing)
+                        )
+                    },
+                    initialContentExit = if (previewTextEditTransition) {
+                        fadeOut(targetAlpha = 0.45f, animationSpec = tween(160))
+                    } else {
+                        fadeOut(animationSpec = tween(120))
+                    },
                     sizeTransform = null
                 )
             },
             label = "quick_subtitle_display_text_change"
-        ) { (preview, text) ->
+        ) { (preview, text, cursorIndex) ->
             val textColor = when {
                 preview -> MaterialTheme.colorScheme.onSurface
-                text == QUICK_SUBTITLE_CLEARED_HINT -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                text.text == QUICK_SUBTITLE_CLEARED_HINT -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
                 else -> MaterialTheme.colorScheme.onSurface
             }
             rotatedSubtitleText(
@@ -13827,7 +13992,8 @@ fun QuickSubtitleScreen(
                 subtitleSize,
                 14f,
                 1.15f,
-                modifier
+                modifier,
+                if (preview) cursorIndex else null
             )
         }
     }
@@ -13915,6 +14081,7 @@ fun QuickSubtitleScreen(
                                         subtitleDisplayContent(
                                             inlineInputPreviewActive,
                                             displayedSubtitleText,
+                                            if (inlineInputPreviewActive) inputPreviewCursorIndex else null,
                                             Modifier.fillMaxSize()
                                         )
                                     }
@@ -14238,6 +14405,7 @@ fun QuickSubtitleScreen(
                                     subtitleDisplayContent(
                                         inlineInputPreviewActive,
                                         displayedSubtitleText,
+                                        if (inlineInputPreviewActive) inputPreviewCursorIndex else null,
                                         Modifier.fillMaxSize()
                                     )
                                 }
@@ -14326,7 +14494,7 @@ fun QuickSubtitleScreen(
 
             if (!isLandscape) {
                 AnimatedVisibility(
-                    visible = !quickInputCollapsed,
+                    visible = !quickInputCollapsed && !portraitPhoneKeyboardInputMode,
                     enter = fadeIn(animationSpec = tween(140)) +
                         expandVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)),
                     exit = fadeOut(animationSpec = tween(120)) +
@@ -14336,6 +14504,8 @@ fun QuickSubtitleScreen(
                         Spacer(Modifier.height(8.dp))
                         Md2StaggeredFloatIn(index = 1, enabled = false) {
                             if (useCompactQuickTextControls) {
+                                val compactQuickTextCardColor =
+                                    md2ElevatedCardContainerColor(UiTokens.CardElevation)
                                 Row(
                                     modifier = Modifier
                                         .padding(horizontal = 16.dp, vertical = 3.dp)
@@ -14348,7 +14518,7 @@ fun QuickSubtitleScreen(
                                             .weight(1f)
                                             .height(110.dp),
                                         shape = RoundedCornerShape(UiTokens.Radius),
-                                        backgroundColor = md2CardContainerColor(),
+                                        backgroundColor = compactQuickTextCardColor,
                                         elevation = UiTokens.CardElevation
                                     ) {
                                         Box(
@@ -14466,8 +14636,8 @@ fun QuickSubtitleScreen(
                                                             .background(
                                                                 Brush.horizontalGradient(
                                                                     listOf(
-                                                                        md2CardContainerColor(),
-                                                                        md2CardContainerColor().copy(alpha = 0f)
+                                                                        compactQuickTextCardColor,
+                                                                        compactQuickTextCardColor.copy(alpha = 0f)
                                                                     )
                                                                 )
                                                             )
@@ -14481,8 +14651,8 @@ fun QuickSubtitleScreen(
                                                             .background(
                                                                 Brush.horizontalGradient(
                                                                     listOf(
-                                                                        md2CardContainerColor().copy(alpha = 0f),
-                                                                        md2CardContainerColor()
+                                                                        compactQuickTextCardColor.copy(alpha = 0f),
+                                                                        compactQuickTextCardColor
                                                                     )
                                                                 )
                                                             )
@@ -14527,9 +14697,9 @@ fun QuickSubtitleScreen(
                                                         accumulatedDrag = 0f
                                                     }
                                                 }
-                                            },
+                                        },
                                         shape = RoundedCornerShape(UiTokens.Radius),
-                                        backgroundColor = md2CardContainerColor(),
+                                        backgroundColor = compactQuickTextCardColor,
                                         elevation = UiTokens.CardElevation
                                     ) {
                                         Column(
@@ -14770,55 +14940,6 @@ fun QuickSubtitleScreen(
                 }
             }
             Spacer(Modifier.height(quickSubtitleBottomBlank))
-        }
-
-        AnimatedVisibility(
-            visible = floatingInputPreviewActive,
-            modifier = Modifier
-                .zIndex(5.2f)
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .fillMaxHeight()
-                .padding(
-                    start = 16.dp,
-                    end = 16.dp,
-                    top = quickSubtitleTopBlank + 8.dp,
-                    bottom = imeBottomInset + bottomInputBarHeight + 8.dp
-                ),
-            enter = fadeIn(animationSpec = tween(150)) +
-                scaleIn(
-                    initialScale = 0.96f,
-                    animationSpec = tween(180, easing = FastOutSlowInEasing)
-                ),
-            exit = fadeOut(animationSpec = tween(120)) +
-                scaleOut(
-                    targetScale = 0.98f,
-                    animationSpec = tween(140, easing = FastOutSlowInEasing)
-                )
-        ) {
-            Card(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .mdCenteredShadow(
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        shadowStyle = MdCardShadowStyle
-                    ),
-                shape = RoundedCornerShape(UiTokens.Radius),
-                backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
-                elevation = 0.dp
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(14.dp)
-                ) {
-                    subtitleDisplayContent(
-                        true,
-                        inputPreviewText,
-                        Modifier.fillMaxSize()
-                    )
-                }
-            }
         }
 
         Surface(
@@ -15138,14 +15259,15 @@ fun QuickSubtitleScreen(
                         elevation = UiTokens.MenuElevation
                     ) {
                         rotatedSubtitleText(
-                            subtitleText,
+                            AnnotatedString(subtitleText),
                             subtitleTextColor,
                             (subtitleSize * 1.25f).coerceIn(36f, 140f),
                             18f,
                             1.36f,
                             Modifier
                                 .fillMaxSize()
-                                .padding(16.dp)
+                                .padding(16.dp),
+                            null
                         )
                     }
                 }
@@ -15161,7 +15283,7 @@ private data class QuickSubtitleFitResult(
 
 @Composable
 private fun QuickSubtitleAdaptiveText(
-    text: String,
+    text: AnnotatedString,
     color: Color,
     textAlign: TextAlign,
     fontWeight: FontWeight,
@@ -15171,12 +15293,17 @@ private fun QuickSubtitleAdaptiveText(
     autoFitEnabled: Boolean,
     modifier: Modifier = Modifier,
     contentAlignment: Alignment = Alignment.TopStart,
-    textRotationZ: Float = 0f
+    textRotationZ: Float = 0f,
+    cursorIndex: Int? = null,
+    cursorColor: Color = Color.Unspecified,
+    cursorWidth: Dp = 2.5.dp
 ) {
     BoxWithConstraints(modifier = modifier) {
         val density = LocalDensity.current
         val scrollState = rememberScrollState()
         val textMeasurer = rememberTextMeasurer()
+        var textLayoutResult by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
+        val cursorStrokeWidthPx = with(density) { cursorWidth.toPx() }
         val maxWidthPx = remember(maxWidth, density) { with(density) { maxWidth.roundToPx() }.coerceAtLeast(1) }
         val maxHeightPx = remember(maxHeight, density) { with(density) { maxHeight.roundToPx() }.coerceAtLeast(1) }
         val boundedMaxFont = maxFontSizeSp.coerceAtLeast(minFontSizeSp)
@@ -15199,7 +15326,7 @@ private fun QuickSubtitleAdaptiveText(
                 fun overflows(sizeSp: Float): Boolean {
                     val lineHeightSp = (sizeSp * lineHeightMultiplier).coerceAtLeast(sizeSp)
                     val result = textMeasurer.measure(
-                        text = AnnotatedString(text),
+                        text = text,
                         style = TextStyle(
                             fontWeight = fontWeight,
                             fontSize = sizeSp.sp,
@@ -15260,8 +15387,23 @@ private fun QuickSubtitleAdaptiveText(
                 ),
                 color = color,
                 textAlign = textAlign,
+                onTextLayout = { textLayoutResult = it },
                 modifier = Modifier
                     .fillMaxWidth()
+                    .drawWithContent {
+                        drawContent()
+                        val index = cursorIndex?.coerceIn(0, text.text.length) ?: return@drawWithContent
+                        if (cursorColor == Color.Unspecified) return@drawWithContent
+                        val layout = textLayoutResult ?: return@drawWithContent
+                        val rect = layout.getCursorRect(index)
+                        val x = rect.left.coerceIn(0f, size.width)
+                        drawLine(
+                            color = cursorColor,
+                            start = Offset(x, rect.top),
+                            end = Offset(x, rect.bottom),
+                            strokeWidth = cursorStrokeWidthPx
+                        )
+                    }
                     .then(if (textRotationZ != 0f) Modifier.graphicsLayer(rotationZ = textRotationZ) else Modifier)
             )
         }

@@ -155,7 +155,7 @@ object UserPrefs {
         val themeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
         val overlayThemeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
         val fontScaleBlockMode: Int = FONT_SCALE_BLOCK_ICONS_ONLY,
-        val hapticFeedbackEnabled: Boolean = false,
+        val hapticFeedbackEnabled: Boolean = true,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val quickCardAutoSaveOnExit: Boolean = false,
         val useBuiltinFileManager: Boolean = true,
@@ -318,7 +318,7 @@ object UserPrefs {
             fontScaleBlockMode = normalizeFontScaleBlockMode(
                 this[KEY_FONT_SCALE_BLOCK_MODE] ?: FONT_SCALE_BLOCK_ICONS_ONLY
             ),
-            hapticFeedbackEnabled = this[KEY_HAPTIC_FEEDBACK_ENABLED] ?: false,
+            hapticFeedbackEnabled = this[KEY_HAPTIC_FEEDBACK_ENABLED] ?: true,
             drawingSaveRelativePath = (this[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             quickCardAutoSaveOnExit = this[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
