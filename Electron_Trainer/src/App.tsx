@@ -1403,7 +1403,7 @@ function App() {
   const [baseCkpt, setBaseCkpt] = useState('')
   const [useEspeak, setUseEspeak] = useState(false)
   const [piperConfig, setPiperConfig] = useState('')
-  const [device, setDevice] = useState<'cpu' | 'cuda'>('cpu')
+  const [device, setDevice] = useState<'cpu' | 'cuda'>('cuda')
   const [piperRuntimeStatus, setPiperRuntimeStatus] = useState<PiperRuntimeStatus | null>(null)
   const [piperRuntimeBusy, setPiperRuntimeBusy] = useState(false)
   const [piperRuntimeProgressMessage, setPiperRuntimeProgressMessage] = useState('')
@@ -1651,6 +1651,65 @@ function App() {
   const selectedVoxcpmVoiceMode = VOXCPM_VOICE_MODES.find((item) => item.value === voxcpmOpts.voice_mode) ?? VOXCPM_VOICE_MODES[0]
   const trainingFabBlockedByBackgroundTask =
     piperRuntimeBusy || cudaRuntimeBusy || voxcpmRuntimeBusy || voxcpmModelBusy || trainerResourcesBusy
+  const dependencyTasks = useMemo(
+    () => [
+      {
+        key: 'trainer_resources',
+        label: '训练资源包',
+        busy: trainerResourcesBusy,
+        message: trainerResourcesProgressMessage,
+        value: trainerResourcesProgressValue,
+      },
+      {
+        key: 'piper_runtime',
+        label: 'Piper 基础运行时',
+        busy: piperRuntimeBusy,
+        message: piperRuntimeProgressMessage,
+        value: piperRuntimeProgressValue,
+      },
+      {
+        key: 'piper_cuda_runtime',
+        label: 'Piper CUDA 运行时',
+        busy: cudaRuntimeBusy,
+        message: cudaRuntimeProgressMessage,
+        value: cudaRuntimeProgressValue,
+      },
+      {
+        key: 'voxcpm_runtime',
+        label: 'VoxCPM2 运行时',
+        busy: voxcpmRuntimeBusy,
+        message: voxcpmRuntimeProgressMessage,
+        value: voxcpmRuntimeProgressValue,
+      },
+      {
+        key: 'voxcpm_models',
+        label: 'VoxCPM2 模型',
+        busy: voxcpmModelBusy,
+        message: voxcpmModelProgressMessage,
+        value: voxcpmModelProgressValue,
+      },
+    ],
+    [
+      cudaRuntimeBusy,
+      cudaRuntimeProgressMessage,
+      cudaRuntimeProgressValue,
+      piperRuntimeBusy,
+      piperRuntimeProgressMessage,
+      piperRuntimeProgressValue,
+      trainerResourcesBusy,
+      trainerResourcesProgressMessage,
+      trainerResourcesProgressValue,
+      voxcpmModelBusy,
+      voxcpmModelProgressMessage,
+      voxcpmModelProgressValue,
+      voxcpmRuntimeBusy,
+      voxcpmRuntimeProgressMessage,
+      voxcpmRuntimeProgressValue,
+    ],
+  )
+  const activeDependencyTask = dependencyTasks.find((task) => task.busy) ?? null
+  const activeDependencyProgressDeterminate =
+    activeDependencyTask ? activeDependencyTask.value > 0 && activeDependencyTask.value <= 1 : false
   const gsviFieldMismatch = {
     gsvAuthor: Boolean(gsviAttributionError) && gsviAttribution.gsvAuthor.trim() !== GSVI_REQUIRED_NAMES.gsvAuthor,
     gsvTrainer: Boolean(gsviAttributionError) && gsviAttribution.gsvTrainer.trim() !== GSVI_REQUIRED_NAMES.gsvTrainer,
@@ -3153,7 +3212,7 @@ function App() {
     if (!isPiperRuntimeReady(piperRuntimeStatus)) {
       targets.push('piper_runtime')
     }
-    if (device === 'cuda' && !isPiperCudaRuntimeReady(cudaRuntimeStatus)) {
+    if (!isPiperCudaRuntimeReady(cudaRuntimeStatus)) {
       targets.push('piper_cuda_runtime')
     }
     if (trainingMode === 'voxcpm_distill') {
@@ -7367,6 +7426,66 @@ function App() {
           </Box>
         </Box>
 
+        <Slide
+          direction="up"
+          in={Boolean(activeDependencyTask)}
+          mountOnEnter
+          unmountOnExit
+          timeout={{ enter: 220, exit: 180 }}
+        >
+          <Box
+            sx={{
+              position: 'fixed',
+              left: { xs: 16, md: drawerWidth + CONTENT_SIDE_GUTTER },
+              right: { xs: 16, md: FAB_SAFE_GUTTER },
+              bottom: 20,
+              zIndex: theme.zIndex.snackbar - 1,
+              pointerEvents: 'none',
+            }}
+          >
+            <Paper
+              sx={{
+                width: 'min(720px, 100%)',
+                mx: 'auto',
+                p: 1.5,
+                boxShadow: 8,
+                pointerEvents: 'auto',
+                border: '1px solid',
+                borderColor: 'divider',
+                overflow: 'hidden',
+              }}
+            >
+              <Stack spacing={1}>
+                <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
+                    <Box sx={{ display: 'flex', color: 'primary.main' }}>
+                      <MsIcon name="downloading" size={20} />
+                    </Box>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                        正在准备依赖
+                      </Typography>
+                      <Typography variant="body2" fontWeight={600} noWrap>
+                        {activeDependencyTask?.message || `正在处理 ${activeDependencyTask?.label || '运行时 / 资源包'}...`}
+                      </Typography>
+                    </Box>
+                  </Stack>
+                  {activeDependencyProgressDeterminate && (
+                    <Typography variant="caption" sx={{ color: 'text.secondary', flexShrink: 0 }}>
+                      {Math.round((activeDependencyTask?.value ?? 0) * 100)}%
+                    </Typography>
+                  )}
+                </Stack>
+                <LinearProgress
+                  variant={activeDependencyProgressDeterminate ? 'determinate' : 'indeterminate'}
+                  value={activeDependencyProgressDeterminate ? Math.round((activeDependencyTask?.value ?? 0) * 100) : undefined}
+                  sx={{ height: 6, borderRadius: 999 }}
+                />
+              </Stack>
+            </Paper>
+          </Box>
+        </Slide>
+
         <Tooltip
           title={
             pipelineRunning
@@ -7550,29 +7669,19 @@ function App() {
                         }}
                       >
                         <Stack spacing={1.25}>
-                          <Stack
-                            direction={{ xs: 'column', sm: 'row' }}
-                            spacing={1}
-                            alignItems={{ xs: 'flex-start', sm: 'center' }}
-                            justifyContent="space-between"
-                          >
+                          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
                             <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
                               <Box sx={{ color: ready ? 'success.main' : 'text.secondary', display: 'flex' }}>
                                 <MsIcon name={meta.icon} size={22} />
                               </Box>
-                              <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-                                <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
-                                  <Typography variant="subtitle2" fontWeight={700}>
-                                    {meta.label}
-                                  </Typography>
-                                  <Chip size="small" color={ready ? 'success' : 'warning'} label={ready ? '已就绪' : '需要准备'} />
-                                </Stack>
-                                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-                                  {meta.description}
+                              <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" sx={{ minWidth: 0 }}>
+                                <Typography variant="subtitle2" fontWeight={700}>
+                                  {meta.label}
                                 </Typography>
+                                <Chip size="small" color={ready ? 'success' : 'warning'} label={ready ? '已就绪' : '需要准备'} />
                               </Stack>
                             </Stack>
-                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                            <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent="flex-end" sx={{ flexShrink: 0 }}>
                               {meta.localInstallLabel && (
                                 <Button
                                   size="small"
@@ -7609,6 +7718,9 @@ function App() {
                               </Button>
                             </Stack>
                           </Stack>
+                          <Typography variant="body2" sx={{ color: 'text.secondary', pl: { xs: 0, sm: 4 } }}>
+                            {meta.description}
+                          </Typography>
                           <Stack spacing={0.5}>
                             <Typography variant="caption" sx={{ color: ready ? 'success.main' : 'text.secondary' }}>
                               {getDependencyTargetStatusText(target)}
