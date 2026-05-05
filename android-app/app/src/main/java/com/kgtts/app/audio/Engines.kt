@@ -90,6 +90,7 @@ interface TtsModule {
     val sampleRate: Int
     fun synthesize(text: String): FloatArray
     fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray = synthesize(text)
+    fun close() {}
     fun setSynthesisTuning(
         noiseScale: Float,
         lengthScale: Float,
@@ -516,6 +517,11 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
         System.arraycopy(samples, 0, out, 0, samples.size)
         return out
     }
+
+    override fun close() {
+        runCatching { session.close() }
+        runCatching { sessionOptions.close() }
+    }
 }
 
 private data class PendingSystemUtterance(
@@ -537,6 +543,7 @@ class SystemTtsEngine(context: Context) : TtsModule {
     private val pendingUtterances = ConcurrentHashMap<String, PendingSystemUtterance>()
     private val initStatus = AtomicInteger(INIT_STATUS_PENDING)
     private val initFinalized = AtomicBoolean(false)
+    private val closed = AtomicBoolean(false)
     @Volatile private var initSuccess = false
     @Volatile private var sentenceSilenceSec: Float = 0.0f
     @Volatile private var speechRate: Float = 1.0f
@@ -609,13 +616,18 @@ class SystemTtsEngine(context: Context) : TtsModule {
     }
 
     private fun waitForInit() {
-        if (!initLatch.await(5, TimeUnit.SECONDS) || !initSuccess) {
+        if (!initLatch.await(5, TimeUnit.SECONDS) || !initSuccess || closed.get()) {
+            close()
             throw IllegalStateException("系统 TTS 初始化失败")
         }
     }
 
     private fun initializeOnMainThread() {
         if (!initFinalized.compareAndSet(false, true)) return
+        if (closed.get()) {
+            finishInit(false)
+            return
+        }
         try {
             val candidates = buildEngineCandidates()
             AppLogger.i(
@@ -653,11 +665,15 @@ class SystemTtsEngine(context: Context) : TtsModule {
 
     private fun finishInit(success: Boolean) {
         if (initLatch.count == 0L) return
-        initSuccess = success
+        initSuccess = success && !closed.get()
         initLatch.countDown()
     }
 
     private fun tryCreateEngineAsync(candidates: List<String?>, index: Int) {
+        if (closed.get()) {
+            finishInit(false)
+            return
+        }
         if (index >= candidates.size) {
             finishInit(false)
             return
@@ -668,13 +684,22 @@ class SystemTtsEngine(context: Context) : TtsModule {
         lateinit var timeoutRunnable: Runnable
 
         fun tryNextOrFinish() {
-            tryCreateEngineAsync(candidates, index + 1)
+            if (closed.get()) {
+                finishInit(false)
+            } else {
+                tryCreateEngineAsync(candidates, index + 1)
+            }
         }
 
         fun handleResult(status: Int) {
             if (!finished.compareAndSet(false, true)) return
             mainHandler.removeCallbacks(timeoutRunnable)
             val currentInstance = instance
+            if (closed.get()) {
+                currentInstance?.shutdown()
+                finishInit(false)
+                return
+            }
             if (status != TextToSpeech.SUCCESS || currentInstance == null) {
                 AppLogger.e("SystemTtsEngine init status=$status engine=${enginePackage ?: "<default>"}")
                 currentInstance?.shutdown()
@@ -725,6 +750,11 @@ class SystemTtsEngine(context: Context) : TtsModule {
                 }, enginePackage)
             }
             mainHandler.postDelayed(timeoutRunnable, INIT_TIMEOUT_MS)
+            if (closed.get() && finished.compareAndSet(false, true)) {
+                mainHandler.removeCallbacks(timeoutRunnable)
+                instance.shutdown()
+                finishInit(false)
+            }
         } catch (e: Throwable) {
             AppLogger.e(
                 "SystemTtsEngine create failed engine=${enginePackage ?: "<default>"}",
@@ -769,6 +799,20 @@ class SystemTtsEngine(context: Context) : TtsModule {
         } catch (e: Throwable) {
             AppLogger.e("SystemTtsEngine init failed", e)
             false
+        }
+    }
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        pendingUtterances.values.forEach { it.doneLatch.countDown() }
+        pendingUtterances.clear()
+        val current = tts
+        tts = null
+        finishInit(false)
+        if (current != null) {
+            mainHandler.post {
+                runCatching { current.shutdown() }
+            }
         }
     }
 
@@ -1968,8 +2012,8 @@ class RealtimeController(
         SherpaSpeechEnhancer.release()
     }
 
-    private fun applyTtsSynthesisTuning() {
-        tts?.setSynthesisTuning(
+    private fun applyTtsSynthesisTuning(target: TtsModule? = tts) {
+        target?.setSynthesisTuning(
             noiseScale = piperNoiseScale,
             lengthScale = piperLengthScale,
             noiseW = piperNoiseW,
@@ -2463,9 +2507,12 @@ class RealtimeController(
             try {
                 if (tts == null || currentVoiceDir?.absolutePath != voiceDir.absolutePath) {
                     stopTtsPlaybackLocked(clearQueue = true)
-                    tts = moduleFactory.createTts(context, voiceDir)
-                    applyTtsSynthesisTuning()
+                    val previousTts = tts
+                    val nextTts = moduleFactory.createTts(context, voiceDir)
+                    applyTtsSynthesisTuning(nextTts)
+                    tts = nextTts
                     currentVoiceDir = voiceDir
+                    previousTts?.close()
                     AppLogger.i("TTS loaded dir=${voiceDir.absolutePath}")
                     if (useAec3) {
                         aec3?.release()

@@ -2663,6 +2663,17 @@ class MainViewModel(
 
     private fun isSystemTtsVoicePack(pack: VoicePackInfo): Boolean = isSystemTtsVoiceDir(pack.dir)
 
+    private suspend fun resolvePreferredVoiceDir(lastName: String?): File? {
+        val resolved = when (lastName) {
+            SYSTEM_TTS_VOICE_NAME -> systemTtsVoiceDir()
+            null -> null
+            else -> repo.resolveVoicePack(lastName)
+        }
+        if (resolved != null) return resolved
+        return withContext(Dispatchers.IO) { repo.listVoicePacks().firstOrNull()?.dir }
+            ?: systemTtsVoiceDir()
+    }
+
     private suspend fun loadSystemTtsVoicePackInfo(existing: List<VoicePackInfo>): VoicePackInfo {
         val defaultOrder = (existing.maxOfOrNull { it.meta.order } ?: -1L) + 1L
         val order = UserPrefs.getSystemTtsOrder(appContext) ?: defaultOrder.also {
@@ -2688,7 +2699,7 @@ class MainViewModel(
 
     private suspend fun findFallbackVoicePack(excludingDir: File): File? {
         val excludedPath = excludingDir.absolutePath
-        val listed = loadVoicePackList()
+        val listed = withContext(Dispatchers.IO) { repo.listVoicePacks() }
             .firstOrNull { it.dir.absolutePath != excludedPath }
             ?.dir
         if (listed != null) return listed
@@ -2918,23 +2929,16 @@ class MainViewModel(
     fun loadLastVoice() {
         viewModelScope.launch {
             val lastName = UserPrefs.getLastVoiceName(appContext)
-            val lastDir = when (lastName) {
-                SYSTEM_TTS_VOICE_NAME -> systemTtsVoiceDir()
-                null -> null
-                else -> repo.resolveVoicePack(lastName)
-            }
+            val lastDir = resolvePreferredVoiceDir(lastName)
             if (lastDir != null) {
                 uiState = uiState.copy(
                     voiceDir = lastDir,
-                    status = if (isSystemTtsVoiceDir(lastDir)) "已加载系统 TTS" else "已加载上次音色包"
+                    status = if (isSystemTtsVoiceDir(lastDir)) "已加载系统 TTS" else "已加载音色包"
                 )
-            } else {
-                val selected = systemTtsVoiceDir()
-                uiState = uiState.copy(
-                    voiceDir = selected,
-                    status = "已切换到系统 TTS"
+                UserPrefs.setLastVoiceName(
+                    appContext,
+                    if (isSystemTtsVoiceDir(lastDir)) SYSTEM_TTS_VOICE_NAME else lastDir.name
                 )
-                UserPrefs.setLastVoiceName(appContext, SYSTEM_TTS_VOICE_NAME)
             }
             val selectedVoice = uiState.voiceDir
             val host = realtimeHost
