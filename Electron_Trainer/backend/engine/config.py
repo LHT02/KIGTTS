@@ -78,7 +78,7 @@ class DistillOptions:
 class VoxCpmDistillOptions:
     device: str = "cuda"
     allow_cpu_fallback: bool = True
-    voice_mode: str = "description"
+    voice_mode: str = "high_fidelity"
     voice_description: str = ""
     reference_audio: Optional[Path] = None
     voice_reference_text: str = "你好，这是语音试听。很高兴认识你，我叫林祈语，从现在开始，我将会一直陪伴着你"

@@ -278,9 +278,9 @@ const STAGE_LABEL: Record<ProgressStage, string> = {
 const DISTILL_TEXT_LANGS = ['中文', '英语', '日语', '粤语', '韩语', '中英混合', '日英混合', '粤英混合', '韩英混合', '多语种混合', '多语种混合(粤语)']
 const DISTILL_SPLIT_METHODS = ['不切', '凑四句一切', '凑50字一切', '按中文句号。切', '按英文句号.切', '按标点符号切']
 const VOXCPM_VOICE_MODES: Array<{ value: VoxCpmVoiceMode; label: string; description: string }> = [
+  { value: 'high_fidelity', label: '高保真克隆（需要调用 ASR）', description: '用参考音频和精确转写做 prompt，优先还原音色、节奏和细节。' },
   { value: 'description', label: '声音设定', description: '通过一段音色描述生成新声音，不需要参考音频。' },
   { value: 'controlled_clone', label: '可控声音克隆', description: '用参考音频决定音色，可选音色描述控制情绪、语速和表达。' },
-  { value: 'high_fidelity', label: '高保真克隆（需要调用 ASR）', description: '用参考音频和精确转写做 prompt，优先还原音色、节奏和细节。' },
 ]
 const GUIDE_MODE_OPTIONS: Array<{
   mode: TrainingMode
@@ -735,7 +735,7 @@ const defaultDistillOptions = (): DistillOptions => ({
 const defaultVoxcpmOptions = (): VoxCpmDistillOptions => ({
   device: 'cuda',
   allow_cpu_fallback: true,
-  voice_mode: 'description',
+  voice_mode: 'high_fidelity',
   voice_description: '',
   reference_audio: '',
   voice_reference_text: VOXCPM_BOOTSTRAP_REFERENCE_TEXT_DEFAULT,
@@ -5219,6 +5219,13 @@ function App() {
             <Typography variant="body2" sx={{ opacity: 0.72 }}>
               {selectedVoxcpmVoiceMode.description}
             </Typography>
+            <NumberField
+              label="语音合成并发数"
+              value={voxcpmOpts.parallel_workers}
+              onChangeValue={(value) => setVoxcpmOpts((prev) => ({ ...prev, parallel_workers: Math.max(1, Math.floor(value || 1)) }))}
+              inputProps={{ step: 1, min: 1, max: 8 }}
+              helperText="并发越高生成越快，但会占用更多显存；不确定时保持 1。"
+            />
             {voxcpmOpts.voice_mode !== 'high_fidelity' && (
               <TextField
                 label={voxcpmOpts.voice_mode === 'description' ? '音色描述' : '风格控制描述（可选）'}
