@@ -80,6 +80,8 @@ type CommonPipelineOptions = {
   voicepack_name: string
   voicepack_remark: string
   voicepack_avatar: string | null
+  normalize_text_append_period: boolean
+  text_normalization_period: string
 }
 
 const runtimeSourceLabels: Record<string, string> = {
@@ -4049,6 +4051,8 @@ function App() {
       voicepack_name: voicepackName,
       voicepack_remark: voicepackRemark,
       voicepack_avatar: voicepackAvatar || null,
+      normalize_text_append_period: true,
+      text_normalization_period: '。',
     }
   }
 

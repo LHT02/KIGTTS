@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .config import DistillOptions, DistillTextSource, ProjectPaths
+from .text_normalization import DEFAULT_SENTENCE_PERIOD, normalize_training_texts
 
 
 ProgressCallback = Callable[[str, float, str], None]
@@ -144,6 +145,8 @@ def collect_distill_texts(
     distill: DistillOptions,
     work_dir: Path,
     progress: Optional[ProgressCallback] = None,
+    normalize_append_period: bool = True,
+    normalization_period: str = DEFAULT_SENTENCE_PERIOD,
 ) -> list[str]:
     if not distill.text_sources:
         raise RuntimeError("未提供蒸馏文本来源")
@@ -167,7 +170,10 @@ def collect_distill_texts(
         else:
             raise RuntimeError(f"不支持的文本来源类型: {source.kind}")
 
-        collected.extend([text for text in texts if text.strip()])
+        source_texts = [text for text in texts if text.strip()]
+        if normalize_append_period:
+            source_texts = normalize_training_texts(source_texts, normalization_period)
+        collected.extend(source_texts)
         if progress:
             progress(
                 "collect",

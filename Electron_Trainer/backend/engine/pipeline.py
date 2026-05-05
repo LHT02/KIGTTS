@@ -19,6 +19,7 @@ from .project_state import (
     voxcpm_options_from_dict,
     write_metadata_entries,
 )
+from .text_normalization import DEFAULT_SENTENCE_PERIOD, ensure_sentence_ending
 from .utils import find_executable
 
 
@@ -150,6 +151,10 @@ def run_pipeline(
     )
     segments = vad.vad_split(processed, paths.segments_dir, opts, progress)
     transcripts = asr.transcribe_segments(segments, opts, progress)
+    if getattr(opts, "normalize_text_append_period", True):
+        period = getattr(opts, "text_normalization_period", DEFAULT_SENTENCE_PERIOD) or DEFAULT_SENTENCE_PERIOD
+        for item in transcripts:
+            item.text = ensure_sentence_ending(item.text, period)
 
     training.write_metadata(transcripts, paths.training_manifest)
     save_project_config(paths, "piper", opts)
@@ -166,7 +171,13 @@ def run_distill_pipeline(
 
     _ensure_dirs(paths)
     archive_voicepack_avatar(paths, opts)
-    texts = gsv_distill.collect_distill_texts(distill_opts, paths.work_dir, progress)
+    texts = gsv_distill.collect_distill_texts(
+        distill_opts,
+        paths.work_dir,
+        progress,
+        getattr(opts, "normalize_text_append_period", True),
+        getattr(opts, "text_normalization_period", DEFAULT_SENTENCE_PERIOD) or DEFAULT_SENTENCE_PERIOD,
+    )
     save_project_config(paths, "gsv_distill", opts, distill_opts=distill_opts, metadata_texts=texts)
     gsv_distill.build_distill_corpus(paths, distill_opts, progress, texts=texts)
     return _train_export_package(paths, opts, progress)
@@ -184,7 +195,13 @@ def run_voxcpm_distill_pipeline(
 
     archive_voicepack_avatar(paths, opts)
     archive_voxcpm_reference(paths, voxcpm_opts)
-    texts = gsv_distill.collect_distill_texts(voxcpm_opts, paths.work_dir, progress)  # type: ignore[arg-type]
+    texts = gsv_distill.collect_distill_texts(  # type: ignore[arg-type]
+        voxcpm_opts,
+        paths.work_dir,
+        progress,
+        getattr(opts, "normalize_text_append_period", True),
+        getattr(opts, "text_normalization_period", DEFAULT_SENTENCE_PERIOD) or DEFAULT_SENTENCE_PERIOD,
+    )
     save_project_config(paths, "voxcpm_distill", opts, voxcpm_opts=voxcpm_opts, metadata_texts=texts)
     voxcpm_distill.build_voxcpm_corpus(paths, voxcpm_opts, opts, progress, texts=texts)
     return _train_export_package(paths, opts, progress)

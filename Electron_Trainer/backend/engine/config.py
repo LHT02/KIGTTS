@@ -37,6 +37,8 @@ class TrainingOptions:
     voicepack_name: str = "未命名"
     voicepack_remark: str = ""
     voicepack_avatar: Optional[Path] = None
+    normalize_text_append_period: bool = True
+    text_normalization_period: str = "。"
 
 
 @dataclass

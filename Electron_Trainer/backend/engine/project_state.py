@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from .config import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, VoxCpmDistillOptions
+from .text_normalization import DEFAULT_SENTENCE_PERIOD, normalize_training_texts
 
 
 PROJECT_CONFIG_NAME = "kigtts_project.json"
@@ -99,12 +100,24 @@ def save_project_config(
     metadata_texts: Optional[list[str]] = None,
 ) -> Path:
     paths.work_dir.mkdir(parents=True, exist_ok=True)
+    raw_metadata_texts = metadata_texts if metadata_texts is not None else _metadata_texts(paths)
+    if getattr(opts, "normalize_text_append_period", True):
+        saved_metadata_texts = normalize_training_texts(
+            raw_metadata_texts,
+            getattr(opts, "text_normalization_period", DEFAULT_SENTENCE_PERIOD) or DEFAULT_SENTENCE_PERIOD,
+        )
+    else:
+        saved_metadata_texts = [str(item).strip() for item in raw_metadata_texts if str(item).strip()]
     data: dict[str, Any] = {
         "version": PROJECT_CONFIG_VERSION,
         "mode": mode,
         "training_options": _serialize_dataclass(opts),
         "input_audio": [str(path) for path in paths.input_audio],
-        "metadata_texts": [str(item).strip() for item in (metadata_texts if metadata_texts is not None else _metadata_texts(paths)) if str(item).strip()],
+        "metadata_texts": saved_metadata_texts,
+        "text_normalization": {
+            "append_sentence_period": bool(getattr(opts, "normalize_text_append_period", True)),
+            "sentence_period": str(getattr(opts, "text_normalization_period", DEFAULT_SENTENCE_PERIOD) or DEFAULT_SENTENCE_PERIOD),
+        },
     }
     if distill_opts is not None:
         data["distill_options"] = _serialize_dataclass(distill_opts)
@@ -165,6 +178,8 @@ def training_options_from_dict(data: dict[str, Any]) -> TrainingOptions:
     opts.phonemizer_dict = _path_or_none(data.get("phonemizer_dict"))
     opts.piper_config = _path_or_none(data.get("piper_config"))
     opts.voicepack_avatar = _path_or_none(data.get("voicepack_avatar"))
+    opts.normalize_text_append_period = bool(data.get("normalize_text_append_period", True))
+    opts.text_normalization_period = str(data.get("text_normalization_period") or DEFAULT_SENTENCE_PERIOD).strip() or DEFAULT_SENTENCE_PERIOD
     return opts
 
 
