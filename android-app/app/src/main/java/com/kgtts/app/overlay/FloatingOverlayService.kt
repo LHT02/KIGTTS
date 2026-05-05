@@ -904,6 +904,10 @@ class FloatingOverlayService : Service() {
         fabButton?.animate()?.cancel()
     }
 
+    private fun cancelFabDockAlphaAnimation() {
+        fabRoot?.animate()?.cancel()
+    }
+
     private fun expandedFabXForEdge(edge: String, screenWidth: Int): Int {
         return if (edge == FAB_EDGE_LEFT) {
             fabSnapLeftX()
@@ -1124,6 +1128,7 @@ class FloatingOverlayService : Service() {
         fabIdleDockJob = null
         cancelFabSnapAnimation()
         cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
         val anchor = currentOrientationFabAnchor()
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
         val screenWidth = displayWidth()
@@ -1144,12 +1149,47 @@ class FloatingOverlayService : Service() {
         updateFabWindowLayout()
     }
 
+    private fun prepareFabRestoreForVisibilityHide() {
+        val params = fabParams ?: return
+        val root = fabRoot ?: return
+        val fromFraction = fabInnerFoldFraction.coerceIn(0f, 1f)
+        fabIdleDockJob?.cancel()
+        fabIdleDockJob = null
+        if (!fabIdleDocked && fromFraction <= 0.01f) return
+        val edge =
+            if (fromFraction > 0.01f) {
+                fabInnerFoldEdge
+            } else {
+                resolveCurrentFabDockEdge(params)
+            }
+        val keepAlpha = root.alpha
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        fabIdleDocked = false
+        params.width = fabExpandedWindowWidthPx()
+        params.x = expandedFabXForEdge(edge, displayWidth())
+        params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
+        root.alpha = keepAlpha
+        applyFabInnerFoldLayout(
+            edge,
+            foldFraction = if (fromFraction > 0.01f) fromFraction else 1f,
+            foldedWindow = false
+        )
+        updateFabWindowLayout()
+        animateFabInnerFold(
+            edge,
+            fromFraction = if (fromFraction > 0.01f) fromFraction else 1f,
+            toFraction = 0f
+        )
+    }
+
     private fun prepareFabForDockedDrag(edge: String, params: WindowManager.LayoutParams) {
         val root = fabRoot ?: return
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         cancelFabSnapAnimation()
         cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
 
         val wasFoldedWindow = fabIdleDocked || fabInnerFoldFraction > 0.01f
         val dragStartX =
@@ -1182,6 +1222,7 @@ class FloatingOverlayService : Service() {
     private fun cancelFabAutoDockForTouch(params: WindowManager.LayoutParams) {
         cancelFabIdleDock(restoreFab = false)
         cancelFabSnapAnimation()
+        cancelFabDockAlphaAnimation()
         if (!fabIdleDocked && fabInnerFoldFraction > 0.01f) {
             cancelFabInnerFoldAnimation()
             params.width = fabExpandedWindowWidthPx()
@@ -1222,6 +1263,7 @@ class FloatingOverlayService : Service() {
         }
         cancelFabSnapAnimation()
         cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
         val params = fabParams ?: return
         val root = fabRoot ?: return
         val edge = currentOrientationFabAnchor()?.edge
@@ -1248,6 +1290,7 @@ class FloatingOverlayService : Service() {
         bubbleRow?.visibility = View.GONE
         cancelFabSnapAnimation()
         cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
         fabIdleDocked = false
         updateFabDockLayout(anchor.edge)
         val screenWidth = displayWidth()
@@ -1257,6 +1300,11 @@ class FloatingOverlayService : Service() {
         root.alpha = 1f
         animateFabContainerTo(targetX, targetY, durationMs = 160L) {
             if (!canAutoDockFab() || draggingFab) return@animateFabContainerTo
+            root.animate()
+                .alpha(fabIdleDockAlpha)
+                .setDuration(170L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
             animateFabInnerFold(anchor.edge, fromFraction = 0f, toFraction = 1f) {
                 if (!canAutoDockFab() || draggingFab) return@animateFabInnerFold
                 fabIdleDocked = true
@@ -3222,7 +3270,7 @@ class FloatingOverlayService : Service() {
 
     private fun syncFabVisibility(show: Boolean) {
         if (!show) {
-            cancelFabIdleDock(restoreFab = true)
+            prepareFabRestoreForVisibilityHide()
             fabTouchProxy?.visibility = View.GONE
         }
         if (fabVisibilityTarget == show) return
@@ -3610,7 +3658,6 @@ class FloatingOverlayService : Service() {
                 fabTouchDockEdge = null
                 if (!draggingFab) {
                     if (tapRestoreEdge != null) {
-                        cancelFabIdleDock(restoreFab = true)
                         togglePanel()
                     } else {
                         togglePanel()
