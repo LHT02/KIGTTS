@@ -248,9 +248,10 @@ class FloatingOverlayService : Service() {
     private var currentDragAction = OverlayReleaseAction.SendToSubtitle
     private var overlayDarkTheme = false
     private var overlayStatusExpanded = false
-    private var fabSnapAnimator: ValueAnimator? = null
     private var fabIdleDockJob: Job? = null
     private var fabIdleDocked = false
+    private var fabContainerAnimator: ValueAnimator? = null
+    private var fabInnerFoldAnimator: ValueAnimator? = null
     private var fabVisibilityTarget: Boolean? = null
     private var portraitFabAnchor: OverlayFabAnchor? = null
     private var landscapeFabAnchor: OverlayFabAnchor? = null
@@ -738,14 +739,23 @@ class FloatingOverlayService : Service() {
 
     private fun fabMinY(): Int = dp(48)
 
-    private fun fabVisibleHeightPx(): Int =
-        max(
-            fabRoot?.measuredHeight?.takeIf { it > 0 } ?: 0,
+    private fun fabVisibleHeightPx(): Int {
+        val shellHeight =
+            dp(FAB_SIZE_DP) +
+                if (fabIdleDocked) {
+                    fabFoldedVerticalPaddingPx() * 2
+                } else {
+                    fabExpandedVerticalPaddingPx() * 2
+                }
+        if (bubbleRow?.visibility != View.VISIBLE) return shellHeight
+        return max(
+            shellHeight,
             max(
-                fabRoot?.height?.takeIf { it > 0 } ?: 0,
-                dp(FAB_SIZE_DP)
+                fabRoot?.measuredHeight?.takeIf { it > 0 } ?: 0,
+                fabRoot?.height?.takeIf { it > 0 } ?: 0
             )
         )
+    }
 
     private fun fabMaxY(screenHeight: Int = displayHeight()): Int =
         max(fabMinY(), screenHeight - fabVisibleHeightPx())
@@ -827,6 +837,7 @@ class FloatingOverlayService : Service() {
         }
         val resolved = anchor ?: converted
         if (resolved != null) {
+            updateFabDockLayout(resolved.edge)
             applyFabAnchor(
                 params = params,
                 anchor = resolved,
@@ -835,6 +846,8 @@ class FloatingOverlayService : Service() {
             )
             setFabAnchorForOrientation(currentFabOrientation, resolved)
         } else {
+            val edge = buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+            updateFabDockLayout(edge)
             clampFabToScreen()
         }
         fabRoot?.let { root ->
@@ -844,31 +857,34 @@ class FloatingOverlayService : Service() {
     }
 
     private fun fabDockExposedWidthPx(): Int {
-        val buttonWidth =
-            fabButton?.measuredWidth?.takeIf { it > 0 }
-                ?: fabButton?.width?.takeIf { it > 0 }
-                ?: dp(FAB_SIZE_DP)
-        return max(1, buttonWidth / 2)
+        return max(1, fabButtonWidthPx() / 2)
     }
 
-    private fun fabDockOuterPaddingPx(): Int = dp(14)
+    private fun fabButtonWidthPx(): Int =
+        fabButton?.measuredWidth?.takeIf { it > 0 }
+            ?: fabButton?.width?.takeIf { it > 0 }
+            ?: dp(FAB_SIZE_DP)
 
-    private fun fabDockShadowPaddingPx(): Int = dp(8)
+    private fun fabExpandedOuterPaddingPx(): Int = dp(14)
+
+    private fun fabExpandedVerticalPaddingPx(): Int = dp(14)
+
+    private fun fabFoldedVerticalPaddingPx(): Int = dp(6)
 
     private fun lerpInt(start: Int, end: Int, fraction: Float): Int {
-        return (start + (end - start) * fraction).roundToInt()
+        return (start + (end - start) * fraction.coerceIn(0f, 1f)).roundToInt()
     }
 
     private fun fabDockVisibleWidthPx(): Int {
-        return fabDockExposedWidthPx() + fabDockShadowPaddingPx()
+        return fabDockExposedWidthPx()
     }
 
     private fun fabDockWindowWidthPx(): Int {
-        return fabDockVisibleWidthPx() + fabDockOuterPaddingPx()
+        return fabDockVisibleWidthPx()
     }
 
     private fun fabExpandedWindowWidthPx(): Int {
-        return dp(FAB_SIZE_DP) + fabDockOuterPaddingPx() * 2
+        return dp(FAB_SIZE_DP) + fabExpandedOuterPaddingPx() * 2
     }
 
     private fun fabWindowWidthPx(): Int {
@@ -877,15 +893,20 @@ class FloatingOverlayService : Service() {
             paramsWidth > 0 -> paramsWidth
             fabRoot?.measuredWidth?.takeIf { it > 0 } != null -> fabRoot!!.measuredWidth
             fabRoot?.width?.takeIf { it > 0 } != null -> fabRoot!!.width
-            else -> dp(FAB_SIZE_DP) + fabDockOuterPaddingPx() * 2
+            else -> if (fabIdleDocked) fabDockWindowWidthPx() else fabExpandedWindowWidthPx()
         }
     }
 
     private fun cancelFabSnapAnimation() {
-        val animator = fabSnapAnimator
-        fabSnapAnimator = null
-        animator?.cancel()
+        fabContainerAnimator?.cancel()
+        fabContainerAnimator = null
         fabRoot?.translationX = 0f
+    }
+
+    private fun cancelFabInnerFoldAnimation() {
+        fabInnerFoldAnimator?.cancel()
+        fabInnerFoldAnimator = null
+        fabButton?.animate()?.cancel()
     }
 
     private fun dockedFabXForEdge(edge: String, screenWidth: Int): Int {
@@ -905,72 +926,157 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun expandedFabDragStartX(edge: String, currentX: Int, currentWindowWidth: Int): Int {
-        if (edge != FAB_EDGE_RIGHT) return currentX
-        val maxExpandedX = max(0, displayWidth() - fabExpandedWindowWidthPx())
-        return (currentX + currentWindowWidth - fabExpandedWindowWidthPx())
-            .coerceIn(0, maxExpandedX)
-    }
-
-    private fun updateFabDockLayout(edge: String) {
+    private fun applyFabInnerFoldLayout(edge: String, foldFraction: Float, foldedWindow: Boolean) {
         val root = fabRoot ?: return
-        val params = fabParams ?: return
         val host = fabButtonHost ?: return
         val button = fabButton ?: return
         val spacer = fabSpacerView
         val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return
         val buttonLayoutParams = button.layoutParams as? FrameLayout.LayoutParams ?: return
-        val buttonWidth =
-            button.measuredWidth.takeIf { it > 0 }
-                ?: button.width.takeIf { it > 0 }
-                ?: dp(FAB_SIZE_DP)
-        val outerPadding = fabDockOuterPaddingPx()
-        if (fabIdleDocked) {
-            val exposedWidth = fabDockExposedWidthPx()
-            val shadowPadding = fabDockShadowPaddingPx()
-            val visibleWidth = fabDockVisibleWidthPx()
-            root.clipChildren = false
-            root.clipToPadding = false
-            root.gravity = Gravity.END
-            root.setPadding(
-                if (edge == FAB_EDGE_LEFT) 0 else outerPadding,
-                dp(14),
-                if (edge == FAB_EDGE_LEFT) outerPadding else 0,
-                dp(14)
-            )
-            params.width = fabDockWindowWidthPx()
-            spacer?.visibility = View.VISIBLE
-            host.clipChildren = true
-            host.clipToPadding = true
-            hostLayoutParams.width = visibleWidth
-            hostLayoutParams.height = dp(FAB_SIZE_DP)
-            hostLayoutParams.gravity = Gravity.START
-            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            button.translationX =
-                if (edge == FAB_EDGE_LEFT) {
-                    -(buttonWidth - exposedWidth).toFloat()
-                } else {
-                    shadowPadding.toFloat()
-                }
-        } else {
-            root.clipChildren = false
-            root.clipToPadding = false
-            root.gravity = Gravity.END
-            root.setPadding(outerPadding, dp(14), outerPadding, dp(14))
-            params.width = fabExpandedWindowWidthPx()
-            spacer?.visibility = View.VISIBLE
-            host.clipChildren = false
-            host.clipToPadding = false
-            hostLayoutParams.width = dp(FAB_SIZE_DP)
-            hostLayoutParams.height = dp(FAB_SIZE_DP)
-            hostLayoutParams.gravity = Gravity.START
-            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            button.translationX = 0f
-        }
+        val fraction = foldFraction.coerceIn(0f, 1f)
+        val buttonWidth = fabButtonWidthPx()
+        val exposedWidth = fabDockExposedWidthPx()
+        val outerPadding = lerpInt(fabExpandedOuterPaddingPx(), 0, fraction)
+        val verticalPadding =
+            if (foldedWindow) {
+                fabFoldedVerticalPaddingPx()
+            } else {
+                lerpInt(fabExpandedVerticalPaddingPx(), fabFoldedVerticalPaddingPx(), fraction)
+            }
+        root.clipChildren = false
+        root.clipToPadding = false
+        root.gravity =
+            if (edge == FAB_EDGE_RIGHT) Gravity.END else Gravity.START
+        root.setPadding(outerPadding, verticalPadding, outerPadding, verticalPadding)
+        spacer?.visibility = View.GONE
+        host.clipChildren = fraction > 0f || foldedWindow
+        host.clipToPadding = fraction > 0f || foldedWindow
+        hostLayoutParams.width =
+            if (foldedWindow) {
+                exposedWidth
+            } else {
+                lerpInt(buttonWidth, exposedWidth, fraction)
+            }
+        hostLayoutParams.height = dp(FAB_SIZE_DP)
+        hostLayoutParams.gravity =
+            (if (edge == FAB_EDGE_RIGHT) Gravity.END else Gravity.START) or Gravity.CENTER_VERTICAL
+        buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        button.translationX =
+            if (edge == FAB_EDGE_LEFT) {
+                -(buttonWidth - hostLayoutParams.width).toFloat()
+            } else {
+                0f
+            }
         host.layoutParams = hostLayoutParams
         button.layoutParams = buttonLayoutParams
         host.requestLayout()
         root.requestLayout()
+    }
+
+    private fun updateFabDockLayout(edge: String) {
+        val params = fabParams ?: return
+        if (fabIdleDocked) {
+            params.width = fabDockWindowWidthPx()
+            applyFabInnerFoldLayout(edge, foldFraction = 1f, foldedWindow = true)
+        } else {
+            params.width = fabExpandedWindowWidthPx()
+            applyFabInnerFoldLayout(edge, foldFraction = 0f, foldedWindow = false)
+        }
+    }
+
+    private fun updateFabWindowLayout() {
+        val root = fabRoot ?: return
+        val params = fabParams ?: return
+        runCatching { windowManager.updateViewLayout(root, params) }
+    }
+
+    private fun animateFabContainerTo(
+        targetX: Int,
+        targetY: Int,
+        durationMs: Long = 180L,
+        endAction: (() -> Unit)? = null
+    ) {
+        val params = fabParams ?: return
+        val root = fabRoot ?: return
+        cancelFabSnapAnimation()
+        val startX = params.x
+        val startY = params.y
+        if (startX == targetX && startY == targetY) {
+            endAction?.invoke()
+            return
+        }
+        var cancelled = false
+        fabContainerAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = durationMs
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val fraction = animator.animatedFraction
+                params.x = (startX + (targetX - startX) * fraction).roundToInt()
+                params.y = (startY + (targetY - startY) * fraction).roundToInt()
+                runCatching { windowManager.updateViewLayout(root, params) }
+            }
+            addListener(
+                object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        cancelled = true
+                    }
+
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        if (fabContainerAnimator === animation) {
+                            fabContainerAnimator = null
+                        }
+                        if (cancelled) return
+                        params.x = targetX
+                        params.y = targetY
+                        runCatching { windowManager.updateViewLayout(root, params) }
+                        endAction?.invoke()
+                    }
+                }
+            )
+            start()
+        }
+    }
+
+    private fun animateFabInnerFold(
+        edge: String,
+        fromFraction: Float,
+        toFraction: Float,
+        endAction: (() -> Unit)? = null
+    ) {
+        cancelFabInnerFoldAnimation()
+        val start = fromFraction.coerceIn(0f, 1f)
+        val end = toFraction.coerceIn(0f, 1f)
+        if (abs(start - end) < 0.01f) {
+            applyFabInnerFoldLayout(edge, end, foldedWindow = false)
+            endAction?.invoke()
+            return
+        }
+        var cancelled = false
+        fabInnerFoldAnimator = ValueAnimator.ofFloat(start, end).apply {
+            duration = 170L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val fraction = animator.animatedValue as Float
+                applyFabInnerFoldLayout(edge, fraction, foldedWindow = false)
+            }
+            addListener(
+                object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        cancelled = true
+                    }
+
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        if (fabInnerFoldAnimator === animation) {
+                            fabInnerFoldAnimator = null
+                        }
+                        if (cancelled) return
+                        applyFabInnerFoldLayout(edge, end, foldedWindow = false)
+                        endAction?.invoke()
+                    }
+                }
+            )
+            start()
+        }
     }
 
     private fun restoreFabFromIdleDock(animateRestore: Boolean = false) {
@@ -980,14 +1086,16 @@ class FloatingOverlayService : Service() {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
         val anchor = currentOrientationFabAnchor()
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
         val screenWidth = displayWidth()
         val screenHeight = displayHeight()
+        fabIdleDocked = false
+        params.width = fabExpandedWindowWidthPx()
+        applyFabInnerFoldLayout(anchor.edge, foldFraction = 1f, foldedWindow = false)
         val minY = fabMinY()
         val maxY = fabMaxY(screenHeight)
-        fabIdleDocked = false
-        updateFabDockLayout(anchor.edge)
         params.x = expandedFabXForEdge(anchor.edge, screenWidth)
         params.y =
             if (maxY <= minY) {
@@ -997,7 +1105,11 @@ class FloatingOverlayService : Service() {
             }
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
-        if (animateRestore) animateFabRestoreFromDockEdge(anchor.edge)
+        if (animateRestore) {
+            animateFabInnerFold(anchor.edge, fromFraction = 1f, toFraction = 0f)
+        } else {
+            applyFabInnerFoldLayout(anchor.edge, foldFraction = 0f, foldedWindow = false)
+        }
     }
 
     private fun prepareFabForDockedDrag(edge: String, params: WindowManager.LayoutParams) {
@@ -1005,71 +1117,66 @@ class FloatingOverlayService : Service() {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         cancelFabSnapAnimation()
-        resetFabRestoreAnimation()
+        cancelFabInnerFoldAnimation()
 
-        val currentWindowWidth =
-            params.width.takeIf { it > 0 }
-                ?: fabRoot?.width?.takeIf { it > 0 }
-                ?: fabWindowWidthPx()
-        val dragStartX = expandedFabDragStartX(edge, params.x, currentWindowWidth)
+        val dragStartX = expandedFabXForEdge(edge, displayWidth())
         fabIdleDocked = false
-        updateFabDockLayout(edge)
+        params.width = fabExpandedWindowWidthPx()
+        applyFabInnerFoldLayout(edge, foldFraction = 1f, foldedWindow = false)
         params.x = dragStartX
         downWinX = dragStartX
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
+        animateFabInnerFold(edge, fromFraction = 1f, toFraction = 0f)
     }
 
     private fun resetFabRestoreAnimation() {
-        fabButton?.animate()?.cancel()
-        fabButton?.translationX = 0f
-    }
-
-    private fun animateFabRestoreFromDockEdge(edge: String, endAction: (() -> Unit)? = null) {
-        val button = fabButton ?: run {
-            endAction?.invoke()
-            return
-        }
-        val buttonWidth =
-            button.measuredWidth.takeIf { it > 0 }
-                ?: button.width.takeIf { it > 0 }
-                ?: dp(FAB_SIZE_DP)
-        val startTranslation =
-            if (edge == FAB_EDGE_LEFT) {
-                -(buttonWidth - fabDockExposedWidthPx()).toFloat()
-            } else {
-                fabDockShadowPaddingPx().toFloat()
-            }
-        if (abs(startTranslation) < 0.5f) {
-            endAction?.invoke()
-            return
-        }
-        button.animate().cancel()
-        button.translationX = startTranslation
-        button.animate()
-            .translationX(0f)
-            .setDuration(160L)
-            .setInterpolator(DecelerateInterpolator())
-            .withEndAction { endAction?.invoke() }
-            .start()
+        cancelFabInnerFoldAnimation()
+        val edge = currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT
+        applyFabInnerFoldLayout(edge, foldFraction = 0f, foldedWindow = false)
     }
 
     private fun applyFabIdleDockVisualState() {
         val root = fabRoot ?: return
+        val params = fabParams ?: return
+        if (fabContainerAnimator?.isRunning == true || fabInnerFoldAnimator?.isRunning == true) return
         if (fabIdleDocked) {
+            val anchor = currentOrientationFabAnchor()
+                ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
             bubbleRow?.visibility = View.GONE
-            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
+            updateFabDockLayout(anchor.edge)
+            params.x = dockedFabXForEdge(anchor.edge, displayWidth())
+            params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
             root.alpha = fabIdleDockAlpha
         } else {
-            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
+            val edge = currentOrientationFabAnchor()?.edge
+                ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+            updateFabDockLayout(edge)
             root.alpha = 1f
         }
+        runCatching { windowManager.updateViewLayout(root, params) }
     }
 
     private fun cancelFabIdleDock(restoreFab: Boolean, animateRestore: Boolean = false) {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
-        if (restoreFab) restoreFabFromIdleDock(animateRestore)
+        if (!restoreFab) return
+        if (fabIdleDocked) {
+            restoreFabFromIdleDock(animateRestore)
+            return
+        }
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        val params = fabParams ?: return
+        val root = fabRoot ?: return
+        val edge = currentOrientationFabAnchor()?.edge
+            ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+        fabIdleDocked = false
+        updateFabDockLayout(edge)
+        params.x = params.x.coerceIn(0, fabMaxX(displayWidth()))
+        params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
+        root.alpha = 1f
+        updateFabWindowLayout()
     }
 
     private fun resolveCurrentFabDockEdge(params: WindowManager.LayoutParams): String {
@@ -1084,94 +1191,26 @@ class FloatingOverlayService : Service() {
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
         setFabAnchorForOrientation(currentFabOrientation, anchor)
         bubbleRow?.visibility = View.GONE
-        root.requestLayout()
-        root.post {
-            val liveParams = fabParams ?: return@post
-            val liveRoot = fabRoot ?: return@post
-            val host = fabButtonHost ?: return@post
-            val button = fabButton ?: return@post
-            val spacer = fabSpacerView
-            val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return@post
-            val buttonWidth =
-                button.measuredWidth.takeIf { it > 0 }
-                    ?: button.width.takeIf { it > 0 }
-                    ?: dp(FAB_SIZE_DP)
-            val outerPadding = fabDockOuterPaddingPx()
-            val startPaddingLeft = liveRoot.paddingLeft
-            val startPaddingRight = liveRoot.paddingRight
-            val startHostWidth = hostLayoutParams.width.takeIf { it > 0 } ?: dp(FAB_SIZE_DP)
-            val startWindowWidth =
-                liveParams.width.takeIf { it > 0 }
-                    ?: liveRoot.width.takeIf { it > 0 }
-                    ?: (dp(FAB_SIZE_DP) + outerPadding * 2)
-            val startButtonTranslation = button.translationX
-            val targetVisibleWidth = fabDockVisibleWidthPx()
-            val targetWindowWidth = fabDockWindowWidthPx()
-            val targetExposedWidth = fabDockExposedWidthPx()
-            val targetShadowPadding = fabDockShadowPaddingPx()
-            val targetPaddingLeft = if (anchor.edge == FAB_EDGE_LEFT) 0 else outerPadding
-            val targetPaddingRight = if (anchor.edge == FAB_EDGE_LEFT) outerPadding else 0
-            val targetButtonTranslation =
-                if (anchor.edge == FAB_EDGE_LEFT) {
-                    -(buttonWidth - targetExposedWidth).toFloat()
-                } else {
-                    targetShadowPadding.toFloat()
-                }
-            fabIdleDocked = true
-            val targetX = dockedFabXForEdge(anchor.edge, displayWidth())
-            val targetY = liveParams.y
-            val startX = liveParams.x
-            val startY = liveParams.y
-            val needsLayoutTransition =
-                startHostWidth != targetVisibleWidth ||
-                    startWindowWidth != targetWindowWidth ||
-                    startPaddingLeft != targetPaddingLeft ||
-                    startPaddingRight != targetPaddingRight ||
-                    abs(startButtonTranslation - targetButtonTranslation) > 0.5f
-            cancelFabSnapAnimation()
-            if (startX == targetX && startY == targetY && !needsLayoutTransition) {
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        fabIdleDocked = false
+        updateFabDockLayout(anchor.edge)
+        val screenWidth = displayWidth()
+        val screenHeight = displayHeight()
+        val targetX = expandedFabXForEdge(anchor.edge, screenWidth)
+        val targetY = params.y.coerceIn(fabMinY(), fabMaxY(screenHeight))
+        root.alpha = 1f
+        animateFabContainerTo(targetX, targetY, durationMs = 160L) {
+            if (!canAutoDockFab() || draggingFab) return@animateFabContainerTo
+            animateFabInnerFold(anchor.edge, fromFraction = 0f, toFraction = 1f) {
+                if (!canAutoDockFab() || draggingFab) return@animateFabInnerFold
+                fabIdleDocked = true
                 updateFabDockLayout(anchor.edge)
-                liveParams.x = targetX
-                liveParams.y = targetY
-                liveRoot.alpha = fabIdleDockAlpha
-                runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
-                return@post
+                params.x = dockedFabXForEdge(anchor.edge, displayWidth())
+                params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
+                root.alpha = fabIdleDockAlpha
+                updateFabWindowLayout()
             }
-            var wasCancelled = false
-            fabSnapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 220L
-                interpolator = DecelerateInterpolator()
-                val targetRootTranslationX = (targetX - startX).toFloat()
-                addUpdateListener { animator ->
-                    val fraction = animator.animatedFraction
-                    liveRoot.translationX = targetRootTranslationX * fraction
-                    button.translationX =
-                        startButtonTranslation + (targetButtonTranslation - startButtonTranslation) * fraction
-                    liveRoot.alpha = 1f + (fabIdleDockAlpha - 1f) * fraction
-                }
-                addListener(
-                    object : android.animation.AnimatorListenerAdapter() {
-                        override fun onAnimationCancel(animation: android.animation.Animator) {
-                            wasCancelled = true
-                            liveRoot.translationX = 0f
-                        }
-
-                        override fun onAnimationEnd(animation: android.animation.Animator) {
-                            if (fabSnapAnimator === animation) {
-                                fabSnapAnimator = null
-                            }
-                            if (wasCancelled) return
-                            liveRoot.translationX = 0f
-                            spacer?.alpha = 1f
-                            updateFabDockLayout(anchor.edge)
-                            liveParams.x = targetX
-                            liveParams.y = targetY
-                            liveRoot.alpha = fabIdleDockAlpha
-                            runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
-                        }
-                    }
-                )
-            }.also { it.start() }
         }
     }
 
@@ -1607,6 +1646,7 @@ class FloatingOverlayService : Service() {
             x = displayWidth() - dp(96)
             y = displayHeight() - dp(180)
         }
+        updateFabDockLayout(FAB_EDGE_RIGHT)
         windowManager.addView(fabRoot, fabParams)
 
         val panelTopMicIcon = symbolTextView("mic", 24f, overlayOnSurfaceColor()).also {
@@ -2931,6 +2971,7 @@ class FloatingOverlayService : Service() {
 
     private fun removeWindows() {
         cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
         confirmOverlay?.let { runCatching { windowManager.removeView(it) } }
         confirmOverlay = null
         confirmTextCardView = null
@@ -3449,10 +3490,11 @@ class FloatingOverlayService : Service() {
                 if (draggingFab) {
                     val dockEdge = fabTouchDockEdge ?: if (fabIdleDocked) resolveCurrentFabDockEdge(params) else null
                     fabTouchDockEdge = null
-                    resetFabRestoreAnimation()
                     cancelFabSnapAnimation()
                     if (dockEdge != null) {
                         prepareFabForDockedDrag(dockEdge, params)
+                    } else {
+                        resetFabRestoreAnimation()
                     }
                     params.x = downWinX + dx
                     params.y = downWinY + dy
@@ -3469,7 +3511,7 @@ class FloatingOverlayService : Service() {
                 if (!draggingFab) {
                     if (tapRestoreEdge != null) {
                         cancelFabIdleDock(restoreFab = true, animateRestore = false)
-                        animateFabRestoreFromDockEdge(tapRestoreEdge) { togglePanel() }
+                        togglePanel()
                     } else {
                         togglePanel()
                     }
@@ -3482,7 +3524,7 @@ class FloatingOverlayService : Service() {
             }
             MotionEvent.ACTION_CANCEL -> {
                 fabTouchDockEdge = null
-                resetFabRestoreAnimation()
+                if (!fabIdleDocked) resetFabRestoreAnimation()
                 if (draggingFab) snapFabToEdge()
                 draggingFab = false
                 refreshFabIdleDockState()
@@ -8988,54 +9030,25 @@ class FloatingOverlayService : Service() {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         fabIdleDocked = false
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        val currentEdge = currentOrientationFabAnchor()?.edge
+            ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+        updateFabDockLayout(currentEdge)
         root.alpha = 1f
         val screenWidth = displayWidth()
         val screenHeight = displayHeight()
-        val maxX = fabMaxX(screenWidth)
-        val leftDistance = params.x
-        val rightDistance = maxX - params.x
-        val targetX =
-            if (leftDistance <= rightDistance) fabSnapLeftX() else fabSnapRightX(screenWidth)
+        val centerX = params.x + fabExpandedWindowWidthPx() / 2
+        val targetEdge = if (centerX <= screenWidth / 2) FAB_EDGE_LEFT else FAB_EDGE_RIGHT
+        val targetX = expandedFabXForEdge(targetEdge, screenWidth)
         val targetY = params.y.coerceIn(fabMinY(), fabMaxY(screenHeight))
         val targetAnchor = buildFabAnchor(targetX, targetY, screenWidth, screenHeight)
         setFabAnchorForOrientation(currentFabOrientation, targetAnchor)
         saveOverlayLauncherLayout()
-        val startX = params.x
-        val startY = params.y
-        cancelFabSnapAnimation()
-        if (startX == targetX && startY == targetY) {
-            params.x = targetX
-            params.y = targetY
-            windowManager.updateViewLayout(root, params)
+        animateFabContainerTo(targetX, targetY) {
+            updateFabDockLayout(targetEdge)
+            updateFabWindowLayout()
             refreshFabIdleDockState()
-            return
-        }
-        var wasCancelled = false
-        fabSnapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 220L
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { animator ->
-                val fraction = animator.animatedFraction
-                params.x = (startX + (targetX - startX) * fraction).roundToInt()
-                params.y = (startY + (targetY - startY) * fraction).roundToInt()
-                runCatching { windowManager.updateViewLayout(root, params) }
-            }
-            addListener(
-                object : android.animation.AnimatorListenerAdapter() {
-                    override fun onAnimationCancel(animation: android.animation.Animator) {
-                        wasCancelled = true
-                    }
-
-                    override fun onAnimationEnd(animation: android.animation.Animator) {
-                        if (fabSnapAnimator === animation) {
-                            fabSnapAnimator = null
-                        }
-                        if (wasCancelled) return
-                        refreshFabIdleDockState()
-                    }
-                }
-            )
-            start()
         }
     }
 
