@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from .audio_validation import is_audio_file_usable, split_usable_audio_entries
 from .config import DistillOptions, DistillTextSource, ProjectPaths
 from .text_normalization import DEFAULT_SENTENCE_PERIOD, normalize_training_texts
 
@@ -321,7 +322,7 @@ def _write_metadata(paths: ProjectPaths, entries: list[tuple[Path, str]]) -> Non
 
 
 def _ready_entries(entries: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
-    return [(audio_path, text) for audio_path, text in entries if audio_path.exists() and audio_path.stat().st_size > 0]
+    return [(audio_path, text) for audio_path, text in entries if is_audio_file_usable(audio_path)]
 
 
 def _require_generated_audio(entries: list[tuple[Path, str]], *, label: str) -> list[tuple[Path, str]]:
@@ -329,10 +330,10 @@ def _require_generated_audio(entries: list[tuple[Path, str]], *, label: str) -> 
     if len(ready) == len(entries):
         return ready
     missing = len(entries) - len(ready)
-    sample = next((str(audio_path) for audio_path, _text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0), "")
+    sample = next((str(audio_path) for audio_path, _text in entries if not is_audio_file_usable(audio_path)), "")
     if not ready:
-        raise RuntimeError(f"{label} 未生成可用音频，无法继续训练。示例缺失文件: {sample}")
-    raise RuntimeError(f"{label} 有 {missing} 条音频缺失或为空，无法继续训练。示例缺失文件: {sample}")
+        raise RuntimeError(f"{label} 未生成可用音频，无法继续训练。示例缺失或损坏文件: {sample}")
+    raise RuntimeError(f"{label} 有 {missing} 条音频缺失、为空或损坏，无法继续训练。示例文件: {sample}")
 
 
 def _split_entries(entries: list[tuple[Path, str]], worker_count: int) -> list[list[tuple[Path, str]]]:
@@ -465,8 +466,6 @@ def build_distill_corpus(
         log_path.unlink()
     wav_dir = distill_dir / "wavs"
     wav_dir.mkdir(parents=True, exist_ok=True)
-    for stale in wav_dir.glob("*.wav"):
-        stale.unlink(missing_ok=True)
 
     device = "cuda" if str(distill.device).lower() in {"cuda", "gpu"} else "cpu"
     batch_size = max(1, int(distill.batch_size))
@@ -479,19 +478,31 @@ def build_distill_corpus(
 
     attempts = 0
     while True:
+        ready_entries, pending_entries = split_usable_audio_entries(entries)
+        if not pending_entries:
+            _write_metadata(paths, ready_entries)
+            if progress:
+                progress("distill", 1.0, f"检测到已有可用蒸馏语料 {len(ready_entries)} 条，直接进入训练")
+            return len(ready_entries)
+        if ready_entries and progress:
+            progress(
+                "distill",
+                len(ready_entries) / max(1, len(entries)),
+                f"检测到已有可用音频 {len(ready_entries)} 条，将补生成 {len(pending_entries)} 条缺失或损坏音频",
+            )
         attempts += 1
         if progress:
             progress(
                 "distill",
                 0.0,
-                f"启动 GPT-SoVITS 蒸馏，第 {attempts} 次尝试（device={device}, batch={batch_size}, parallel={parallel_infer}, workers={parallel_workers}）",
+                f"启动 GPT-SoVITS 蒸馏，第 {attempts} 次尝试（device={device}, batch={batch_size}, parallel={parallel_infer}, workers={parallel_workers}, pending={len(pending_entries)}）",
             )
 
         result = _run_generation_entries(
             validation,
             distill,
             paths,
-            entries,
+            pending_entries,
             device=device,
             batch_size=batch_size,
             parallel_infer=parallel_infer,
@@ -538,6 +549,9 @@ def generate_distill_entries(
 ) -> int:
     if not entries:
         return 0
+    _ready, entries = split_usable_audio_entries(entries)
+    if not entries:
+        return 0
     validation = validate_gsv_root(distill.gsv_root)
     if not validation["ok"]:
         raise RuntimeError(str(validation["message"]))
@@ -548,7 +562,7 @@ def generate_distill_entries(
     distill_dir.mkdir(parents=True, exist_ok=True)
     log_path = paths.work_dir / "distill_resume.log"
     if progress:
-        progress("distill", 0.0, f"旧项目缺失 {len(entries)} 条 GPT-SoVITS 音频，开始补生成...")
+        progress("distill", 0.0, f"旧项目有 {len(entries)} 条 GPT-SoVITS 音频缺失或损坏，开始补生成...")
     result = _run_generation_entries(
         validation,
         distill,
@@ -566,7 +580,7 @@ def generate_distill_entries(
         raise RuntimeError(str(result.get("message") or f"GPT-SoVITS 补生成失败，详见 {log_path}"))
     _require_generated_audio(entries, label="GPT-SoVITS 补生成")
     if progress:
-        progress("distill", 1.0, f"GPT-SoVITS 缺失音频补生成完成，共 {result['generated']} 条")
+        progress("distill", 1.0, f"GPT-SoVITS 不可用音频补生成完成，共 {result['generated']} 条")
     return int(result.get("generated") or 0)
 
 

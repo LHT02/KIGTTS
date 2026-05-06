@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import packager, training
+from .audio_validation import is_audio_file_usable, split_usable_audio_entries
 from .config import DistillOptions, PipelineResult, ProgressCallback, ProjectPaths, TrainingOptions, VoxCpmDistillOptions
 from .project_state import (
     archive_input_audio,
@@ -259,8 +260,7 @@ def run_resume_project_pipeline(
             metadata_texts = [text for _audio, text in entries]
             metadata_inconsistent = False
 
-    existing_entries = [(audio_path, text) for audio_path, text in entries if audio_path.exists() and audio_path.stat().st_size > 0]
-    missing_entries = [(audio_path, text) for audio_path, text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0]
+    existing_entries, missing_entries = split_usable_audio_entries(entries)
     if entries and not metadata_inconsistent and not missing_entries and len(existing_entries) == len(entries):
         if progress:
             progress("collect", 1.0, f"旧项目音频完整，直接进入训练，共 {len(entries)} 条")
@@ -271,16 +271,16 @@ def run_resume_project_pipeline(
         raise RuntimeError(metadata_error or "旧项目没有可用于恢复的训练文本。")
 
     if progress:
-        progress("collect", 0.5, f"旧项目检测到 {len(missing_entries)} 条音频缺失")
+        progress("collect", 0.5, f"旧项目检测到 {len(missing_entries)} 条音频缺失或损坏")
 
     if mode == "voxcpm_distill":
         from . import voxcpm_distill
 
         voxcpm_opts = voxcpm_options_from_dict(config.get("voxcpm_options") or {})
         voxcpm_distill.generate_voxcpm_entries(paths, voxcpm_opts, opts, missing_entries, progress)
-        still_missing = [(audio_path, text) for audio_path, text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0]
+        still_missing = [(audio_path, text) for audio_path, text in entries if not is_audio_file_usable(audio_path)]
         if still_missing:
-            raise RuntimeError(f"VoxCPM2 补生成后仍缺失 {len(still_missing)} 条音频，无法继续训练。")
+            raise RuntimeError(f"VoxCPM2 补生成后仍有 {len(still_missing)} 条音频缺失或损坏，无法继续训练。")
         if progress:
             progress("collect", 1.0, f"旧项目音频已补齐，共 {len(entries)} 条")
         save_resume_snapshot()
@@ -300,18 +300,18 @@ def run_resume_project_pipeline(
                 progress(
                     "collect",
                     1.0,
-                    f"GPT-SoVITS 模型不可用或补生成失败，已移除 {len(missing_entries)} 条缺失文本，继续训练 {len(existing_entries)} 条。",
+                    f"GPT-SoVITS 模型不可用或补生成失败，已移除 {len(missing_entries)} 条缺失或损坏文本，继续训练 {len(existing_entries)} 条。",
                 )
             save_project_config(paths, mode, opts, distill_opts=distill_opts)
             return _train_export_package(paths, opts, progress)
-        still_missing = [(audio_path, text) for audio_path, text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0]
+        still_missing = [(audio_path, text) for audio_path, text in entries if not is_audio_file_usable(audio_path)]
         if still_missing:
-            existing_entries = [(audio_path, text) for audio_path, text in entries if audio_path.exists() and audio_path.stat().st_size > 0]
+            existing_entries = [(audio_path, text) for audio_path, text in entries if is_audio_file_usable(audio_path)]
             if not existing_entries:
                 raise RuntimeError("GPT-SoVITS 音频完全缺失，且补生成后仍没有可训练音频。")
             write_metadata_entries(existing_entries, paths.training_manifest)
             if progress:
-                progress("collect", 1.0, f"已移除 {len(still_missing)} 条仍缺失文本，继续训练 {len(existing_entries)} 条。")
+                progress("collect", 1.0, f"已移除 {len(still_missing)} 条仍缺失或损坏文本，继续训练 {len(existing_entries)} 条。")
         else:
             if progress:
                 progress("collect", 1.0, f"旧项目音频已补齐，共 {len(entries)} 条")
@@ -324,7 +324,7 @@ def run_resume_project_pipeline(
             stored_audio = [Path(str(item)) for item in (config.get("input_audio") or []) if str(item).strip()]
             stored_audio = [path for path in stored_audio if path.exists()]
             if not stored_audio:
-                reason = metadata_error or f"缺失 {len(missing_entries)} 条音频"
+                reason = metadata_error or f"缺失或损坏 {len(missing_entries)} 条音频"
                 raise RuntimeError(f"标准训练旧项目需要重新处理，但项目配置中没有可用原始音频：{reason}")
             if progress:
                 progress("collect", 0.0, "旧项目素材不完整，将使用项目保存的原始录音重新准备训练素材。")
