@@ -531,8 +531,7 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
     }
 }
 
-class SherpaKokoroTtsEngine(context: Context, packDir: File) : TtsModule {
-    private val appContext = context.applicationContext
+class SherpaKokoroTtsEngine(@Suppress("UNUSED_PARAMETER") context: Context, packDir: File) : TtsModule {
     private val baseDir = resolveKokoroBaseDir(packDir)
     private val tts: OfflineTts
     @Volatile private var speakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID
@@ -579,7 +578,8 @@ class SherpaKokoroTtsEngine(context: Context, packDir: File) : TtsModule {
             maxNumSentences = 1,
             silenceScale = silenceScale
         )
-        tts = OfflineTts(appContext.assets, config)
+        // Kokoro resources are installed into app-private files, so sherpa-onnx must read absolute paths directly.
+        tts = OfflineTts(null, config)
         AppLogger.i("Kokoro TTS loaded dir=${baseDir.absolutePath} sampleRate=${tts.sampleRate()} speakers=${tts.numSpeakers()}")
     }
 

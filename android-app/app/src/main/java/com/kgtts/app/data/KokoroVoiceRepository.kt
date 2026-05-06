@@ -166,12 +166,28 @@ class KokoroVoiceRepository(private val context: Context) {
 
     private fun queryRemoteFiles(source: RepoSource): List<RemoteFile> {
         val jsonText = readTextUrl(source.treeApiUrl())
-        val array = JSONArray(jsonText)
+        val array = if (source.platform == RepoPlatform.MODELSCOPE) {
+            JSONObject(jsonText)
+                .optJSONObject("Data")
+                ?.optJSONArray("Files")
+                ?: JSONArray()
+        } else {
+            JSONArray(jsonText)
+        }
         val result = mutableListOf<RemoteFile>()
         for (i in 0 until array.length()) {
             val obj = array.optJSONObject(i) ?: continue
-            if (obj.optString("type") != "file") continue
-            val path = obj.optString("path").trim().replace('\\', '/').removePrefix("/")
+            val isFile = if (source.platform == RepoPlatform.MODELSCOPE) {
+                obj.optString("Type") == "blob"
+            } else {
+                obj.optString("type") == "file"
+            }
+            if (!isFile) continue
+            val path = if (source.platform == RepoPlatform.MODELSCOPE) {
+                obj.optString("Path")
+            } else {
+                obj.optString("path")
+            }.trim().replace('\\', '/').removePrefix("/")
             if (path.isBlank()) continue
             val lower = path.lowercase(Locale.US)
             if (
@@ -182,7 +198,12 @@ class KokoroVoiceRepository(private val context: Context) {
             ) {
                 continue
             }
-            result += RemoteFile(path = path, size = obj.optLong("size", -1L))
+            val size = if (source.platform == RepoPlatform.MODELSCOPE) {
+                obj.optLong("Size", -1L)
+            } else {
+                obj.optLong("size", -1L)
+            }
+            result += RemoteFile(path = path, size = size)
         }
         return result.sortedBy { it.path }
     }
@@ -395,16 +416,28 @@ class KokoroVoiceRepository(private val context: Context) {
         val normalized = rawUrl.trim().ifBlank { UserPrefs.DEFAULT_KOKORO_HFMIRROR_URL }
         val url = URL(normalized)
         val segments = url.path.trim('/').split('/').filter { it.isNotBlank() }
-        if (segments.size < 2) throw IOException("下载源链接需要指向 Hugging Face 仓库")
-        val repoId = "${segments[0]}/${segments[1]}"
+        val isModelScope = url.host.endsWith("modelscope.cn", ignoreCase = true)
+        val repoSegments = if (isModelScope && segments.firstOrNull() == "models") {
+            segments.drop(1)
+        } else {
+            segments
+        }
+        if (repoSegments.size < 2) throw IOException("下载源链接需要指向模型仓库")
+        val repoId = "${repoSegments[0]}/${repoSegments[1]}"
         val resolveIndex = segments.indexOf("resolve")
         val treeIndex = segments.indexOf("tree")
         val revision = when {
             resolveIndex >= 0 && segments.size > resolveIndex + 1 -> segments[resolveIndex + 1]
             treeIndex >= 0 && segments.size > treeIndex + 1 -> segments[treeIndex + 1]
+            isModelScope -> "master"
             else -> "main"
         }
-        return RepoSource(origin = "${url.protocol}://${url.host}", repoId = repoId, revision = revision)
+        return RepoSource(
+            origin = "${url.protocol}://${url.host}",
+            repoId = repoId,
+            revision = revision,
+            platform = if (isModelScope) RepoPlatform.MODELSCOPE else RepoPlatform.HUGGINGFACE
+        )
     }
 
     private fun entryOutputFile(outDir: File, entry: ZipEntry): File = entryOutputFile(outDir, entry.name)
@@ -453,10 +486,31 @@ class KokoroVoiceRepository(private val context: Context) {
     private data class RepoSource(
         val origin: String,
         val repoId: String,
-        val revision: String
+        val revision: String,
+        val platform: RepoPlatform
     ) {
-        fun treeApiUrl(): String = "$origin/api/models/$repoId/tree/$revision?recursive=1"
-        fun resolveFileUrl(path: String): String = "$origin/$repoId/resolve/$revision/${encodePath(path)}"
+        fun treeApiUrl(): String {
+            return when (platform) {
+                RepoPlatform.MODELSCOPE ->
+                    "https://www.modelscope.cn/api/v1/models/$repoId/repo/files?Revision=$revision&Recursive=true"
+                RepoPlatform.HUGGINGFACE ->
+                    "$origin/api/models/$repoId/tree/$revision?recursive=1"
+            }
+        }
+
+        fun resolveFileUrl(path: String): String {
+            return when (platform) {
+                RepoPlatform.MODELSCOPE ->
+                    "https://modelscope.cn/models/$repoId/resolve/$revision/${encodePath(path)}"
+                RepoPlatform.HUGGINGFACE ->
+                    "$origin/$repoId/resolve/$revision/${encodePath(path)}"
+            }
+        }
+    }
+
+    private enum class RepoPlatform {
+        HUGGINGFACE,
+        MODELSCOPE
     }
 
     companion object {
