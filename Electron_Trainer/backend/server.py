@@ -11,6 +11,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from engine.config import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, VoxCpmDistillOptions  # type: ignore
 from engine.gsv_distill import scan_gsv_models, validate_gsv_root  # type: ignore
+from engine.audio_validation import is_audio_file_usable  # type: ignore
 from engine.project_state import load_project_config, read_metadata_entries  # type: ignore
 from engine.runtime_manager import (  # type: ignore
     describe_piper_runtime,
@@ -57,6 +58,17 @@ def _resources_root() -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
+
+
+def _expected_generated_entries(project_dir: Path, mode: str, texts: list[str]) -> list[tuple[Path, str]]:
+    work_dir = project_dir / "work"
+    if mode == "gsv_distill":
+        wav_dir = work_dir / "distill_corpus" / "wavs"
+    elif mode == "voxcpm_distill":
+        wav_dir = work_dir / "voxcpm_corpus" / "wavs"
+    else:
+        return []
+    return [(wav_dir / f"{index:05d}.wav", text) for index, text in enumerate(texts, start=1)]
 
 
 def _build_opts(payload: Dict[str, Any]) -> TrainingOptions:
@@ -462,16 +474,21 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
         metadata_error = ""
         try:
             entries = read_metadata_entries(paths.training_manifest)
-            missing = [str(audio_path) for audio_path, _text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0]
+            missing = [str(audio_path) for audio_path, _text in entries if not is_audio_file_usable(audio_path)]
             metadata_texts = [text for _audio_path, text in entries]
-            metadata_message = f"语料 {len(entries)} 条，缺失音频 {len(missing)} 条"
+            metadata_message = f"语料 {len(entries)} 条，缺失或损坏音频 {len(missing)} 条"
         except Exception as metadata_exc:
             entries = []
             missing = []
             metadata_texts = []
             metadata_error = str(metadata_exc)
             metadata_message = f"训练文本记录不完整：{metadata_exc}"
-            if mode != "piper" or not config.get("input_audio"):
+            if mode in {"gsv_distill", "voxcpm_distill"} and expected_texts:
+                entries = _expected_generated_entries(project_dir, mode, expected_texts)
+                missing = [str(audio_path) for audio_path, _text in entries if not is_audio_file_usable(audio_path)]
+                metadata_texts = expected_texts
+                metadata_message = f"语料 {len(entries)} 条，缺失或损坏音频 {len(missing)} 条（训练记录尚未写入）"
+            elif mode != "piper" or not config.get("input_audio"):
                 raise
         metadata_inconsistent = bool(expected_texts and metadata_texts and expected_texts != metadata_texts)
         existing_count = len(entries) - len(missing)
@@ -506,9 +523,9 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
             if direct_train_ready:
                 material_status = "训练素材完整，可直接进入训练。"
             elif existing_count:
-                material_status = "部分合成音频缺失；开始训练时会尝试按项目配置补生成，失败时移除缺失文本后继续。"
+                material_status = "部分合成音频缺失或损坏；开始训练时会尝试按项目配置补生成，失败时移除不可用文本后继续。"
             else:
-                material_status = "合成音频完全缺失；开始训练时必须能访问原 GPT-SoVITS/GSVI 模型配置才能补生成。"
+                material_status = "合成音频完全缺失或损坏；开始训练时必须能访问原 GPT-SoVITS/GSVI 模型配置才能补生成。"
         elif mode == "voxcpm_distill":
             voxcpm_opts = config.get("voxcpm_options") or {}
             if not isinstance(voxcpm_opts, dict):
@@ -522,7 +539,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
             if direct_train_ready:
                 material_status = "训练素材完整，可直接进入训练。"
             else:
-                material_status = "部分或全部合成音频缺失；开始训练时会按项目内 VoxCPM2 配置继续生成缺失音频。"
+                material_status = "部分或全部合成音频缺失或损坏；开始训练时会按项目内 VoxCPM2 配置继续生成不可用音频。"
         else:
             material_status = "项目模式未知，无法判断素材恢复策略。"
 

@@ -4,6 +4,8 @@ package com.lhtstudio.kigtts.app.ui
 
 import android.annotation.SuppressLint
 import android.Manifest
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.app.Activity
 import android.content.ComponentName
 import android.content.ContentResolver
@@ -80,6 +82,7 @@ import androidx.compose.foundation.indication
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -265,6 +268,7 @@ import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityService
 import com.lhtstudio.kigtts.app.service.VolumeHotkeyService
 import com.lhtstudio.kigtts.app.util.AlipayScannerSupport
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.BluetoothMediaTitleBridge
 import com.lhtstudio.kigtts.app.util.ExternalShortcutCatalog
 import com.lhtstudio.kigtts.app.util.ExternalShortcutChoice
 import com.lhtstudio.kigtts.app.util.LauncherMenuShortcuts
@@ -600,6 +604,7 @@ data class UiState(
     val kokoroSpeakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
+    val audioFocusAvoidanceMode: Int = UserPrefs.AUDIO_FOCUS_AVOID_NONE,
     val piperNoiseScale: Float = 0.667f,
     val piperLengthScale: Float = 1.0f,
     val piperNoiseW: Float = 0.8f,
@@ -640,6 +645,7 @@ data class UiState(
     val quickSubtitleAutoFit: Boolean = true,
     val quickSubtitleCompactControls: Boolean = false,
     val quickSubtitleKeepInputPreview: Boolean = true,
+    val bluetoothMediaTitleSubtitle: Boolean = false,
     val drawingKeepCanvasOrientationToDevice: Boolean = true,
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
@@ -1019,6 +1025,7 @@ class MainViewModel(
         val item = RecognizedItem(id = historyId, text = normalized)
         val next = (listOf(item) + realtimeRecognized).take(MAX_RECOGNIZED_ITEMS)
         realtimeRecognized = next
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, normalized)
         val validIds = next.asSequence().map { it.id }.toSet()
         lastProgressUpdateAtMs.keys.retainAll(validIds)
         maybeTriggerSoundboardFromText(normalized, fromQuickText = fromQuickText)
@@ -1282,6 +1289,11 @@ class MainViewModel(
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
         FontScaleBlockRuntime.mode = settings.fontScaleBlockMode
         SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
+        SoundboardManager.setAudioFocusAvoidanceMode(appContext, settings.audioFocusAvoidanceMode)
+        BluetoothMediaTitleBridge.setEnabled(appContext, settings.bluetoothMediaTitleSubtitle)
+        if (settings.bluetoothMediaTitleSubtitle) {
+            BluetoothMediaTitleBridge.updateSubtitle(appContext, quickSubtitleCurrentText)
+        }
         val needsSpeakerBackendReset =
             settings.speakerVerifyBackendVersion != UserPrefs.SPEAKER_VERIFY_BACKEND_SHERPA_V1 &&
                     (settings.speakerVerifyEnabled || settings.speakerVerifyProfileCsv.isNotBlank())
@@ -1335,6 +1347,7 @@ class MainViewModel(
             kokoroSpeakerId = settings.kokoroSpeakerId,
             minVolumePercent = settings.minVolumePercent,
             playbackGainPercent = settings.playbackGainPercent,
+            audioFocusAvoidanceMode = settings.audioFocusAvoidanceMode,
             piperNoiseScale = settings.piperNoiseScale,
             piperLengthScale = settings.piperLengthScale,
             piperNoiseW = 0.8f,
@@ -1374,6 +1387,7 @@ class MainViewModel(
             quickSubtitleAutoFit = settings.quickSubtitleAutoFit,
             quickSubtitleCompactControls = settings.quickSubtitleCompactControls,
             quickSubtitleKeepInputPreview = settings.quickSubtitleKeepInputPreview,
+            bluetoothMediaTitleSubtitle = settings.bluetoothMediaTitleSubtitle,
             drawingKeepCanvasOrientationToDevice = settings.drawingKeepCanvasOrientationToDevice,
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
@@ -1460,6 +1474,9 @@ class MainViewModel(
         quickSubtitleRotated180 = textRotated180
         quickSubtitleShowActionButtons = showActionButtons
         quickSubtitleNextGroupId = maxOf(maxId + 1L, (finalGroups.maxOfOrNull { it.id } ?: 0L) + 1L)
+        if (uiState.bluetoothMediaTitleSubtitle) {
+            BluetoothMediaTitleBridge.updateSubtitle(appContext, currentText)
+        }
     }
 
     private fun saveQuickSubtitleConfig() {
@@ -1520,6 +1537,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
         markQuickSubtitleContentSubmitted()
         if (enqueueSpeak) {
             speakText(
@@ -1541,6 +1559,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
         markQuickSubtitleContentSubmitted()
         if (quickSubtitlePlayOnSend && hasVoice) {
             speakText(
@@ -1563,6 +1582,7 @@ class MainViewModel(
         val message = quickSubtitleInputText.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
         markQuickSubtitleContentSubmitted()
         quickSubtitleInputText = ""
         if (playVoice) {
@@ -1738,6 +1758,7 @@ class MainViewModel(
             else -> {
                 if (normalized.isEmpty()) return
                 quickSubtitleCurrentText = normalized
+                BluetoothMediaTitleBridge.updateSubtitle(appContext, normalized)
                 markQuickSubtitleContentSubmitted()
                 saveQuickSubtitleConfig()
             }
@@ -1793,6 +1814,7 @@ class MainViewModel(
 
     fun clearQuickSubtitleText() {
         quickSubtitleCurrentText = QUICK_SUBTITLE_CLEARED_HINT
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, QUICK_SUBTITLE_CLEARED_HINT)
         saveQuickSubtitleConfig()
     }
 
@@ -3573,6 +3595,16 @@ class MainViewModel(
         }
     }
 
+    fun setAudioFocusAvoidanceMode(mode: Int) {
+        val normalized = UserPrefs.normalizeAudioFocusAvoidanceMode(mode)
+        uiState = uiState.copy(audioFocusAvoidanceMode = normalized)
+        SoundboardManager.setAudioFocusAvoidanceMode(appContext, normalized)
+        realtimeHost?.setAudioFocusAvoidanceMode(normalized)
+        viewModelScope.launch {
+            UserPrefs.setAudioFocusAvoidanceMode(appContext, normalized)
+        }
+    }
+
     fun setPiperNoiseScale(value: Float) {
         val clamped = value.coerceIn(0f, 2f)
         uiState = uiState.copy(piperNoiseScale = clamped)
@@ -3805,6 +3837,17 @@ class MainViewModel(
         uiState = uiState.copy(quickSubtitleKeepInputPreview = enabled)
         viewModelScope.launch {
             UserPrefs.setQuickSubtitleKeepInputPreview(appContext, enabled)
+        }
+    }
+
+    fun setBluetoothMediaTitleSubtitle(enabled: Boolean) {
+        uiState = uiState.copy(bluetoothMediaTitleSubtitle = enabled)
+        BluetoothMediaTitleBridge.setEnabled(appContext, enabled)
+        if (enabled) {
+            BluetoothMediaTitleBridge.updateSubtitle(appContext, quickSubtitleCurrentText)
+        }
+        viewModelScope.launch {
+            UserPrefs.setBluetoothMediaTitleSubtitle(appContext, enabled)
         }
     }
 
@@ -4554,6 +4597,7 @@ class MainViewModel(
             host.setSuppressDelaySec(settings.muteWhilePlayingDelaySec)
             host.setMinVolumePercent(settings.minVolumePercent)
             host.setPlaybackGainPercent(settings.playbackGainPercent)
+            host.setAudioFocusAvoidanceMode(settings.audioFocusAvoidanceMode)
             host.setPiperNoiseScale(settings.piperNoiseScale)
             host.setPiperLengthScale(settings.piperLengthScale)
             host.setPiperNoiseW(0.8f)
@@ -5175,8 +5219,18 @@ private fun QuickCardMainScreen(
             }
         )
     }
-    LaunchedEffect(topActions) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, topActions) {
         onTopBarActionsChange(topActions)
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                onTopBarActionsChange(topActions)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     val pageCount = (cards.size + 1).coerceAtLeast(1) // always keep a trailing "new card" page
@@ -5494,32 +5548,17 @@ private fun QuickCardSortScreen(
         maxWidth = UiTokens.WideListMaxWidth,
         contentSpacing = 0.dp
     ) {
-            Spacer(Modifier.height(topBlank))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(UiTokens.Radius),
-                backgroundColor = md2CardContainerColor(),
-                elevation = UiTokens.CardElevation
-            ) {
-                Text(
-                    text = "拖动右侧排序按钮调整名片顺序",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                )
-            }
-            Spacer(Modifier.height(8.dp))
             QuickCardSortRecyclerList(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
                 cards = cards,
-                topBlankHeight = 2.dp,
-                bottomBlankHeight = 2.dp,
+                topBlankHeight = topBlank,
+                bottomBlankHeight = bottomBlank,
                 onReorder = { ids ->
                     viewModel.reorderQuickCardsByIds(ids)
                 }
             )
-            Spacer(Modifier.height(bottomBlank))
     }
 }
 
@@ -5560,6 +5599,7 @@ private fun QuickCardSortRecyclerList(
 
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var moved = false
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -5568,6 +5608,9 @@ private fun QuickCardSortRecyclerList(
                     recyclerView: RecyclerView,
                     viewHolder: RecyclerView.ViewHolder
                 ): Int {
+                    if (viewHolder.bindingAdapterPosition == 0) {
+                        return makeMovementFlags(0, 0)
+                    }
                     val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
                     return makeMovementFlags(dragFlags, 0)
                 }
@@ -5586,17 +5629,36 @@ private fun QuickCardSortRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                     super.onSelectedChanged(viewHolder, actionState)
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
                         adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         adapter.clearDraggingItem()
                     }
                     adapter.isDragging = actionState == ItemTouchHelper.ACTION_STATE_DRAG
                 }
 
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     adapter.isDragging = false
                     adapter.clearDraggingItem()
@@ -5629,11 +5691,18 @@ private class QuickCardSortRecyclerAdapter(
     var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
     private var draggingItemId: Long? = null
 
+    private companion object {
+        const val HEADER_ID = Long.MIN_VALUE + 4601L
+        const val HEADER_POSITION = 0
+    }
+
     init {
         setHasStableIds(true)
     }
 
-    override fun getItemId(position: Int): Long = items[position].id
+    override fun getItemId(position: Int): Long {
+        return if (position == HEADER_POSITION) HEADER_ID else items[position - 1].id
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ItemViewHolder {
         val composeView = ComposeView(parent.context).apply {
@@ -5647,10 +5716,14 @@ private class QuickCardSortRecyclerAdapter(
         return ItemViewHolder(composeView)
     }
 
-    override fun getItemCount(): Int = items.size
+    override fun getItemCount(): Int = items.size + 1
 
     override fun onBindViewHolder(holder: ItemViewHolder, position: Int) {
-        val card = items[position]
+        if (position == HEADER_POSITION) {
+            holder.bindHeader()
+            return
+        }
+        val card = items[position - 1]
         holder.bind(
             card = card,
             isDragged = draggingItemId == card.id,
@@ -5665,26 +5738,17 @@ private class QuickCardSortRecyclerAdapter(
     fun submitFromState(newItems: List<QuickCard>) {
         if (isDragging) return
         if (items == newItems) return
-        val oldItems = items.toList()
-        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
-            override fun getOldListSize(): Int = oldItems.size
-            override fun getNewListSize(): Int = newItems.size
-            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
-                return oldItems[oldItemPosition].id == newItems[newItemPosition].id
-            }
-            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
-                return oldItems[oldItemPosition] == newItems[newItemPosition]
-            }
-        })
         items.clear()
         items.addAll(newItems)
-        diff.dispatchUpdatesTo(this)
+        notifyDataSetChanged()
     }
 
     fun move(from: Int, to: Int): Boolean {
-        if (from == to || from !in items.indices || to !in items.indices) return false
-        val moved = items.removeAt(from)
-        items.add(to, moved)
+        val fromIndex = from - 1
+        val toIndex = to - 1
+        if (fromIndex == toIndex || fromIndex !in items.indices || toIndex !in items.indices) return false
+        val moved = items.removeAt(fromIndex)
+        items.add(toIndex, moved)
         notifyItemMoved(from, to)
         return true
     }
@@ -5692,17 +5756,17 @@ private class QuickCardSortRecyclerAdapter(
     fun snapshotIds(): List<Long> = items.map { it.id }
 
     fun setDraggingPosition(position: Int) {
-        val targetId = items.getOrNull(position)?.id
+        val targetId = items.getOrNull(position - 1)?.id
         if (draggingItemId == targetId) return
         val oldId = draggingItemId
         draggingItemId = targetId
         oldId?.let { id ->
             val idx = items.indexOfFirst { it.id == id }
-            if (idx >= 0) notifyItemChanged(idx)
+            if (idx >= 0) notifyItemChanged(idx + 1)
         }
         targetId?.let { id ->
             val idx = items.indexOfFirst { it.id == id }
-            if (idx >= 0) notifyItemChanged(idx)
+            if (idx >= 0) notifyItemChanged(idx + 1)
         }
     }
 
@@ -5710,10 +5774,18 @@ private class QuickCardSortRecyclerAdapter(
         val oldId = draggingItemId ?: return
         draggingItemId = null
         val idx = items.indexOfFirst { it.id == oldId }
-        if (idx >= 0) notifyItemChanged(idx)
+        if (idx >= 0) notifyItemChanged(idx + 1)
     }
 
     class ItemViewHolder(private val composeView: ComposeView) : RecyclerView.ViewHolder(composeView) {
+        fun bindHeader() {
+            composeView.setContent {
+                KigttsFontScaleProvider {
+                    QuickCardSortHeaderRow()
+                }
+            }
+        }
+
         fun bind(
             card: QuickCard,
             isDragged: Boolean,
@@ -5730,6 +5802,25 @@ private class QuickCardSortRecyclerAdapter(
             }
         }
     }
+}
+
+@Composable
+private fun QuickCardSortHeaderRow() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Text(
+            text = "拖动右侧排序按钮调整名片顺序",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+        )
+    }
+    Spacer(Modifier.height(4.dp))
 }
 
 @Composable
@@ -12142,6 +12233,7 @@ private fun VoicePackRecyclerList(
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var moved = false
                 private var activeViewHolder: RecyclerView.ViewHolder? = null
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -12171,6 +12263,23 @@ private fun VoicePackRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                     super.onSelectedChanged(viewHolder, actionState)
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
@@ -12182,6 +12291,7 @@ private fun VoicePackRecyclerList(
                         (viewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(true)
                         animateDragElevation(viewHolder.itemView, elevated = true)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         activeViewHolder?.let { animateDragElevation(it.itemView, elevated = false) }
                         (activeViewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
                         activeViewHolder = null
@@ -12193,6 +12303,7 @@ private fun VoicePackRecyclerList(
                 }
 
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     animateDragElevation(viewHolder.itemView, elevated = false)
                     (viewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
@@ -12535,10 +12646,6 @@ private fun VoicePackCardContent(
                                 Spacer(Modifier.width(6.dp))
                                 Text("系统", style = MaterialTheme.typography.bodySmall)
                             }
-                            if (isKokoroPack) {
-                                Spacer(Modifier.width(6.dp))
-                                Text("Kokoro", style = MaterialTheme.typography.bodySmall)
-                            }
                             if (pack.meta.pinned) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("置顶", style = MaterialTheme.typography.bodySmall)
@@ -12629,6 +12736,108 @@ private fun stablePathId64(path: String): Long {
     return h
 }
 
+private class DragEdgeAutoScroller {
+    private var recyclerView: RecyclerView? = null
+    private var externalScrollBy: ((Int) -> Boolean)? = null
+    private var direction: Int = 0
+    private var stepPx: Int = 0
+    private var isPosted: Boolean = false
+
+    private val scrollTick = object : Runnable {
+        override fun run() {
+            val rv = recyclerView
+            val dir = direction
+            if (rv == null || dir == 0 || !rv.isAttachedToWindow) {
+                direction = 0
+                stepPx = 0
+                recyclerView = null
+                externalScrollBy = null
+                isPosted = false
+                return
+            }
+            val delta = dir * stepPx.coerceAtLeast(1)
+            val consumed = if (rv.canScrollVertically(dir)) {
+                rv.scrollBy(0, delta)
+                true
+            } else {
+                externalScrollBy?.invoke(delta) == true
+            }
+            if (!consumed) {
+                direction = 0
+                stepPx = 0
+                recyclerView = null
+                externalScrollBy = null
+                isPosted = false
+                return
+            }
+            rv.postOnAnimation(this)
+        }
+    }
+
+    fun update(
+        recyclerView: RecyclerView,
+        draggedView: View,
+        dY: Float,
+        externalScrollBy: ((Int) -> Boolean)? = null
+    ) {
+        val density = recyclerView.resources.displayMetrics.density
+        val edgePx = (72f * density).roundToInt().coerceAtLeast(1)
+        val minStepPx = (2f * density).roundToInt().coerceAtLeast(1)
+        val maxStepPx = (8f * density).roundToInt().coerceAtLeast(minStepPx)
+        val (draggedTop, draggedBottom, topEdge, bottomEdge) = if (externalScrollBy != null) {
+            val visibleFrame = android.graphics.Rect()
+            val location = IntArray(2)
+            recyclerView.getWindowVisibleDisplayFrame(visibleFrame)
+            draggedView.getLocationOnScreen(location)
+            val itemTop = location[1] + dY
+            val itemBottom = location[1] + draggedView.height + dY
+            Quad(itemTop, itemBottom, visibleFrame.top + edgePx.toFloat(), visibleFrame.bottom - edgePx.toFloat())
+        } else {
+            Quad(
+                draggedView.top + dY,
+                draggedView.bottom + dY,
+                recyclerView.paddingTop + edgePx.toFloat(),
+                recyclerView.height - recyclerView.paddingBottom - edgePx.toFloat()
+            )
+        }
+        val topOverlap = topEdge - draggedTop
+        val bottomOverlap = draggedBottom - bottomEdge
+        val nextDirection = when {
+            topOverlap > 0f -> -1
+            bottomOverlap > 0f -> 1
+            else -> 0
+        }
+        if (nextDirection == 0 || (!recyclerView.canScrollVertically(nextDirection) && externalScrollBy == null)) {
+            stop()
+            return
+        }
+        val overlap = if (nextDirection < 0) topOverlap else bottomOverlap
+        val factor = (overlap / edgePx).coerceIn(0f, 1f)
+        stepPx = (minStepPx + ((maxStepPx - minStepPx) * factor)).roundToInt().coerceAtLeast(minStepPx)
+        this.recyclerView = recyclerView
+        this.externalScrollBy = externalScrollBy
+        direction = nextDirection
+        if (!isPosted) {
+            isPosted = true
+            recyclerView.postOnAnimation(scrollTick)
+        }
+    }
+
+    fun stop() {
+        direction = 0
+        stepPx = 0
+        recyclerView = null
+        externalScrollBy = null
+    }
+
+    private data class Quad(
+        val draggedTop: Float,
+        val draggedBottom: Float,
+        val topEdge: Float,
+        val bottomEdge: Float
+    )
+}
+
 private fun animateDragElevation(view: View, elevated: Boolean) {
     val targetZ = if (elevated) 12f * view.resources.displayMetrics.density else 0f
     val duration = if (elevated) 120L else 160L
@@ -12646,6 +12855,7 @@ private fun animateVoicePackStaggerEnter(view: View, position: Int) {
     val offsetY = 12f * density
     val delayMs = (position.coerceIn(0, 10) * 36L)
     view.animate().cancel()
+    view.animate().setListener(null)
     view.alpha = 0f
     view.translationY = offsetY
     view.animate()
@@ -12654,7 +12864,26 @@ private fun animateVoicePackStaggerEnter(view: View, position: Int) {
         .setStartDelay(delayMs)
         .setDuration(220L)
         .setInterpolator(FastOutSlowInInterpolator())
+        .setListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationCancel(animation: Animator) {
+                resetVoicePackStaggerView(view)
+            }
+
+            override fun onAnimationEnd(animation: Animator) {
+                resetVoicePackStaggerView(view)
+            }
+        })
         .start()
+    view.postDelayed(
+        { resetVoicePackStaggerView(view) },
+        delayMs + 300L
+    )
+}
+
+private fun resetVoicePackStaggerView(view: View) {
+    view.animate().setListener(null)
+    view.alpha = 1f
+    view.translationY = 0f
 }
 
 @Composable
@@ -13388,6 +13617,7 @@ private fun SoundboardEditorScreen(
     val listState = rememberLazyListState()
     val groupTabsScrollState = rememberScrollState()
     val groupTabsScrollScope = rememberCoroutineScope()
+    val pageEdgeScrollScope = rememberCoroutineScope()
     var pendingScrollToNewGroup by remember { mutableIntStateOf(0) }
 
     suspend fun scrollGroupTabsToEndWhenReady(request: Int) {
@@ -13665,6 +13895,15 @@ private fun SoundboardEditorScreen(
                                 state = viewModel.uiState,
                                 groupIndex = targetIndex,
                                 items = targetGroup.items,
+                                parentEdgeScrollBy = { delta ->
+                                    val canScroll = if (delta < 0) listState.canScrollBackward else listState.canScrollForward
+                                    if (canScroll) {
+                                        pageEdgeScrollScope.launch {
+                                            listState.scrollBy(delta.toFloat())
+                                        }
+                                    }
+                                    canScroll
+                                },
                                 onAdd = {
                                     viewModel.addSoundboardItem(targetIndex)
                                     toast(context, "已新增音效条目")
@@ -13688,6 +13927,7 @@ private fun SoundboardItemsRecyclerCard(
     state: UiState,
     groupIndex: Int,
     items: List<SoundboardItem>,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null,
     onAdd: () -> Unit,
     onItemsChanged: (List<SoundboardItem>) -> Unit,
     onItemChanged: (Int, SoundboardItem) -> Unit
@@ -13766,7 +14006,8 @@ private fun SoundboardItemsRecyclerCard(
                     } else {
                         audioPicker.launch("audio/*")
                     }
-                }
+                },
+                parentEdgeScrollBy = parentEdgeScrollBy
             )
         }
     }
@@ -14020,7 +14261,8 @@ private fun SoundboardItemsRecyclerList(
     items: List<SoundboardItem>,
     onItemsChanged: (List<SoundboardItem>) -> Unit,
     onEditRequested: (Int, SoundboardItem) -> Unit,
-    onAudioRequested: (Int) -> Unit
+    onAudioRequested: (Int) -> Unit,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null
 ) {
     val parentComposition = rememberCompositionContext()
     val onItemsChangedState = rememberUpdatedState(onItemsChanged)
@@ -14053,6 +14295,7 @@ private fun SoundboardItemsRecyclerList(
             recycler.adapter = adapter
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var moved = false
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -14073,7 +14316,25 @@ private fun SoundboardItemsRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY, parentEdgeScrollBy)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     adapter.isDragging = false
                     adapter.clearDraggingItem()
@@ -14089,6 +14350,7 @@ private fun SoundboardItemsRecyclerList(
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
                         adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         adapter.clearDraggingItem()
                     }
                 }
@@ -16838,6 +17100,7 @@ private fun QuickSubtitleEditorScreen(
     val listState = rememberLazyListState()
     val groupTabsScrollState = rememberScrollState()
     val groupTabsScrollScope = rememberCoroutineScope()
+    val pageEdgeScrollScope = rememberCoroutineScope()
     var pendingScrollToNewGroup by remember { mutableIntStateOf(0) }
 
     suspend fun scrollGroupTabsToEndWhenReady(request: Int) {
@@ -17062,6 +17325,15 @@ private fun QuickSubtitleEditorScreen(
             item(key = "items_card") {
                 QuickSubtitleItemsRecyclerCard(
                     items = selectedGroup.items,
+                    parentEdgeScrollBy = { delta ->
+                        val canScroll = if (delta < 0) listState.canScrollBackward else listState.canScrollForward
+                        if (canScroll) {
+                            pageEdgeScrollScope.launch {
+                                listState.scrollBy(delta.toFloat())
+                            }
+                        }
+                        canScroll
+                    },
                     onAdd = {
                         viewModel.addQuickSubtitleItem(selectedGroupIndex)
                         toast(context, "已新增快捷文本")
@@ -17082,6 +17354,7 @@ private fun QuickSubtitleEditorScreen(
 @Composable
 private fun QuickSubtitleItemsRecyclerCard(
     items: List<String>,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null,
     onAdd: () -> Unit,
     onItemsChanged: (List<String>) -> Unit,
     onItemTextChanged: (Int, String) -> Unit
@@ -17119,7 +17392,8 @@ private fun QuickSubtitleItemsRecyclerCard(
                 onEditRequested = { index, value ->
                     editTargetIndex = index
                     editText = value
-                }
+                },
+                parentEdgeScrollBy = parentEdgeScrollBy
             )
         }
     }
@@ -17170,7 +17444,8 @@ private fun QuickSubtitleItemsRecyclerList(
     modifier: Modifier = Modifier,
     items: List<String>,
     onItemsChanged: (List<String>) -> Unit,
-    onEditRequested: (Int, String) -> Unit
+    onEditRequested: (Int, String) -> Unit,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null
 ) {
     val parentComposition = rememberCompositionContext()
     val onItemsChangedState = rememberUpdatedState(onItemsChanged)
@@ -17204,6 +17479,7 @@ private fun QuickSubtitleItemsRecyclerList(
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var activeViewHolder: RecyclerView.ViewHolder? = null
                 private var moved = false
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -17230,6 +17506,23 @@ private fun QuickSubtitleItemsRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY, parentEdgeScrollBy)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                     super.onSelectedChanged(viewHolder, actionState)
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
@@ -17237,6 +17530,7 @@ private fun QuickSubtitleItemsRecyclerList(
                         activeViewHolder = viewHolder
                         adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         activeViewHolder = null
                         adapter.clearDraggingItem()
                     }
@@ -17244,6 +17538,7 @@ private fun QuickSubtitleItemsRecyclerList(
                 }
 
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     if (activeViewHolder === viewHolder) activeViewHolder = null
                     adapter.isDragging = false
@@ -19582,6 +19877,12 @@ fun SettingsScreen(
         UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY to "仅禁用图标大小缩放",
         UserPrefs.FONT_SCALE_BLOCK_ALL to "禁用图标和字体大小缩放"
     )
+    val audioFocusAvoidanceOptions = listOf(
+        UserPrefs.AUDIO_FOCUS_AVOID_DUCK to "压低音量",
+        UserPrefs.AUDIO_FOCUS_AVOID_MUTE to "静音音乐播放器",
+        UserPrefs.AUDIO_FOCUS_AVOID_PAUSE to "暂停播放",
+        UserPrefs.AUDIO_FOCUS_AVOID_NONE to "无"
+    )
     var drawerModeExpanded by remember { mutableStateOf(false) }
     var themeModeExpanded by remember { mutableStateOf(false) }
     var overlayThemeModeExpanded by remember { mutableStateOf(false) }
@@ -19589,6 +19890,7 @@ fun SettingsScreen(
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
     var denoiserModeExpanded by remember { mutableStateOf(false) }
+    var audioFocusAvoidanceExpanded by remember { mutableStateOf(false) }
     var speechEnhancementExpanded by remember { mutableStateOf(false) }
     var vadModeExpanded by remember { mutableStateOf(false) }
     var showSpeakerEnrollDialog by remember { mutableStateOf(false) }
@@ -20316,6 +20618,25 @@ fun SettingsScreen(
                         valueRange = 0f..1000f
                     )
                     Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
+                    Md2SettingDropdownRow(
+                        title = "后台音乐播放器音频避让行为",
+                        value = audioFocusAvoidanceOptions
+                            .firstOrNull { it.first == state.audioFocusAvoidanceMode }
+                            ?.second
+                            ?: "无",
+                        expanded = audioFocusAvoidanceExpanded,
+                        onExpandedChange = { audioFocusAvoidanceExpanded = it },
+                        supportingText = "朗读或音效播放时向系统请求音频焦点；实际效果取决于后台播放器是否遵守系统音频焦点。"
+                    ) {
+                        audioFocusAvoidanceOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    audioFocusAvoidanceExpanded = false
+                                    viewModel.setAudioFocusAvoidanceMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
                     if (isSystemTtsSelected) {
                         Text(
                             "系统 TTS 使用设备已安装的语音引擎与音色。音色随机度等 Piper 专属参数在系统 TTS 下不生效。",
@@ -20687,6 +21008,12 @@ fun SettingsScreen(
                         checked = state.quickSubtitleKeepInputPreview,
                         onCheckedChange = { viewModel.setQuickSubtitleKeepInputPreview(it) },
                         supportingText = "开启后输入框有内容时，键盘收起后大字幕仍显示输入预览；直到下一次语音或快捷文本提交前保持。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "蓝牙媒体标题字幕",
+                        checked = state.bluetoothMediaTitleSubtitle,
+                        onCheckedChange = { viewModel.setBluetoothMediaTitleSubtitle(it) },
+                        supportingText = "实验性兼容模式。开启后会把当前字幕写入系统媒体标题，部分蓝牙歌词屏、车机或小屏会把它显示为歌名；可能覆盖其它媒体标题。"
                     )
                     Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
                     Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)

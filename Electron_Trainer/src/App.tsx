@@ -4337,8 +4337,9 @@ function App() {
     launchResumeProjectPipeline(projectDir)
   }
 
-  const restartExistingOutputProject = () => {
+  const restartExistingOutputProject = async () => {
     const startFresh = pendingFreshStartRef.current
+    const projectDir = pendingExistingProjectDirRef.current
     setExistingProjectPromptOpen(false)
     setExistingProjectStatus(null)
     pendingFreshStartRef.current = null
@@ -4346,6 +4347,14 @@ function App() {
     if (!startFresh) {
       showToast('训练启动上下文已失效，请重新点击开始训练。', 'warning')
       return
+    }
+    if (projectDir) {
+      const result = await window.project?.clearWorkCache(projectDir)
+      if (!result?.ok) {
+        showToast(result?.message || '清理旧项目工作目录失败，请检查目录权限后重试。', 'error')
+        return
+      }
+      appendLog(`[project] 已清理旧项目工作目录，重新开始训练: ${result.path || projectDir}`)
     }
     startFresh()
   }
@@ -4897,7 +4906,7 @@ function App() {
         key: 'material',
         label: '确认旧项目素材状态',
         ready: Boolean(resumeProjectStatus?.direct_train_ready),
-        detail: resumeProjectStatus?.material_status || '素材完整时直接训练；素材缺失时开始训练前会弹窗确认是否补生成。',
+        detail: resumeProjectStatus?.material_status || '素材完整时直接训练；素材缺失或损坏时开始训练前会弹窗确认是否补生成。',
       },
     ]
   })()
@@ -6027,7 +6036,7 @@ function App() {
                     <Chip
                       size="small"
                       color={resumeProjectStatus.missing_count ? 'warning' : 'default'}
-                      label={`缺失音频：${resumeProjectStatus.missing_count ?? 0} 条`}
+                      label={`缺失/损坏音频：${resumeProjectStatus.missing_count ?? 0} 条`}
                     />
                     <Chip
                       size="small"
@@ -6059,7 +6068,7 @@ function App() {
               </Alert>
             )}
             <Alert severity="info">
-              音频完整时会直接进入 Piper 训练；VoxCPM2 项目缺失音频会用项目内配置继续生成；GPT-SoVITS 项目缺失音频但找不到对应模型时，会移除缺失文本后继续训练，若音频完全缺失则无法开始。
+              音频完整时会直接进入 Piper 训练；VoxCPM2 项目缺失或损坏音频会用项目内配置继续生成；GPT-SoVITS 项目缺失或损坏音频但找不到对应模型时，会移除不可用文本后继续训练，若音频完全不可用则无法开始。
             </Alert>
           </Stack>
         </Paper>
@@ -9335,7 +9344,7 @@ function App() {
                       )}
                       <Chip size="small" label={`文本记录：${pendingResumeProjectStatus.metadata_count ?? 0} 条`} />
                       <Chip size="small" label={`可用音频：${pendingResumeProjectStatus.existing_count ?? 0} 条`} />
-                      <Chip size="small" color="warning" label={`缺失音频：${pendingResumeProjectStatus.missing_count ?? 0} 条`} />
+                      <Chip size="small" color="warning" label={`缺失/损坏音频：${pendingResumeProjectStatus.missing_count ?? 0} 条`} />
                       {pendingResumeProjectStatus.input_audio_count !== undefined && pendingResumeProjectStatus.input_audio_count > 0 && (
                         <Chip
                           size="small"
@@ -9382,7 +9391,7 @@ function App() {
           <DialogContent dividers>
             <Stack spacing={2}>
               <Typography variant="body2" sx={{ opacity: 0.86 }}>
-                检测到上次未完成或已经生成完毕的项目，是否继续使用已有素材，还是重新训练并覆盖当前项目内容？
+                检测到上次未完成或已经生成完毕的项目，是否继续使用已有可用素材并补齐缺失/损坏音频，还是清理当前项目内容后重新训练？
               </Typography>
               {existingProjectStatus && (
                 <Alert severity={existingProjectStatus.direct_train_ready ? 'success' : 'warning'}>
@@ -9397,7 +9406,7 @@ function App() {
                       )}
                       <Chip size="small" label={`文本记录：${existingProjectStatus.metadata_count ?? 0} 条`} />
                       <Chip size="small" label={`可用音频：${existingProjectStatus.existing_count ?? 0} 条`} />
-                      <Chip size="small" color={(existingProjectStatus.missing_count ?? 0) > 0 ? 'warning' : 'default'} label={`缺失音频：${existingProjectStatus.missing_count ?? 0} 条`} />
+                      <Chip size="small" color={(existingProjectStatus.missing_count ?? 0) > 0 ? 'warning' : 'default'} label={`缺失/损坏音频：${existingProjectStatus.missing_count ?? 0} 条`} />
                     </Stack>
                   </Stack>
                 </Alert>

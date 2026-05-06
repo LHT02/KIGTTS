@@ -1047,6 +1047,10 @@ class AudioPlayer(private val context: Context) {
     @Volatile private var preferredOutputType: Int = AudioRoutePreference.OUTPUT_AUTO
     @Volatile private var playbackGain: Float = 1.0f
     @Volatile private var stopRequested: Boolean = false
+    private val audioFocusController = PlaybackAudioFocusController(
+        context,
+        AudioAttributes.CONTENT_TYPE_SPEECH
+    )
     private val trackLock = Any()
     private var currentTrack: AudioTrack? = null
     private var onOutputDevice: ((String) -> Unit)? = null
@@ -1070,6 +1074,10 @@ class AudioPlayer(private val context: Context) {
 
     fun setPlaybackGainPercent(percent: Int) {
         playbackGain = (percent.coerceIn(0, 1000) / 100.0f).coerceAtLeast(0f)
+    }
+
+    fun setAudioFocusAvoidanceMode(mode: Int) {
+        audioFocusController.setMode(mode)
     }
 
     fun stop() {
@@ -1161,6 +1169,7 @@ class AudioPlayer(private val context: Context) {
         }
 
         isPlaying = true
+        val audioFocusLease = audioFocusController.acquire()
         try {
             track.play()
             onProgress?.invoke(0f)
@@ -1198,6 +1207,7 @@ class AudioPlayer(private val context: Context) {
             }
             stopRequested = false
             isPlaying = false
+            audioFocusLease?.release()
             onProgress?.invoke(1f)
         }
     }
@@ -1751,6 +1761,7 @@ class RealtimeController(
     initialCommunicationMode: Boolean,
     initialMinVolumePercent: Int,
     initialPlaybackGainPercent: Int,
+    initialAudioFocusAvoidanceMode: Int,
     initialDenoiserMode: Int,
     initialSpeechEnhancementMode: Int,
     initialPiperNoiseScale: Float,
@@ -2128,6 +2139,7 @@ class RealtimeController(
         player.setUseCommunicationAttributes(useCommunicationMode)
         player.setPreferredOutputType(preferredOutputType)
         player.setPlaybackGainPercent(initialPlaybackGainPercent)
+        player.setAudioFocusAvoidanceMode(initialAudioFocusAvoidanceMode)
         player.setOnOutputDevice { notifyOutputDevice(it) }
         player.setOnRender { data, offset, length, rate ->
             if (useAec3) {
@@ -2156,6 +2168,10 @@ class RealtimeController(
 
     fun setPlaybackGainPercent(percent: Int) {
         player.setPlaybackGainPercent(percent)
+    }
+
+    fun setAudioFocusAvoidanceMode(mode: Int) {
+        player.setAudioFocusAvoidanceMode(mode)
     }
 
     fun setDenoiserMode(mode: Int) {

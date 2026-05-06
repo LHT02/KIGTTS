@@ -20,6 +20,7 @@ import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
 import com.lhtstudio.kigtts.app.ui.ExternalQuickSubtitleRequest
 import com.lhtstudio.kigtts.app.ui.RecognizedItem
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.BluetoothMediaTitleBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -220,6 +221,11 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
     fun setPlaybackGainPercent(percent: Int) {
         controller?.setPlaybackGainPercent(percent)
         SoundboardManager.setPlaybackGainPercent(percent)
+    }
+
+    fun setAudioFocusAvoidanceMode(mode: Int) {
+        controller?.setAudioFocusAvoidanceMode(mode)
+        SoundboardManager.setAudioFocusAvoidanceMode(applicationContext, mode)
     }
 
     fun setPiperNoiseScale(value: Float) {
@@ -485,6 +491,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         serviceScope.launch {
             val settings = UserPrefs.getSettings(applicationContext)
             currentSettings = settings
+            BluetoothMediaTitleBridge.setEnabled(applicationContext, settings.bluetoothMediaTitleSubtitle)
             val resetBackend = ensureSpeakerBackend(settings)
             speakerProfiles = if (resetBackend) {
                 mutableListOf()
@@ -540,6 +547,13 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
                 val previous = currentSettings
                 currentSettings = next
                 SoundboardManager.setPlaybackGainPercent(next.playbackGainPercent)
+                SoundboardManager.setAudioFocusAvoidanceMode(applicationContext, next.audioFocusAvoidanceMode)
+                BluetoothMediaTitleBridge.setEnabled(applicationContext, next.bluetoothMediaTitleSubtitle)
+                if (next.bluetoothMediaTitleSubtitle) {
+                    currentState().recognized.firstOrNull()?.text?.let { latest ->
+                        BluetoothMediaTitleBridge.updateSubtitle(applicationContext, latest)
+                    }
+                }
                 val resetBackend = ensureSpeakerBackend(next)
                 speakerProfiles = if (resetBackend) {
                     mutableListOf()
@@ -686,6 +700,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialCommunicationMode = currentSettings.communicationMode,
             initialMinVolumePercent = currentSettings.minVolumePercent,
             initialPlaybackGainPercent = currentSettings.playbackGainPercent,
+            initialAudioFocusAvoidanceMode = currentSettings.audioFocusAvoidanceMode,
             initialPiperNoiseScale = currentSettings.piperNoiseScale,
             initialPiperLengthScale = currentSettings.piperLengthScale,
             initialPiperNoiseW = currentSettings.piperNoiseW,
@@ -801,6 +816,8 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setMinVolumePercent(settings.minVolumePercent)
         controller?.setPlaybackGainPercent(settings.playbackGainPercent)
         SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
+        controller?.setAudioFocusAvoidanceMode(settings.audioFocusAvoidanceMode)
+        SoundboardManager.setAudioFocusAvoidanceMode(applicationContext, settings.audioFocusAvoidanceMode)
         controller?.setPiperNoiseScale(settings.piperNoiseScale)
         controller?.setPiperLengthScale(settings.piperLengthScale)
         controller?.setPiperNoiseW(settings.piperNoiseW)
@@ -860,6 +877,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         val item = RecognizedItem(id = historyId, text = normalized)
         val next = (listOf(item) + currentState().recognized).take(MAX_RECOGNIZED_ITEMS)
         lastProgressUpdateAtMs.keys.retainAll(next.asSequence().map { it.id }.toSet())
+        BluetoothMediaTitleBridge.updateSubtitle(applicationContext, normalized)
         updateState { it.copy(recognized = next) }
         if (currentSettings.soundboardKeywordTriggerEnabled &&
             (!fromQuickText || currentSettings.allowQuickTextTriggerSoundboard)

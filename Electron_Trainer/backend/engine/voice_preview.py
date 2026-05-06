@@ -12,6 +12,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 from .resource_paths import resolve_resources_root
 from .runtime_manager import resolve_cuda_python, resolve_piper_runtime_python
 
+PREVIEW_TAIL_PAD_SECONDS = 0.25
+
 
 def _base_dir() -> Path:
     env_base = os.environ.get("KGTTS_BASE_DIR")
@@ -453,13 +455,15 @@ def _synthesize_voicepack_inprocess(
         audio = sess.run(None, inputs)[0]
         audio = np.squeeze(audio)
         audio = np.clip(audio, -1.0, 1.0)
-        audio_i16 = (audio * 32767.0).astype(np.int16)
         sample_rate = int(
             manifest.get("sample_rate")
             or cfg.get("audio", {}).get("sample_rate")
             or cfg.get("sample_rate")
             or 22050
         )
+        tail_pad = np.zeros(max(1, int(sample_rate * PREVIEW_TAIL_PAD_SECONDS)), dtype=audio.dtype)
+        audio = np.concatenate([audio, tail_pad])
+        audio_i16 = (audio * 32767.0).astype(np.int16)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         _progress(progress, 0.85, "写入音频文件")
         with wave.open(str(out_path), "wb") as wf:

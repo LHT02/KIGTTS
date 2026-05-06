@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from .audio_validation import is_audio_file_usable, split_usable_audio_entries
 from .config import ProjectPaths, TrainingOptions, VoxCpmDistillOptions
 from .gsv_distill import collect_distill_texts
 from .runtime_manager import describe_voxcpm_models, get_voxcpm_python_path
@@ -137,7 +138,7 @@ def _write_metadata(paths: ProjectPaths, entries: list[tuple[Path, str]]) -> Non
 
 
 def _ready_entries(entries: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
-    return [(audio_path, text) for audio_path, text in entries if audio_path.exists() and audio_path.stat().st_size > 0]
+    return [(audio_path, text) for audio_path, text in entries if is_audio_file_usable(audio_path)]
 
 
 def _require_generated_audio(entries: list[tuple[Path, str]], *, label: str) -> list[tuple[Path, str]]:
@@ -145,10 +146,10 @@ def _require_generated_audio(entries: list[tuple[Path, str]], *, label: str) -> 
     if len(ready) == len(entries):
         return ready
     missing = len(entries) - len(ready)
-    sample = next((str(audio_path) for audio_path, _text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0), "")
+    sample = next((str(audio_path) for audio_path, _text in entries if not is_audio_file_usable(audio_path)), "")
     if not ready:
-        raise RuntimeError(f"{label} 未生成可用音频，无法继续训练。示例缺失文件: {sample}")
-    raise RuntimeError(f"{label} 有 {missing} 条音频缺失或为空，无法继续训练。示例缺失文件: {sample}")
+        raise RuntimeError(f"{label} 未生成可用音频，无法继续训练。示例缺失或损坏文件: {sample}")
+    raise RuntimeError(f"{label} 有 {missing} 条音频缺失、为空或损坏，无法继续训练。示例文件: {sample}")
 
 
 def _split_entries(entries: list[tuple[Path, str]], worker_count: int) -> list[list[tuple[Path, str]]]:
@@ -344,18 +345,28 @@ def build_voxcpm_corpus(
         log_path.unlink()
     wav_dir = corpus_dir / "wavs"
     wav_dir.mkdir(parents=True, exist_ok=True)
-    for stale in wav_dir.glob("*.wav"):
-        stale.unlink(missing_ok=True)
 
     if progress:
         progress("collect", 1.0, f"文本收集完成，共 {len(texts)} 条")
 
     entries = [(_default_wav_path(paths, "voxcpm_corpus", index), text) for index, text in enumerate(texts, start=1)]
+    ready_entries, pending_entries = split_usable_audio_entries(entries)
+    if not pending_entries:
+        _write_metadata(paths, ready_entries)
+        if progress:
+            progress("synth", 1.0, f"检测到已有可用 VoxCPM2 语料 {len(ready_entries)} 条，直接进入训练")
+        return len(ready_entries)
+    if ready_entries and progress:
+        progress(
+            "synth",
+            len(ready_entries) / max(1, len(entries)),
+            f"检测到已有可用音频 {len(ready_entries)} 条，将补生成 {len(pending_entries)} 条缺失或损坏音频",
+        )
     if progress:
         progress(
             "synth",
             0.0,
-            f"启动 VoxCPM2 合成（mode={_normal_mode(opts.voice_mode)}, device={'cuda' if str(opts.device).lower() in {'cuda', 'gpu'} else 'cpu'}, denoise={bool(opts.denoise)}, workers={max(1, int(opts.parallel_workers or 1))}）",
+            f"启动 VoxCPM2 合成（mode={_normal_mode(opts.voice_mode)}, device={'cuda' if str(opts.device).lower() in {'cuda', 'gpu'} else 'cpu'}, denoise={bool(opts.denoise)}, workers={max(1, int(opts.parallel_workers or 1))}, pending={len(pending_entries)}）",
         )
 
     result = _run_generation_entries(
@@ -364,12 +375,19 @@ def build_voxcpm_corpus(
         prompt_text,
         paths,
         opts,
-        entries,
+        pending_entries,
         progress=progress,
         progress_stage="synth",
         log_stem="voxcpm_distill",
     )
     if result["code"] != 0 and bool(opts.denoise):
+        _ready_entries_now, pending_entries = split_usable_audio_entries(entries)
+        if not pending_entries:
+            ready_entries = _require_generated_audio(entries, label="VoxCPM2 蒸馏")
+            _write_metadata(paths, ready_entries)
+            if progress:
+                progress("synth", 1.0, f"VoxCPM2 蒸馏语料生成完成，共 {len(ready_entries)} 条")
+            return len(ready_entries)
         retry_opts = VoxCpmDistillOptions(**{**opts.__dict__, "denoise": False})
         if progress:
             progress(
@@ -385,7 +403,7 @@ def build_voxcpm_corpus(
             prompt_text,
             paths,
             retry_opts,
-            entries,
+            pending_entries,
             progress=progress,
             progress_stage="synth",
             log_stem="voxcpm_distill_retry",
@@ -409,12 +427,15 @@ def generate_voxcpm_entries(
 ) -> int:
     if not entries:
         return 0
+    _ready, entries = split_usable_audio_entries(entries)
+    if not entries:
+        return 0
     python_path, model_status, prompt_text = _ensure_common(opts, training_opts, progress, "synth")
     resume_dir = paths.work_dir / "voxcpm_corpus"
     resume_dir.mkdir(parents=True, exist_ok=True)
     log_path = paths.work_dir / "voxcpm_resume.log"
     if progress:
-        progress("synth", 0.0, f"旧项目缺失 {len(entries)} 条 VoxCPM2 音频，开始补生成...")
+        progress("synth", 0.0, f"旧项目有 {len(entries)} 条 VoxCPM2 音频缺失或损坏，开始补生成...")
     result = _run_generation_entries(
         python_path,
         model_status,
@@ -445,7 +466,7 @@ def generate_voxcpm_entries(
         raise RuntimeError(str(result.get("message") or f"VoxCPM2 补生成失败，详见 {log_path}"))
     _require_generated_audio(entries, label="VoxCPM2 补生成")
     if progress:
-        progress("synth", 1.0, f"VoxCPM2 缺失音频补生成完成，共 {result['generated']} 条")
+        progress("synth", 1.0, f"VoxCPM2 不可用音频补生成完成，共 {result['generated']} 条")
     return int(result.get("generated") or 0)
 
 
