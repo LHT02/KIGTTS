@@ -9,13 +9,14 @@
 当前安卓端的默认模型/后端策略：
 - 默认 TTS 后端为 **系统 TTS**，不再内置默认 Piper 语音包
 - 自定义离线 Piper 音色包仍可导入，格式为 `.kigvpk` 或兼容 `.zip`
+- ASR、Silero VAD、GTCRN / DPDFNet 语音增强模型不再随 APK 内置，改为通过 `语音识别资源包` 外部安装
 - APK 内已集成 sherpa-onnx 说话人验证模型，无需用户单独下载
 
 ## 1. 运行必需素材（用户侧）
 
 ### 1.1 一键配置
 
-克隆仓库后运行根目录的 `setup_assets.ps1`，自动下载 ASR 模型并分发到 `android-app` 和 `flutter_app` 的 assets 目录：
+克隆仓库后运行根目录的 `setup_assets.ps1`，自动下载 ASR 模型并分发到旧版兼容资源目录；当前 Android 主软件推荐改为打包并外部安装 `语音识别资源包`：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File setup_assets.ps1
@@ -33,6 +34,51 @@ powershell -ExecutionPolicy Bypass -File setup_assets.ps1
 - SOSV 模型发布页（`sosv.zip` / `sosv-int8.zip`）：
   - https://github.com/HiMeditator/auto-caption/releases/tag/sosv-model
 
+### 1.2.1 语音识别资源包（Android 设置页安装）
+
+安卓主软件支持把语音识别与降噪相关模型整合为一个 `.7z` 或兼容 `.zip` 包，用于放到魔搭 / Hugging Face 等下载源，或从本地文件安装。安装后资源会解压到软件内部目录，后续 ASR、Silero VAD、GTCRN / DPDFNet 语音增强都会使用该资源包。
+
+推荐包内结构：
+
+```text
+kigtts-recognition-resources/
+  recognition_resources.json
+  asr/
+    sensevoice/model.int8.onnx
+    sensevoice/tokens.txt
+    silero_vad.onnx
+    punct/model.int8.onnx
+    punct-en/model.int8.onnx
+  speech_enhancement/
+    gtcrn_simple.onnx
+    dpdfnet2.onnx
+    dpdfnet4.onnx
+```
+
+`recognition_resources.json` 示例：
+
+```json
+{
+  "type": "kigtts-recognition-resources",
+  "name": "KIGTTS 语音识别资源包",
+  "version": "2026.05",
+  "files": {
+    "asrDir": "asr",
+    "sileroVad": "asr/silero_vad.onnx",
+    "speechEnhancement": {
+      "gtcrn": "speech_enhancement/gtcrn_simple.onnx",
+      "dpdfnet2": "speech_enhancement/dpdfnet2.onnx",
+      "dpdfnet4": "speech_enhancement/dpdfnet4.onnx"
+    }
+  }
+}
+```
+
+兼容说明：
+- manifest 文件名可使用 `recognition_resources.json`、`kigtts_recognition_resources.json` 或 `manifest.json`
+- 如果 manifest 未显式写路径，软件会按文件名递归查找 `silero_vad.onnx`、`gtcrn_simple.onnx`、`dpdfnet2.onnx`、`dpdfnet4.onnx`
+- 通过下载源安装的临时 `.7z` 包会在安装完成后清理；本地安装不会删除用户选择的源文件
+
 ### 1.3 音色包（Android 导入）
 - 当前推荐导出格式：`voicepack.kigvpk`
 - 兼容导入：`.kigvpk` / `.zip`
@@ -46,21 +92,6 @@ powershell -ExecutionPolicy Bypass -File setup_assets.ps1
 
 安卓主软件当前随 APK 一起打包的模型/资源：
 
-- `sosv-int8.zip`（首次运行可直接使用的 ASR 资源包）
-  - `sensevoice/model.int8.onnx`
-  - `sensevoice/tokens.txt`
-  - `silero_vad.onnx`
-  - `punct/model.int8.onnx`
-  - `punct-en/model.int8.onnx`
-- `speech_enhancement/gtcrn_simple.onnx`
-  - Sherpa GTCRN 语句级 / 流式语音增强模型
-  - 约 `523 KiB`
-- `speech_enhancement/dpdfnet2.onnx`
-  - Sherpa DPDFNet2 流式语音增强模型
-  - 约 `9.78 MiB`
-- `speech_enhancement/dpdfnet4.onnx`
-  - Sherpa DPDFNet4 流式语音增强模型
-  - 约 `11.17 MiB`
 - `speaker_verify/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx`
   - sherpa-onnx 官方说话人验证模型
   - 约 `26.97 MiB`
@@ -69,6 +100,7 @@ powershell -ExecutionPolicy Bypass -File setup_assets.ps1
 
 说明：
 - 系统 TTS 为默认内置朗读后端，不需要单独模型文件
+- ASR、Silero VAD、GTCRN / DPDFNet 语音增强模型需要通过设置页安装 `语音识别资源包`
 - 自定义 Piper 音色包仅在用户导入后才会出现在语音包列表中
 - 设置页里的 `AI 语音增强` 当前支持：
   - 关闭

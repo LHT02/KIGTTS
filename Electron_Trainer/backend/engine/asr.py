@@ -1,11 +1,9 @@
+from __future__ import annotations
+
 import shutil
 import zipfile
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
-
-import librosa
-import numpy as np
-import soundfile as sf
 
 from .config import TrainingOptions, ProgressCallback, SegmentMetadata
 
@@ -145,7 +143,7 @@ class OfflineASR:
 
         feat_cfg_cls = getattr(sherpa_onnx, "FeatureConfig", None) or getattr(sherpa_onnx, "FeatureExtractorConfig", None)
         if not feat_cfg_cls:
-            raise RuntimeError("当前 sherpa-onnx 版本缺少 FeatureConfig/FeatureExtractorConfig。")
+            raise RuntimeError("语音识别组件版本不兼容，请重新安装训练资源包后再试。")
         feat_cfg = feat_cfg_cls()
         if hasattr(feat_cfg, "sample_rate"):
             feat_cfg.sample_rate = 16000
@@ -179,6 +177,8 @@ class OfflineASR:
         self.recognizer = sherpa_onnx.OfflineRecognizer(recog_cfg)
 
     def transcribe(self, audio: np.ndarray, sr: int) -> Tuple[str, float]:
+        import numpy as np
+
         stream = self.recognizer.create_stream()
         stream.accept_waveform(sr, audio.astype(np.float32))
         self.recognizer.decode_stream(stream)
@@ -195,6 +195,9 @@ def transcribe_segments(
     opts: TrainingOptions,
     progress: Optional[ProgressCallback] = None,
 ) -> List[SegmentMetadata]:
+    import librosa
+    import soundfile as sf
+
     if not opts.asr_model_zip:
         raise ValueError("asr_model_zip 未设置，无法转写。")
     engine = OfflineASR(opts.asr_model_zip, device=opts.device)

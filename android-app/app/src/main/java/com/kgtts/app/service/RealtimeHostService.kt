@@ -9,6 +9,7 @@ import android.os.SystemClock
 import com.lhtstudio.kigtts.app.audio.RealtimeController
 import com.lhtstudio.kigtts.app.audio.SoundboardManager
 import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
+import com.lhtstudio.kigtts.app.data.KOKORO_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.ModelRepository
 import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.UserPrefs
@@ -237,6 +238,10 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setPiperSentenceSilenceSec(value)
     }
 
+    fun setKokoroSpeakerId(value: Int) {
+        controller?.setKokoroSpeakerId(value)
+    }
+
     fun setUseVoiceCommunication(enabled: Boolean) {
         controller?.setUseVoiceCommunication(enabled)
     }
@@ -311,6 +316,11 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
 
     fun setSpeakerVerifyThreshold(threshold: Float) {
         controller?.setSpeakerVerifyThreshold(threshold)
+    }
+
+    fun getSpeakerLastSimilarity(): Float {
+        val controllerSimilarity = controller?.latestSpeakerSimilarity() ?: -1f
+        return if (controllerSimilarity >= 0f) controllerSimilarity else currentState().speakerLastSimilarity
     }
 
     fun setSpeakerProfiles(profiles: List<FloatArray>) {
@@ -680,6 +690,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialPiperLengthScale = currentSettings.piperLengthScale,
             initialPiperNoiseW = currentSettings.piperNoiseW,
             initialPiperSentenceSilenceSec = currentSettings.piperSentenceSilence,
+            initialKokoroSpeakerId = currentSettings.kokoroSpeakerId,
             initialSuppressDelaySec = currentSettings.muteWhilePlayingDelaySec,
             initialPreferredInputType = currentSettings.preferredInputType,
             initialPreferredOutputType = currentSettings.preferredOutputType,
@@ -694,7 +705,12 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialAllowSystemAecWithAec3 = currentSettings.allowSystemAecWithAec3,
             initialSpeakerVerifyEnabled = currentSettings.speakerVerifyEnabled && speakerProfiles.isNotEmpty(),
             initialSpeakerVerifyThreshold = currentSettings.speakerVerifyThreshold,
-            initialSpeakerProfiles = speakerProfiles.map { it.vector.copyOf() }
+            initialSpeakerProfiles = speakerProfiles.map { it.vector.copyOf() },
+            shouldSuppressAutoSpeakForText = { text ->
+                currentSettings.soundboardKeywordTriggerEnabled &&
+                    currentSettings.soundboardSuppressTtsOnKeyword &&
+                    SoundboardManager.hasTriggerMatch(applicationContext, text)
+            }
         )
         created.setPushToTalkStreamingEnabled(
             currentSettings.pushToTalkMode &&
@@ -789,6 +805,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setPiperLengthScale(settings.piperLengthScale)
         controller?.setPiperNoiseW(settings.piperNoiseW)
         controller?.setPiperSentenceSilenceSec(settings.piperSentenceSilence)
+        controller?.setKokoroSpeakerId(settings.kokoroSpeakerId)
         controller?.setUseAec3(settings.aec3Enabled)
         controller?.setUseVoiceCommunication(settings.echoSuppression)
         controller?.setCommunicationMode(settings.communicationMode)
@@ -825,10 +842,14 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         val lastName = UserPrefs.getLastVoiceName(applicationContext)
         val resolved = when (lastName) {
             SYSTEM_TTS_VOICE_NAME -> repo.systemTtsVirtualDir()
+            KOKORO_VOICE_NAME -> repo.kokoroVoiceDir().takeIf { repo.kokoroVoiceStatus().installed }
             null -> null
             else -> repo.resolveVoicePack(lastName)
         }
-        return resolved ?: repo.systemTtsVirtualDir()
+        return resolved
+            ?: withContext(Dispatchers.IO) { repo.listVoicePacks().firstOrNull()?.dir }
+            ?: repo.kokoroVoiceDir().takeIf { repo.kokoroVoiceStatus().installed }
+            ?: repo.systemTtsVirtualDir()
     }
 
     private fun appendRecognizedHistory(text: String, id: Long? = null, fromQuickText: Boolean = false) {
@@ -856,6 +877,16 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
     ) {
         val message = text.trim()
         if (message.isEmpty()) return
+        val suppressTtsForSoundboard =
+            !fromQuickText &&
+                currentSettings.soundboardKeywordTriggerEnabled &&
+                currentSettings.soundboardSuppressTtsOnKeyword &&
+                SoundboardManager.hasTriggerMatch(applicationContext, message)
+        if (suppressTtsForSoundboard) {
+            appendRecognizedHistory(message, fromQuickText = false)
+            updateStatus("已触发音效板，跳过本句朗读")
+            return
+        }
         val queuedId = speakText(message, interruptCurrent = interruptCurrent)
         if (queuedId != null) {
             appendRecognizedHistory(message, queuedId, fromQuickText = fromQuickText)

@@ -57,7 +57,10 @@ pnpm-debug.log*
 
 Electron_Trainer/node_modules/
 Electron_Trainer/dist/
+Electron_Trainer/dist-runtime/
 Electron_Trainer/dist-renderer/
+Electron_Trainer/build/python_bootstrap/
+Electron_Trainer/build/python-bootstrap-cache/
 Electron_Trainer/release/
 Electron_Trainer/out/
 Electron_Trainer/.vite/

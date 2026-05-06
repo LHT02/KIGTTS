@@ -9,6 +9,9 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .resource_paths import resolve_resources_root
+from .runtime_manager import resolve_cuda_python, resolve_piper_runtime_python
+
 
 def _base_dir() -> Path:
     env_base = os.environ.get("KGTTS_BASE_DIR")
@@ -35,16 +38,16 @@ def _load_voicepack_base(voicepack_path: Path, temp_dir: Path) -> Tuple[Path, di
             zip_candidate = next((candidate for candidate in archive_candidates if candidate.exists()), None)
             if zip_candidate is not None:
                 return _load_voicepack_base(zip_candidate, temp_dir)
-            raise FileNotFoundError("语音包目录缺少 manifest.json")
+            raise FileNotFoundError("这个语音包目录不完整，无法试听。")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         return voicepack_path, manifest
     if not zipfile.is_zipfile(voicepack_path):
-        raise RuntimeError("语音包不是有效的 zip 文件")
+        raise RuntimeError("这个文件不是有效的语音包，无法试听。")
     with zipfile.ZipFile(voicepack_path, "r") as zf:
         zf.extractall(temp_dir)
     manifest_path = temp_dir / "manifest.json"
     if not manifest_path.exists():
-        raise FileNotFoundError("语音包缺少 manifest.json")
+        raise FileNotFoundError("这个语音包文件不完整，无法试听。")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     return temp_dir, manifest
 
@@ -55,13 +58,13 @@ def _resolve_voicepack_files(base_dir: Path, manifest: dict) -> Tuple[Path, Path
     config_rel = files.get("config")
     dict_rel = files.get("phonemizer")
     if not model_rel or not config_rel or not dict_rel:
-        raise RuntimeError("语音包 manifest 缺少 files/model/config/phonemizer")
+        raise RuntimeError("语音包缺少必要的模型或配置文件，无法试听。")
     model_path = base_dir / model_rel
     config_path = base_dir / config_rel
     dict_path = base_dir / dict_rel
     for path in (model_path, config_path, dict_path):
         if not path.exists():
-            raise FileNotFoundError(f"缺少语音包文件: {path}")
+            raise FileNotFoundError("语音包缺少必要文件，无法试听。")
     return model_path, config_path, dict_path
 
 
@@ -82,6 +85,10 @@ def _find_espeak_ng() -> Tuple[Path, Path]:
     env_path = os.environ.get("ESPEAK_NG_PATH")
     if env_path:
         candidates.append(Path(env_path))
+    resources_root = resolve_resources_root()
+    if resources_root is not None:
+        candidates.append(resources_root / "tools" / "espeak-ng" / "eSpeak NG" / "espeak-ng.exe")
+        candidates.append(resources_root / "tools" / "espeak-ng" / "espeak-ng.exe")
     base = _base_dir()
     candidates.append(base / "tools" / "espeak-ng" / "eSpeak NG" / "espeak-ng.exe")
     candidates.append(base / "tools" / "espeak-ng" / "espeak-ng.exe")
@@ -92,7 +99,7 @@ def _find_espeak_ng() -> Tuple[Path, Path]:
             data_dir = exe.parent / "espeak-ng-data"
             if data_dir.exists():
                 return exe, data_dir
-    raise RuntimeError("未找到 espeak-ng，请先集成 espeak-ng")
+    raise RuntimeError("缺少发音组件，请先安装训练资源包后再试听。")
 
 
 def _strip_language_flags(text: str) -> str:
@@ -139,7 +146,7 @@ def _phonemize_espeak(text: str, voice: str) -> List[str]:
     )
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout).strip()
-        raise RuntimeError(f"espeak-ng 失败: {err}")
+        raise RuntimeError(f"发音组件处理失败：{err}")
     out = proc.stdout.strip()
     if not out:
         return []
@@ -270,7 +277,123 @@ def _create_ort_session(ort, model_path: Path):
     return ort.InferenceSession(str(model_path), providers=providers)
 
 
-def synthesize_voicepack(
+def _preview_runtime_env(python_path: Path) -> dict:
+    env = os.environ.copy()
+    runtime_root = python_path.parent
+    env["PYTHONHOME"] = str(runtime_root)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    path_parts = [
+        str(runtime_root),
+        str(runtime_root / "Scripts"),
+        str(runtime_root / "Library" / "bin"),
+        str(runtime_root / "Library" / "usr" / "bin"),
+        str(runtime_root / "Library" / "mingw-w64" / "bin"),
+    ]
+    env["PATH"] = os.pathsep.join(path_parts + [env.get("PATH", "")])
+    return env
+
+
+def _preview_runtime_candidates() -> List[Path]:
+    candidates: List[Path] = []
+    for candidate in (resolve_piper_runtime_python(), resolve_cuda_python()):
+        if candidate and candidate.exists() and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _has_inprocess_preview_deps() -> bool:
+    try:
+        import numpy  # noqa: F401
+        import onnxruntime  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def _run_preview_in_runtime(
+    python_path: Path,
+    voicepack_path: Path,
+    text: str,
+    out_path: Path,
+    progress: Optional[Callable[[str, float, str], None]],
+) -> Path:
+    backend_root = Path(__file__).resolve().parents[1]
+    helper_code = (
+        "import json,sys,traceback\n"
+        "from pathlib import Path\n"
+        f"sys.path.insert(0, {str(backend_root)!r})\n"
+        "from engine.voice_preview import _synthesize_voicepack_inprocess\n"
+        "payload=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+        "def progress(stage,value,message):\n"
+        "    print(json.dumps({'type':'progress','stage':stage,'value':value,'message':message}, ensure_ascii=False), flush=True)\n"
+        "try:\n"
+        "    result=_synthesize_voicepack_inprocess(Path(payload['voicepack_path']), payload['text'], Path(payload['out_path']), progress)\n"
+        "    print(json.dumps({'type':'done','audio_path':str(result)}, ensure_ascii=False), flush=True)\n"
+        "except Exception as exc:\n"
+        "    print(json.dumps({'type':'error','message':str(exc),'traceback':traceback.format_exc()}, ensure_ascii=False), flush=True)\n"
+        "    raise\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        request_path = Path(tmp_dir) / "voice_preview_request.json"
+        request_path.write_text(
+            json.dumps(
+                {
+                    "voicepack_path": str(voicepack_path),
+                    "text": text,
+                    "out_path": str(out_path),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        proc = subprocess.Popen(
+            [str(python_path), "-c", helper_code, str(request_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_preview_runtime_env(python_path),
+            cwd=str(python_path.parent),
+            bufsize=1,
+            close_fds=True,
+        )
+        output_tail: List[str] = []
+        result_path: Optional[Path] = None
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                raw = line.strip()
+                if raw:
+                    output_tail.append(raw)
+                    output_tail = output_tail[-20:]
+                try:
+                    event = json.loads(raw)
+                except Exception:
+                    continue
+                event_type = event.get("type")
+                if event_type == "progress":
+                    message = str(event.get("message") or "")
+                    try:
+                        value = float(event.get("value") or 0.0)
+                    except Exception:
+                        value = 0.0
+                    if progress and message:
+                        progress(str(event.get("stage") or "preview"), value, message)
+                elif event_type == "done":
+                    audio_path = str(event.get("audio_path") or "")
+                    if audio_path:
+                        result_path = Path(audio_path)
+        code = proc.wait()
+        if code == 0 and result_path and result_path.exists():
+            return result_path
+        tail = "\n".join(output_tail[-8:])
+        raise RuntimeError(tail or f"试听运行时退出，code={code}")
+
+
+def _synthesize_voicepack_inprocess(
     voicepack_path: Path,
     text: str,
     out_path: Path,
@@ -281,7 +404,7 @@ def synthesize_voicepack(
         import numpy as np
         import onnxruntime as ort
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("缺少 onnxruntime/numpy，无法测试语音包") from exc
+        raise RuntimeError("试听组件未安装完整，请重新安装 Piper 基础运行时后再试。") from exc
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         base_dir, manifest = _load_voicepack_base(voicepack_path, Path(tmp_dir))
@@ -291,16 +414,16 @@ def synthesize_voicepack(
         phoneme_type = str(cfg.get("phoneme_type", "text")).lower()
         id_map = cfg.get("phoneme_id_map") or {}
         if not id_map:
-            raise RuntimeError("语音包缺少 phoneme_id_map，无法合成")
+            raise RuntimeError("语音包缺少发音映射信息，无法试听。")
         if phoneme_type == "espeak":
             ids = _text_to_espeak_ids(text, cfg)
         elif phoneme_type == "text":
             phoneme_map = _load_phonemizer_dict(dict_path)
             ids = _text_to_phoneme_ids(text, phoneme_map, id_map)
         else:
-            raise RuntimeError(f"不支持的 phoneme_type: {phoneme_type}")
+            raise RuntimeError("当前语音包格式暂不支持试听。")
         if not ids:
-            raise RuntimeError("测试文本无法转换为 phoneme ids")
+            raise RuntimeError("试听文本无法转换为可朗读内容，请换一段文本再试。")
 
         infer_cfg = cfg.get("inference") or {}
         noise_scale = float(infer_cfg.get("noise_scale", 0.667))
@@ -347,3 +470,30 @@ def synthesize_voicepack(
 
     _progress(progress, 1.0, "试听生成完成")
     return out_path
+
+
+def synthesize_voicepack(
+    voicepack_path: Path,
+    text: str,
+    out_path: Path,
+    progress: Optional[Callable[[str, float, str], None]] = None,
+) -> Path:
+    if _has_inprocess_preview_deps():
+        return _synthesize_voicepack_inprocess(voicepack_path, text, out_path, progress)
+
+    runtime_errors: List[str] = []
+    for python_path in _preview_runtime_candidates():
+        try:
+            _progress(progress, 0.03, f"使用 Piper 运行时试听: {python_path}")
+            return _run_preview_in_runtime(python_path, voicepack_path, text, out_path, progress)
+        except Exception as exc:  # noqa: BLE001
+            runtime_errors.append(f"{python_path}: {exc}")
+
+    detail = "\n".join(runtime_errors[-2:])
+    if detail:
+        detail = f"\n最近错误：\n{detail}"
+    raise RuntimeError(
+        "试听组件未安装完整。请在“设置”里安装或重新解压 Piper 基础运行时；"
+        "如果只安装了 CUDA 运行时，也可以重新解压 Piper CUDA 运行时后再试。"
+        + detail
+    )

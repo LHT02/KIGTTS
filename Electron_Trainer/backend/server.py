@@ -9,19 +9,24 @@ from typing import Any, Dict, Optional
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from engine import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, VoxCpmDistillOptions, run_distill_pipeline, run_pipeline, run_resume_project_pipeline, run_voxcpm_distill_pipeline  # type: ignore
-from engine.gsv_distill import scan_gsv_models, synthesize_gsv_preview, validate_gsv_root  # type: ignore
+from engine.config import DistillOptions, DistillTextSource, ProjectPaths, TrainingOptions, VoxCpmDistillOptions  # type: ignore
+from engine.gsv_distill import scan_gsv_models, validate_gsv_root  # type: ignore
 from engine.project_state import load_project_config, read_metadata_entries  # type: ignore
 from engine.runtime_manager import (  # type: ignore
+    describe_piper_runtime,
     describe_piper_cuda_runtime,
+    describe_download_sources,
+    describe_trainer_resources,
     describe_voxcpm_models,
     describe_voxcpm_runtime,
     download_voxcpm_models,
+    install_piper_runtime,
     install_piper_cuda_runtime,
+    install_trainer_resources,
     install_voxcpm_runtime,
+    save_download_sources,
 )
-from engine.voxcpm_distill import synthesize_voxcpm_preview  # type: ignore
-from engine.voice_preview import synthesize_voicepack  # type: ignore
+from engine.resource_paths import resolve_resources_root  # type: ignore
 
 
 def _send(obj: Dict[str, Any]) -> None:
@@ -39,6 +44,9 @@ def _path_or_none(value: Any) -> Path | None:
 
 
 def _resources_root() -> Optional[Path]:
+    resolved = resolve_resources_root()
+    if resolved is not None:
+        return resolved
     env_resources = os.environ.get("KGTTS_RESOURCES")
     if env_resources:
         return Path(env_resources)
@@ -48,8 +56,6 @@ def _resources_root() -> Optional[Path]:
         candidate = base / "resources_pack"
         if candidate.exists():
             return candidate
-        if base.exists():
-            return base
     return None
 
 
@@ -81,7 +87,7 @@ def _build_opts(payload: Dict[str, Any]) -> TrainingOptions:
 def _build_distill_opts(payload: Dict[str, Any]) -> DistillOptions:
     gsv_root = _path_or_none(payload.get("gsv_root"))
     if gsv_root is None:
-        raise RuntimeError("缺少 GPT-SoVITS 根目录")
+        raise RuntimeError("请先选择 GPT-SoVITS / GSVI 整合包根目录。")
 
     text_sources = []
     for item in payload.get("text_sources") or []:
@@ -115,6 +121,7 @@ def _build_distill_opts(payload: Dict[str, Any]) -> DistillOptions:
         repetition_penalty=float(payload.get("repetition_penalty") or 1.35),
         sample_steps=int(payload.get("sample_steps") or 16),
         if_sr=bool(payload.get("if_sr", False)),
+        parallel_workers=max(1, int(payload.get("parallel_workers") or 1)),
         text_sources=text_sources,
     )
 
@@ -136,6 +143,7 @@ def _build_voxcpm_opts(payload: Dict[str, Any]) -> VoxCpmDistillOptions:
         voice_mode=str(payload.get("voice_mode") or "description").strip().lower() or "description",
         voice_description=str(payload.get("voice_description") or "").strip(),
         reference_audio=_path_or_none(payload.get("reference_audio")),
+        voice_reference_text=str(payload.get("voice_reference_text") or "").strip() or VoxCpmDistillOptions().voice_reference_text,
         prompt_text=str(payload.get("prompt_text") or "").strip(),
         cfg_value=float(payload.get("cfg_value") or 2.0),
         inference_timesteps=max(1, int(payload.get("inference_timesteps") or 10)),
@@ -146,6 +154,7 @@ def _build_voxcpm_opts(payload: Dict[str, Any]) -> VoxCpmDistillOptions:
         retry_badcase=bool(payload.get("retry_badcase", True)),
         retry_badcase_max_times=max(0, int(payload.get("retry_badcase_max_times") or 3)),
         retry_badcase_ratio_threshold=float(payload.get("retry_badcase_ratio_threshold") or 6.0),
+        parallel_workers=max(1, int(payload.get("parallel_workers") or 1)),
         text_sources=text_sources,
     )
 
@@ -208,13 +217,13 @@ def _is_active() -> bool:
 
 def _handle_start(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     input_audio = payload.get("input_audio") or []
     output_dir = payload.get("output_dir")
     if not output_dir:
-        _send({"type": "error", "id": req_id, "message": "缺少输出目录"})
+        _send({"type": "error", "id": req_id, "message": "请先选择语音包输出目录。"})
         return
 
     paths = ProjectPaths(
@@ -235,6 +244,8 @@ def _handle_start(req_id: str, payload: Dict[str, Any]) -> None:
     def run() -> None:
         _set_active(True)
         try:
+            from engine.pipeline import run_pipeline  # type: ignore
+
             result = run_pipeline(paths, opts, progress)
             _send({
                 "type": "done",
@@ -262,12 +273,12 @@ def _handle_start(req_id: str, payload: Dict[str, Any]) -> None:
 
 def _handle_start_distill(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     output_dir = payload.get("output_dir")
     if not output_dir:
-        _send({"type": "error", "id": req_id, "message": "缺少输出目录"})
+        _send({"type": "error", "id": req_id, "message": "请先选择语音包输出目录。"})
         return
 
     try:
@@ -293,6 +304,8 @@ def _handle_start_distill(req_id: str, payload: Dict[str, Any]) -> None:
     def run() -> None:
         _set_active(True)
         try:
+            from engine.pipeline import run_distill_pipeline  # type: ignore
+
             result = run_distill_pipeline(paths, opts, distill_opts, progress)
             _send(
                 {
@@ -324,12 +337,12 @@ def _handle_start_distill(req_id: str, payload: Dict[str, Any]) -> None:
 
 def _handle_start_voxcpm_distill(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     output_dir = payload.get("output_dir")
     if not output_dir:
-        _send({"type": "error", "id": req_id, "message": "缺少输出目录"})
+        _send({"type": "error", "id": req_id, "message": "请先选择语音包输出目录。"})
         return
 
     try:
@@ -355,6 +368,8 @@ def _handle_start_voxcpm_distill(req_id: str, payload: Dict[str, Any]) -> None:
     def run() -> None:
         _set_active(True)
         try:
+            from engine.pipeline import run_voxcpm_distill_pipeline  # type: ignore
+
             result = run_voxcpm_distill_pipeline(paths, opts, voxcpm_opts, progress)
             _send(
                 {
@@ -386,12 +401,12 @@ def _handle_start_voxcpm_distill(req_id: str, payload: Dict[str, Any]) -> None:
 
 def _handle_start_resume_project(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     project_dir = _path_or_none(payload.get("project_dir"))
     if project_dir is None:
-        _send({"type": "error", "id": req_id, "message": "缺少旧项目目录"})
+        _send({"type": "error", "id": req_id, "message": "请先选择要继续训练的旧项目目录。"})
         return
 
     paths = ProjectPaths(project_root=project_dir)
@@ -402,6 +417,8 @@ def _handle_start_resume_project(req_id: str, payload: Dict[str, Any]) -> None:
     def run() -> None:
         _set_active(True)
         try:
+            from engine.pipeline import run_resume_project_pipeline  # type: ignore
+
             result = run_resume_project_pipeline(paths, progress)
             _send(
                 {
@@ -427,7 +444,7 @@ def _handle_start_resume_project(req_id: str, payload: Dict[str, Any]) -> None:
 def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> None:
     project_dir = _path_or_none(payload.get("project_dir"))
     if project_dir is None:
-        _send({"type": "response", "id": req_id, "payload": {"ok": False, "message": "缺少旧项目目录"}})
+        _send({"type": "response", "id": req_id, "payload": {"ok": False, "message": "请先选择要检查的旧项目目录。"}})
         return
     try:
         config = load_project_config(project_dir)
@@ -445,7 +462,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
         metadata_error = ""
         try:
             entries = read_metadata_entries(paths.training_manifest)
-            missing = [str(audio_path) for audio_path, _text in entries if not audio_path.exists()]
+            missing = [str(audio_path) for audio_path, _text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0]
             metadata_texts = [text for _audio_path, text in entries]
             metadata_message = f"语料 {len(entries)} 条，缺失音频 {len(missing)} 条"
         except Exception as metadata_exc:
@@ -453,7 +470,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
             missing = []
             metadata_texts = []
             metadata_error = str(metadata_exc)
-            metadata_message = f"metadata 不完整：{metadata_exc}"
+            metadata_message = f"训练文本记录不完整：{metadata_exc}"
             if mode != "piper" or not config.get("input_audio"):
                 raise
         metadata_inconsistent = bool(expected_texts and metadata_texts and expected_texts != metadata_texts)
@@ -466,26 +483,28 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
         if not isinstance(training_opts, dict):
             training_opts = {}
         config_summary = f"device={training_opts.get('device', 'cpu')} / batch={training_opts.get('batch_size', '默认')}"
+        mode_options: dict[str, Any] = {}
 
         if mode == "piper":
             can_rebuild_material = bool(input_audio_existing)
             if direct_train_ready:
-                material_status = "训练素材完整，可直接进入 Piper 训练，不会重新切分或 ASR。"
+                material_status = "训练素材完整，可直接进入训练，不会重新处理原始录音。"
             elif can_rebuild_material:
-                material_status = "训练素材不完整，将使用项目内保存的原始音频重新预处理、VAD 切分和 ASR。"
+                material_status = "训练素材不完整，将使用项目保存的原始录音重新准备。"
             else:
                 material_status = "训练素材不完整，且项目内没有可用原始音频，无法自动重建。"
         elif mode == "gsv_distill":
             distill_opts = config.get("distill_options") or {}
             if not isinstance(distill_opts, dict):
                 distill_opts = {}
+            mode_options = distill_opts
             config_summary = (
                 f"{distill_opts.get('version', '未知版本')} / {distill_opts.get('speaker', '未知说话人')} / "
                 f"{distill_opts.get('prompt_lang', '未知语言')} / {distill_opts.get('emotion', '未知情感')}"
             )
             can_rebuild_material = bool(entries)
             if direct_train_ready:
-                material_status = "训练素材完整，可直接进入 Piper 训练。"
+                material_status = "训练素材完整，可直接进入训练。"
             elif existing_count:
                 material_status = "部分合成音频缺失；开始训练时会尝试按项目配置补生成，失败时移除缺失文本后继续。"
             else:
@@ -494,27 +513,35 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
             voxcpm_opts = config.get("voxcpm_options") or {}
             if not isinstance(voxcpm_opts, dict):
                 voxcpm_opts = {}
+            mode_options = voxcpm_opts
             config_summary = (
                 f"{voxcpm_opts.get('voice_mode', 'description')} / device={voxcpm_opts.get('device', 'cuda')} / "
                 f"denoise={'on' if voxcpm_opts.get('denoise') else 'off'}"
             )
             can_rebuild_material = bool(entries)
             if direct_train_ready:
-                material_status = "训练素材完整，可直接进入 Piper 训练。"
+                material_status = "训练素材完整，可直接进入训练。"
             else:
                 material_status = "部分或全部合成音频缺失；开始训练时会按项目内 VoxCPM2 配置继续生成缺失音频。"
         else:
             material_status = "项目模式未知，无法判断素材恢复策略。"
 
         known_modes = {"piper", "gsv_distill", "voxcpm_distill"}
+        mode_labels = {
+            "piper": "Piper 标准",
+            "gsv_distill": "GPT-SoVITS 蒸馏",
+            "voxcpm_distill": "VoxCPM2 蒸馏",
+        }
         ok = mode in known_modes and (direct_train_ready or can_rebuild_material)
+        completion_state = "ready" if direct_train_ready else "unfinished"
         _send(
             {
                 "type": "response",
                 "id": req_id,
                 "payload": {
                     "ok": ok,
-                    "message": f"项目{'可用' if ok else '不可用'}：{mode or '未知模式'}，{metadata_message}",
+                    "has_project": True,
+                    "message": f"项目{'可用' if ok else '不可用'}：{mode_labels.get(mode, '未知模式')}，{metadata_message}",
                     "mode": mode,
                     "project_dir": str(project_dir),
                     "metadata_count": len(entries),
@@ -532,6 +559,9 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
                     "material_status": material_status,
                     "config_summary": config_summary,
                     "config_path": str(paths.work_dir / "kigtts_project.json"),
+                    "completion_state": completion_state,
+                    "training_options": training_opts,
+                    "mode_options": mode_options,
                 },
             }
         )
@@ -542,6 +572,7 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
                 "id": req_id,
                 "payload": {
                     "ok": False,
+                    "has_project": False,
                     "message": str(exc),
                     "project_dir": str(project_dir),
                 },
@@ -551,16 +582,16 @@ def _handle_inspect_training_project(req_id: str, payload: Dict[str, Any]) -> No
 
 def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     voicepack_path_raw = str(payload.get("voicepack_path") or "").strip()
     text = str(payload.get("text") or "").strip()
     if not voicepack_path_raw:
-        _send({"type": "error", "id": req_id, "message": "缺少语音包路径"})
+        _send({"type": "error", "id": req_id, "message": "请先选择要试听的语音包。"})
         return
     if not text:
-        _send({"type": "error", "id": req_id, "message": "缺少试听文本"})
+        _send({"type": "error", "id": req_id, "message": "请先输入试听文本。"})
         return
 
     voicepack_path = Path(voicepack_path_raw)
@@ -580,6 +611,8 @@ def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
     def run() -> None:
         _set_active(True)
         try:
+            from engine.voice_preview import synthesize_voicepack  # type: ignore
+
             result = synthesize_voicepack(voicepack_path, text, preview_path, progress)
             _send({
                 "type": "preview_done",
@@ -604,12 +637,12 @@ def _handle_preview(req_id: str, payload: Dict[str, Any]) -> None:
 
 def _handle_gsv_distill_preview(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     text = str(payload.get("text") or "").strip()
     if not text:
-        _send({"type": "error", "id": req_id, "message": "缺少试听文本"})
+        _send({"type": "error", "id": req_id, "message": "请先输入试听文本。"})
         return
     try:
         distill_opts = _build_distill_opts(payload.get("distill") or {})
@@ -626,6 +659,8 @@ def _handle_gsv_distill_preview(req_id: str, payload: Dict[str, Any]) -> None:
     def run() -> None:
         _set_active(True)
         try:
+            from engine.gsv_distill import synthesize_gsv_preview  # type: ignore
+
             result = synthesize_gsv_preview(preview_root, distill_opts, text, progress)
             _send({"type": "preview_done", "id": req_id, "payload": {"audio_path": str(result)}})
         except Exception as exc:
@@ -639,12 +674,12 @@ def _handle_gsv_distill_preview(req_id: str, payload: Dict[str, Any]) -> None:
 
 def _handle_voxcpm_distill_preview(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     text = str(payload.get("text") or "").strip()
     if not text:
-        _send({"type": "error", "id": req_id, "message": "缺少试听文本"})
+        _send({"type": "error", "id": req_id, "message": "请先输入试听文本。"})
         return
     try:
         opts = _build_opts(payload.get("opts") or {})
@@ -662,6 +697,8 @@ def _handle_voxcpm_distill_preview(req_id: str, payload: Dict[str, Any]) -> None
     def run() -> None:
         _set_active(True)
         try:
+            from engine.voxcpm_distill import synthesize_voxcpm_preview  # type: ignore
+
             result = synthesize_voxcpm_preview(preview_root, voxcpm_opts, text, opts, progress)
             _send({"type": "preview_done", "id": req_id, "payload": {"audio_path": str(result)}})
         except Exception as exc:
@@ -682,12 +719,43 @@ def _handle_get_piper_cuda_runtime(req_id: str) -> None:
     _send({"type": "response", "id": req_id, "payload": payload})
 
 
-def _handle_install_piper_cuda_runtime(req_id: str, payload: Dict[str, Any]) -> None:
+def _handle_get_piper_runtime(req_id: str) -> None:
+    try:
+        payload = describe_piper_runtime()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_install_piper_runtime(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     force = bool(payload.get("force", False))
+    local_archive_path = _path_or_none(payload.get("local_archive_path"))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    _set_active(True)
+    try:
+        result = install_piper_runtime(progress=progress, force=force, local_archive_path=local_archive_path)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
+def _handle_install_piper_cuda_runtime(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
+        return
+
+    force = bool(payload.get("force", False))
+    local_archive_path = _path_or_none(payload.get("local_archive_path"))
 
     def progress(stage: str, value: float, message: str) -> None:
         _send(
@@ -702,7 +770,7 @@ def _handle_install_piper_cuda_runtime(req_id: str, payload: Dict[str, Any]) -> 
 
     _set_active(True)
     try:
-        result = install_piper_cuda_runtime(progress=progress, force=force)
+        result = install_piper_cuda_runtime(progress=progress, force=force, local_archive_path=local_archive_path)
         _send({"type": "response", "id": req_id, "payload": result})
     except Exception as exc:
         _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
@@ -721,17 +789,65 @@ def _handle_get_voxcpm_runtime(req_id: str) -> None:
 
 def _handle_install_voxcpm_runtime(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     force = bool(payload.get("force", False))
+    local_archive_path = _path_or_none(payload.get("local_archive_path"))
 
     def progress(stage: str, value: float, message: str) -> None:
         _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
 
     _set_active(True)
     try:
-        result = install_voxcpm_runtime(progress=progress, force=force)
+        result = install_voxcpm_runtime(progress=progress, force=force, local_archive_path=local_archive_path)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+    finally:
+        _set_active(False)
+
+
+def _handle_get_trainer_resources(req_id: str) -> None:
+    try:
+        payload = describe_trainer_resources()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_get_download_sources(req_id: str) -> None:
+    try:
+        payload = describe_download_sources()
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+        return
+    _send({"type": "response", "id": req_id, "payload": payload})
+
+
+def _handle_save_download_sources(req_id: str, payload: Dict[str, Any]) -> None:
+    try:
+        result = save_download_sources(payload)
+        _send({"type": "response", "id": req_id, "payload": result})
+    except Exception as exc:
+        _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
+
+
+def _handle_install_trainer_resources(req_id: str, payload: Dict[str, Any]) -> None:
+    if _is_active():
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
+        return
+
+    force = bool(payload.get("force", False))
+    local_archive_path = _path_or_none(payload.get("local_archive_path"))
+
+    def progress(stage: str, value: float, message: str) -> None:
+        _send({"type": "progress", "id": req_id, "stage": stage, "value": value, "message": message})
+
+    _set_active(True)
+    try:
+        result = install_trainer_resources(progress=progress, force=force, local_archive_path=local_archive_path)
         _send({"type": "response", "id": req_id, "payload": result})
     except Exception as exc:
         _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
@@ -750,7 +866,7 @@ def _handle_get_voxcpm_models(req_id: str) -> None:
 
 def _handle_download_voxcpm_models(req_id: str, payload: Dict[str, Any]) -> None:
     if _is_active():
-        _send({"type": "error", "id": req_id, "message": "已有任务在运行"})
+        _send({"type": "error", "id": req_id, "message": "当前已有任务在运行，请等待完成后再试。"})
         return
 
     include_denoiser = bool(payload.get("include_denoiser", True))
@@ -807,14 +923,14 @@ def _handle_request(req: Dict[str, Any]) -> None:
     if msg_type == "validate_gsv_root":
         root = _path_or_none(payload.get("gsv_root"))
         if root is None:
-            _send({"type": "response", "id": req_id, "payload": {"ok": False, "message": "缺少 GPT-SoVITS 根目录"}})
+            _send({"type": "response", "id": req_id, "payload": {"ok": False, "message": "请先选择 GPT-SoVITS / GSVI 整合包根目录。"}})
             return
         _send({"type": "response", "id": req_id, "payload": validate_gsv_root(root)})
         return
     if msg_type == "scan_gsv_models":
         root = _path_or_none(payload.get("gsv_root"))
         if root is None:
-            _send({"type": "error", "id": req_id, "message": "缺少 GPT-SoVITS 根目录"})
+            _send({"type": "error", "id": req_id, "message": "请先选择 GPT-SoVITS / GSVI 整合包根目录。"})
             return
         try:
             catalog = scan_gsv_models(root)
@@ -822,6 +938,12 @@ def _handle_request(req: Dict[str, Any]) -> None:
             _send({"type": "error", "id": req_id, "message": str(exc), "traceback": traceback.format_exc()})
             return
         _send({"type": "response", "id": req_id, "payload": catalog})
+        return
+    if msg_type == "get_piper_runtime_status":
+        _handle_get_piper_runtime(req_id)
+        return
+    if msg_type == "install_piper_runtime":
+        _handle_install_piper_runtime(req_id, payload)
         return
     if msg_type == "get_piper_cuda_runtime_status":
         _handle_get_piper_cuda_runtime(req_id)
@@ -835,14 +957,26 @@ def _handle_request(req: Dict[str, Any]) -> None:
     if msg_type == "install_voxcpm_runtime":
         _handle_install_voxcpm_runtime(req_id, payload)
         return
+    if msg_type == "get_trainer_resources_status":
+        _handle_get_trainer_resources(req_id)
+        return
+    if msg_type == "install_trainer_resources":
+        _handle_install_trainer_resources(req_id, payload)
+        return
     if msg_type == "get_voxcpm_model_status":
         _handle_get_voxcpm_models(req_id)
         return
     if msg_type == "download_voxcpm_models":
         _handle_download_voxcpm_models(req_id, payload)
         return
+    if msg_type == "get_download_source_config":
+        _handle_get_download_sources(req_id)
+        return
+    if msg_type == "save_download_source_config":
+        _handle_save_download_sources(req_id, payload)
+        return
 
-    _send({"type": "error", "id": req_id, "message": f"未知命令: {msg_type}"})
+    _send({"type": "error", "id": req_id, "message": "当前版本暂不支持这个操作，请升级软件后再试。"})
 
 
 for line in sys.stdin:
@@ -852,6 +986,6 @@ for line in sys.stdin:
     try:
         req = json.loads(line)
     except Exception as exc:
-        _send({"type": "error", "id": "", "message": f"JSON 解析失败: {exc}"})
+        _send({"type": "error", "id": "", "message": "后台服务收到的请求格式不正确，请重启软件后再试。"})
         continue
     _handle_request(req)

@@ -3,10 +3,13 @@ import json
 import os
 import re
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from .config import DistillOptions, DistillTextSource, ProjectPaths
+from .text_normalization import DEFAULT_SENTENCE_PERIOD, normalize_training_texts
 
 
 ProgressCallback = Callable[[str, float, str], None]
@@ -29,11 +32,11 @@ def validate_gsv_root(root: Path) -> Dict[str, Any]:
     if not gsv_root.exists():
         problems.append("目录不存在")
     if not runtime_python.exists():
-        problems.append(f"缺少运行时 Python: {runtime_python}")
+        problems.append("没有找到 GPT-SoVITS 自带运行环境")
     if not models_dir.exists():
-        problems.append(f"缺少模型目录: {models_dir}")
+        problems.append("没有找到已安装模型目录")
     if not infer_config.exists():
-        problems.append(f"缺少推理配置: {infer_config}")
+        problems.append("没有找到推理配置文件")
 
     return {
         "ok": not problems,
@@ -100,7 +103,7 @@ def _read_csv_texts(path: Path) -> list[str]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         if "text" not in (reader.fieldnames or []):
-            raise RuntimeError(f"CSV 缺少 text 列: {path}")
+            raise RuntimeError("CSV 文本文件需要包含 text 列。")
         return [str(row.get("text") or "").strip() for row in reader if str(row.get("text") or "").strip()]
 
 
@@ -114,7 +117,7 @@ def _read_jsonl_texts(path: Path) -> list[str]:
             try:
                 record = json.loads(stripped)
             except json.JSONDecodeError as exc:
-                raise RuntimeError(f"JSONL 解析失败: {path}:{line_no}: {exc}") from exc
+                raise RuntimeError(f"JSONL 文本文件第 {line_no} 行格式不正确，请检查后重试。") from exc
             text = str(record.get("text") or "").strip()
             if text:
                 texts.append(text)
@@ -124,7 +127,7 @@ def _read_jsonl_texts(path: Path) -> list[str]:
 def _read_project_texts(path: Path) -> list[str]:
     metadata = path / "work" / "metadata.csv"
     if not metadata.exists():
-        raise RuntimeError(f"旧项目缺少 metadata.csv: {metadata}")
+        raise RuntimeError("旧项目缺少训练文本记录，无法读取文本。")
     texts: list[str] = []
     with metadata.open("r", encoding="utf-8") as handle:
         for raw in handle:
@@ -142,6 +145,8 @@ def collect_distill_texts(
     distill: DistillOptions,
     work_dir: Path,
     progress: Optional[ProgressCallback] = None,
+    normalize_append_period: bool = True,
+    normalization_period: str = DEFAULT_SENTENCE_PERIOD,
 ) -> list[str]:
     if not distill.text_sources:
         raise RuntimeError("未提供蒸馏文本来源")
@@ -165,7 +170,10 @@ def collect_distill_texts(
         else:
             raise RuntimeError(f"不支持的文本来源类型: {source.kind}")
 
-        collected.extend([text for text in texts if text.strip()])
+        source_texts = [text for text in texts if text.strip()]
+        if normalize_append_period:
+            source_texts = normalize_training_texts(source_texts, normalization_period)
+        collected.extend(source_texts)
         if progress:
             progress(
                 "collect",
@@ -302,10 +310,142 @@ def _run_helper(
     return result
 
 
+def _default_wav_path(paths: ProjectPaths, corpus_name: str, index: int) -> Path:
+    return paths.work_dir / corpus_name / "wavs" / f"{index:05d}.wav"
+
+
+def _write_metadata(paths: ProjectPaths, entries: list[tuple[Path, str]]) -> None:
+    lines = [f"{audio_path}|{text}" for audio_path, text in entries]
+    paths.training_manifest.parent.mkdir(parents=True, exist_ok=True)
+    paths.training_manifest.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def _ready_entries(entries: list[tuple[Path, str]]) -> list[tuple[Path, str]]:
+    return [(audio_path, text) for audio_path, text in entries if audio_path.exists() and audio_path.stat().st_size > 0]
+
+
+def _require_generated_audio(entries: list[tuple[Path, str]], *, label: str) -> list[tuple[Path, str]]:
+    ready = _ready_entries(entries)
+    if len(ready) == len(entries):
+        return ready
+    missing = len(entries) - len(ready)
+    sample = next((str(audio_path) for audio_path, _text in entries if not audio_path.exists() or audio_path.stat().st_size <= 0), "")
+    if not ready:
+        raise RuntimeError(f"{label} 未生成可用音频，无法继续训练。示例缺失文件: {sample}")
+    raise RuntimeError(f"{label} 有 {missing} 条音频缺失或为空，无法继续训练。示例缺失文件: {sample}")
+
+
+def _split_entries(entries: list[tuple[Path, str]], worker_count: int) -> list[list[tuple[Path, str]]]:
+    if not entries:
+        return []
+    actual_workers = max(1, min(worker_count, len(entries)))
+    buckets: list[list[tuple[Path, str]]] = [[] for _ in range(actual_workers)]
+    for index, entry in enumerate(entries):
+        buckets[index % actual_workers].append(entry)
+    return [bucket for bucket in buckets if bucket]
+
+
+def _run_generation_entries(
+    validation: Dict[str, Any],
+    distill: DistillOptions,
+    paths: ProjectPaths,
+    entries: list[tuple[Path, str]],
+    *,
+    device: str,
+    batch_size: int,
+    parallel_infer: bool,
+    parallel_workers: int,
+    progress: Optional[ProgressCallback],
+    progress_stage: str,
+    log_stem: str,
+) -> Dict[str, Any]:
+    if not entries:
+        return {"code": 0, "generated": 0, "oom": False, "message": ""}
+    worker_groups = _split_entries(entries, parallel_workers)
+    if len(worker_groups) <= 1:
+        request_path = paths.work_dir / "distill_corpus" / f"{log_stem}_request.json"
+        log_path = paths.work_dir / f"{log_stem}.log"
+        payload = _helper_request_payload(
+            validation,
+            distill,
+            [text for _audio_path, text in entries],
+            paths,
+            device=device,
+            batch_size=batch_size,
+            parallel_infer=parallel_infer,
+        )
+        payload["output_paths"] = [str(audio_path) for audio_path, _text in entries]
+        payload["metadata_path"] = str(paths.work_dir / "distill_corpus" / f"{log_stem}_metadata.csv")
+        request_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return _run_helper(validation, request_path, log_path, progress, progress_stage=progress_stage)
+
+    worker_progress = [0.0 for _ in worker_groups]
+    progress_lock = threading.Lock()
+    last_message = ""
+
+    def make_progress_callback(worker_index: int) -> ProgressCallback:
+        def _cb(stage: str, value: float, message: str) -> None:
+            nonlocal last_message
+            with progress_lock:
+                worker_progress[worker_index] = max(0.0, min(1.0, value))
+                last_message = message
+                average = sum(worker_progress) / max(1, len(worker_progress))
+            if progress:
+                progress(
+                    stage,
+                    average,
+                    f"并行合成 {worker_index + 1}/{len(worker_groups)}：{message}",
+                )
+
+        return _cb
+
+    def run_worker(worker_index: int, worker_entries: list[tuple[Path, str]]) -> Dict[str, Any]:
+        request_path = paths.work_dir / "distill_corpus" / f"{log_stem}_worker_{worker_index + 1}.json"
+        log_path = paths.work_dir / f"{log_stem}_worker_{worker_index + 1}.log"
+        payload = _helper_request_payload(
+            validation,
+            distill,
+            [text for _audio_path, text in worker_entries],
+            paths,
+            device=device,
+            batch_size=batch_size,
+            parallel_infer=parallel_infer,
+        )
+        payload["output_paths"] = [str(audio_path) for audio_path, _text in worker_entries]
+        payload["metadata_path"] = str(paths.work_dir / "distill_corpus" / f"{log_stem}_worker_{worker_index + 1}_metadata.csv")
+        request_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return _run_helper(validation, request_path, log_path, make_progress_callback(worker_index), progress_stage=progress_stage)
+
+    results: list[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=len(worker_groups)) as executor:
+        future_map = {
+            executor.submit(run_worker, worker_index, worker_entries): worker_index
+            for worker_index, worker_entries in enumerate(worker_groups)
+        }
+        for future in as_completed(future_map):
+            results.append(future.result())
+
+    first_error = next((item for item in results if int(item.get("code") or 0) != 0), None)
+    if first_error:
+        return {
+            "code": int(first_error.get("code") or 1),
+            "generated": sum(int(item.get("generated") or 0) for item in results),
+            "oom": any(bool(item.get("oom")) for item in results),
+            "message": str(first_error.get("message") or last_message or "蒸馏失败"),
+        }
+    return {
+        "code": 0,
+        "generated": sum(int(item.get("generated") or 0) for item in results),
+        "oom": False,
+        "message": "",
+    }
+
+
 def build_distill_corpus(
     paths: ProjectPaths,
     distill: DistillOptions,
     progress: Optional[ProgressCallback] = None,
+    texts: Optional[list[str]] = None,
 ) -> int:
     validation = validate_gsv_root(distill.gsv_root)
     if not validation["ok"]:
@@ -314,20 +454,25 @@ def build_distill_corpus(
     catalog = scan_gsv_models(distill.gsv_root)
     _ensure_selection(catalog, distill)
 
-    texts = collect_distill_texts(distill, paths.work_dir, progress)
+    texts = list(texts or collect_distill_texts(distill, paths.work_dir, progress))
     if not texts:
         raise RuntimeError("蒸馏文本为空")
 
     distill_dir = paths.work_dir / "distill_corpus"
     distill_dir.mkdir(parents=True, exist_ok=True)
-    request_path = distill_dir / "request.json"
     log_path = paths.work_dir / "distill.log"
     if log_path.exists():
         log_path.unlink()
+    wav_dir = distill_dir / "wavs"
+    wav_dir.mkdir(parents=True, exist_ok=True)
+    for stale in wav_dir.glob("*.wav"):
+        stale.unlink(missing_ok=True)
 
     device = "cuda" if str(distill.device).lower() in {"cuda", "gpu"} else "cpu"
     batch_size = max(1, int(distill.batch_size))
     parallel_infer = bool(distill.parallel_infer)
+    parallel_workers = max(1, int(distill.parallel_workers or 1))
+    entries = [(_default_wav_path(paths, "distill_corpus", index), text) for index, text in enumerate(texts, start=1)]
 
     if progress:
         progress("collect", 1.0, f"文本收集完成，共 {len(texts)} 条")
@@ -335,34 +480,41 @@ def build_distill_corpus(
     attempts = 0
     while True:
         attempts += 1
-        request_payload = _helper_request_payload(
-            validation,
-            distill,
-            texts,
-            paths,
-            device=device,
-            batch_size=batch_size,
-            parallel_infer=parallel_infer,
-        )
-        request_path.write_text(json.dumps(request_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         if progress:
             progress(
                 "distill",
                 0.0,
-                f"启动 GPT-SoVITS 蒸馏，第 {attempts} 次尝试（device={device}, batch={batch_size}, parallel={parallel_infer}）",
+                f"启动 GPT-SoVITS 蒸馏，第 {attempts} 次尝试（device={device}, batch={batch_size}, parallel={parallel_infer}, workers={parallel_workers}）",
             )
 
-        result = _run_helper(validation, request_path, log_path, progress)
+        result = _run_generation_entries(
+            validation,
+            distill,
+            paths,
+            entries,
+            device=device,
+            batch_size=batch_size,
+            parallel_infer=parallel_infer,
+            parallel_workers=parallel_workers,
+            progress=progress,
+            progress_stage="distill",
+            log_stem="distill",
+        )
         if result["code"] == 0:
+            ready_entries = _require_generated_audio(entries, label="GPT-SoVITS 蒸馏")
+            _write_metadata(paths, ready_entries)
             if progress:
-                progress("distill", 1.0, f"蒸馏语料生成完成，共 {result['generated']} 条")
-            return len(texts)
+                progress("distill", 1.0, f"蒸馏语料生成完成，共 {len(ready_entries)} 条")
+            return len(ready_entries)
 
         if not result.get("oom") or device != "cuda":
             raise RuntimeError(str(result.get("message") or f"蒸馏失败，详见 {log_path}"))
 
         retry_message = ""
-        if parallel_infer:
+        if parallel_workers > 1:
+            parallel_workers = max(1, parallel_workers // 2)
+            retry_message = f"检测到显存不足，自动降低并行合成路数到 {parallel_workers} 后重试。"
+        elif parallel_infer:
             parallel_infer = False
             retry_message = "检测到显存不足，自动关闭并行推理后重试。"
         elif batch_size > 1:
@@ -394,27 +546,25 @@ def generate_distill_entries(
 
     distill_dir = paths.work_dir / "distill_corpus"
     distill_dir.mkdir(parents=True, exist_ok=True)
-    request_path = distill_dir / "resume_request.json"
     log_path = paths.work_dir / "distill_resume.log"
-    texts = [text for _path, text in entries]
-    output_paths = [str(audio_path) for audio_path, _text in entries]
-    payload = _helper_request_payload(
+    if progress:
+        progress("distill", 0.0, f"旧项目缺失 {len(entries)} 条 GPT-SoVITS 音频，开始补生成...")
+    result = _run_generation_entries(
         validation,
         distill,
-        texts,
         paths,
+        entries,
         device="cuda" if str(distill.device).lower() in {"cuda", "gpu"} else "cpu",
         batch_size=max(1, int(distill.batch_size)),
         parallel_infer=bool(distill.parallel_infer),
+        parallel_workers=max(1, int(distill.parallel_workers or 1)),
+        progress=progress,
+        progress_stage="distill",
+        log_stem="distill_resume",
     )
-    payload["output_paths"] = output_paths
-    payload["metadata_path"] = str(distill_dir / "resume_metadata.csv")
-    request_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    if progress:
-        progress("distill", 0.0, f"旧项目缺失 {len(entries)} 条 GPT-SoVITS 音频，开始补生成...")
-    result = _run_helper(validation, request_path, log_path, progress)
     if result["code"] != 0:
         raise RuntimeError(str(result.get("message") or f"GPT-SoVITS 补生成失败，详见 {log_path}"))
+    _require_generated_audio(entries, label="GPT-SoVITS 补生成")
     if progress:
         progress("distill", 1.0, f"GPT-SoVITS 缺失音频补生成完成，共 {result['generated']} 条")
     return int(result.get("generated") or 0)

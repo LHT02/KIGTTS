@@ -30,6 +30,7 @@ import android.os.SystemClock
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.Surface
@@ -40,6 +41,7 @@ import android.view.inputmethod.InputMethodManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.NumberPicker
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -148,6 +150,7 @@ import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -169,6 +172,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -231,16 +235,21 @@ import com.lhtstudio.kigtts.app.audio.SpeechEnhancementMode
 import com.lhtstudio.kigtts.app.audio.SpeakerEnrollResult
 import com.lhtstudio.kigtts.app.audio.VadMode
 import com.lhtstudio.kigtts.app.data.ModelRepository
+import com.lhtstudio.kigtts.app.data.RecognitionResourceProgress
+import com.lhtstudio.kigtts.app.data.RecognitionResourceStatus
+import com.lhtstudio.kigtts.app.data.KokoroVoiceStatus
 import com.lhtstudio.kigtts.app.data.SoundboardGroup
 import com.lhtstudio.kigtts.app.data.SoundboardItem
 import com.lhtstudio.kigtts.app.data.SoundboardLayoutMode
 import com.lhtstudio.kigtts.app.data.SoundboardConfig
 import com.lhtstudio.kigtts.app.data.SoundboardPresetIo
+import com.lhtstudio.kigtts.app.data.KOKORO_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.SYSTEM_TTS_VOICE_NAME
 import com.lhtstudio.kigtts.app.data.VoicePackInfo
 import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.data.VoicePackMeta
 import com.lhtstudio.kigtts.app.data.defaultSoundboardGroups
+import com.lhtstudio.kigtts.app.data.isKokoroVoiceDir
 import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
 import com.lhtstudio.kigtts.app.data.parseSoundboardConfig
 import com.lhtstudio.kigtts.app.data.serializeSoundboardConfig
@@ -569,6 +578,26 @@ data class UiState(
     val sileroVadEnabled: Boolean = true,
     val sileroVadThreshold: Float = UserPrefs.SILERO_VAD_DEFAULT_THRESHOLD,
     val sileroVadPreRollMs: Int = UserPrefs.SILERO_VAD_DEFAULT_PRE_ROLL_MS,
+    val recognitionResourceInstalled: Boolean = false,
+    val recognitionResourceName: String = "未安装",
+    val recognitionResourceVersion: String = "",
+    val recognitionResourceStatus: String = "未安装语音识别资源包",
+    val recognitionResourceBusy: Boolean = false,
+    val recognitionResourceProgressStage: String = "",
+    val recognitionResourceProgress: Float = -1f,
+    val recognitionResourceModelScopeUrl: String = UserPrefs.DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
+    val recognitionResourceHuggingFaceUrl: String = UserPrefs.DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
+    val recognitionResourcePreferredSource: Int = UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+    val kokoroInstalled: Boolean = false,
+    val kokoroStatus: String = "未安装 Kokoro 语音包",
+    val kokoroBusy: Boolean = false,
+    val kokoroProgressStage: String = "",
+    val kokoroProgress: Float = -1f,
+    val kokoroHfUrl: String = UserPrefs.DEFAULT_KOKORO_HF_URL,
+    val kokoroHfMirrorUrl: String = UserPrefs.DEFAULT_KOKORO_HFMIRROR_URL,
+    val kokoroModelScopeUrl: String = UserPrefs.DEFAULT_KOKORO_MODELSCOPE_URL,
+    val kokoroPreferredSource: Int = UserPrefs.KOKORO_SOURCE_MODELSCOPE,
+    val kokoroSpeakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
     val piperNoiseScale: Float = 0.667f,
@@ -582,6 +611,7 @@ data class UiState(
     val themeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val overlayThemeMode: Int = UserPrefs.THEME_MODE_FOLLOW_SYSTEM,
     val fontScaleBlockMode: Int = UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY,
+    val hapticFeedbackEnabled: Boolean = true,
     val drawingSaveRelativePath: String = UserPrefs.DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
     val quickCardAutoSaveOnExit: Boolean = false,
     val useBuiltinFileManager: Boolean = true,
@@ -591,6 +621,7 @@ data class UiState(
     val pushToTalkConfirmInputMode: Boolean = false,
     val floatingOverlayEnabled: Boolean = false,
     val floatingOverlayAutoDock: Boolean = true,
+    val floatingOverlayShowOnLockScreen: Boolean = false,
     val floatingOverlayHardcodedShortcutSupplement: Boolean = false,
     val volumeHotkeyUpDownEnabled: Boolean = false,
     val volumeHotkeyDownUpEnabled: Boolean = false,
@@ -603,10 +634,13 @@ data class UiState(
         VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.DownUp),
     val ttsDisabled: Boolean = false,
     val soundboardKeywordTriggerEnabled: Boolean = false,
+    val soundboardSuppressTtsOnKeyword: Boolean = false,
     val allowQuickTextTriggerSoundboard: Boolean = false,
     val quickSubtitleInterruptQueue: Boolean = true,
     val quickSubtitleAutoFit: Boolean = true,
     val quickSubtitleCompactControls: Boolean = false,
+    val quickSubtitleKeepInputPreview: Boolean = true,
+    val drawingKeepCanvasOrientationToDevice: Boolean = true,
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
     val speakerVerifyEnabled: Boolean = false,
@@ -1016,6 +1050,8 @@ class MainViewModel(
         private set
     var quickSubtitleInputText by mutableStateOf("")
         private set
+    var quickSubtitleContentRevision by mutableLongStateOf(0L)
+        private set
     var quickSubtitlePlayOnSend by mutableStateOf(true)
         private set
     var quickSubtitleInputCollapsed by mutableStateOf(false)
@@ -1054,6 +1090,8 @@ class MainViewModel(
         private set
     var drawingToolbarCollapsed by mutableStateOf(false)
         private set
+    var drawingManualRotationQuarterTurns by mutableIntStateOf(0)
+        private set
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
     private var soundboardNextGroupId = 2L
@@ -1067,6 +1105,8 @@ class MainViewModel(
         loadQuickSubtitleConfig()
         loadSoundboardConfig()
         loadQuickCardConfig()
+        refreshRecognitionResourceStatus()
+        refreshKokoroVoiceStatus()
         observeSoundboardPlayback()
         observeSettingsChanges()
     }
@@ -1103,11 +1143,16 @@ class MainViewModel(
         detachRealtimeHost()
         realtimeHost = service
         service.setQuickSubtitlePlayOnSend(quickSubtitlePlayOnSend)
+        val attachedSpeakerSimilarity = service.getSpeakerLastSimilarity()
+        if (attachedSpeakerSimilarity >= 0f) {
+            uiState = uiState.copy(speakerLastSimilarity = attachedSpeakerSimilarity)
+        }
         hostStateJob = viewModelScope.launch {
             service.stateFlow().collectLatest { snapshot ->
                 realtimeRecognized = snapshot.recognized
                 realtimeInputLevel = snapshot.inputLevel.coerceIn(0f, 1f)
                 realtimePlaybackProgress = snapshot.playbackProgress.coerceIn(0f, 1f)
+                val previousSpeakerSimilarity = uiState.speakerLastSimilarity
                 uiState = uiState.copy(
                     asrDir = snapshot.asrDir,
                     voiceDir = snapshot.voiceDir,
@@ -1118,7 +1163,11 @@ class MainViewModel(
                     aec3Diag = snapshot.aec3Diag,
                     pushToTalkPressed = snapshot.pushToTalkPressed,
                     pushToTalkStreamingText = snapshot.pushToTalkStreamingText,
-                    speakerLastSimilarity = snapshot.speakerLastSimilarity,
+                    speakerLastSimilarity = if (snapshot.speakerLastSimilarity >= 0f) {
+                        snapshot.speakerLastSimilarity
+                    } else {
+                        previousSpeakerSimilarity
+                    },
                     inputDeviceLabel = snapshot.inputDeviceLabel.ifBlank { uiState.inputDeviceLabel },
                     outputDeviceLabel = snapshot.outputDeviceLabel.ifBlank { uiState.outputDeviceLabel }
                 )
@@ -1276,6 +1325,14 @@ class MainViewModel(
             sileroVadEnabled = settings.sileroVadEnabled,
             sileroVadThreshold = settings.sileroVadThreshold,
             sileroVadPreRollMs = settings.sileroVadPreRollMs,
+            recognitionResourceModelScopeUrl = settings.recognitionResourceModelScopeUrl,
+            recognitionResourceHuggingFaceUrl = settings.recognitionResourceHuggingFaceUrl,
+            recognitionResourcePreferredSource = settings.recognitionResourcePreferredSource,
+            kokoroHfUrl = settings.kokoroHfUrl,
+            kokoroHfMirrorUrl = settings.kokoroHfMirrorUrl,
+            kokoroModelScopeUrl = settings.kokoroModelScopeUrl,
+            kokoroPreferredSource = settings.kokoroPreferredSource,
+            kokoroSpeakerId = settings.kokoroSpeakerId,
             minVolumePercent = settings.minVolumePercent,
             playbackGainPercent = settings.playbackGainPercent,
             piperNoiseScale = settings.piperNoiseScale,
@@ -1289,6 +1346,7 @@ class MainViewModel(
             themeMode = settings.themeMode,
             overlayThemeMode = settings.overlayThemeMode,
             fontScaleBlockMode = settings.fontScaleBlockMode,
+            hapticFeedbackEnabled = settings.hapticFeedbackEnabled,
             drawingSaveRelativePath = normalizeDrawingSaveRelativePath(settings.drawingSaveRelativePath),
             quickCardAutoSaveOnExit = settings.quickCardAutoSaveOnExit,
             useBuiltinFileManager = settings.useBuiltinFileManager,
@@ -1298,6 +1356,7 @@ class MainViewModel(
             pushToTalkConfirmInputMode = settings.pushToTalkConfirmInput,
             floatingOverlayEnabled = settings.floatingOverlayEnabled,
             floatingOverlayAutoDock = settings.floatingOverlayAutoDock,
+            floatingOverlayShowOnLockScreen = settings.floatingOverlayShowOnLockScreen,
             floatingOverlayHardcodedShortcutSupplement =
                 settings.floatingOverlayHardcodedShortcutSupplement,
             volumeHotkeyUpDownEnabled = settings.volumeHotkeyUpDownEnabled,
@@ -1309,10 +1368,13 @@ class MainViewModel(
             volumeHotkeyDownUpAction = settings.volumeHotkeyDownUpAction,
             ttsDisabled = settings.ttsDisabled,
             soundboardKeywordTriggerEnabled = settings.soundboardKeywordTriggerEnabled,
+            soundboardSuppressTtsOnKeyword = settings.soundboardSuppressTtsOnKeyword,
             allowQuickTextTriggerSoundboard = settings.allowQuickTextTriggerSoundboard,
             quickSubtitleInterruptQueue = settings.quickSubtitleInterruptQueue,
             quickSubtitleAutoFit = settings.quickSubtitleAutoFit,
             quickSubtitleCompactControls = settings.quickSubtitleCompactControls,
+            quickSubtitleKeepInputPreview = settings.quickSubtitleKeepInputPreview,
+            drawingKeepCanvasOrientationToDevice = settings.drawingKeepCanvasOrientationToDevice,
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
             speakerProfileReady = hasProfiles,
@@ -1438,6 +1500,10 @@ class MainViewModel(
         }
     }
 
+    private fun markQuickSubtitleContentSubmitted() {
+        quickSubtitleContentRevision++
+    }
+
     fun currentQuickSubtitleGroupIndex(): Int {
         val idx = quickSubtitleGroups.indexOfFirst { it.id == quickSubtitleSelectedGroupId }
         return if (idx >= 0) idx else 0
@@ -1454,6 +1520,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        markQuickSubtitleContentSubmitted()
         if (enqueueSpeak) {
             speakText(
                 message,
@@ -1474,6 +1541,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        markQuickSubtitleContentSubmitted()
         if (quickSubtitlePlayOnSend && hasVoice) {
             speakText(
                 message,
@@ -1495,6 +1563,7 @@ class MainViewModel(
         val message = quickSubtitleInputText.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        markQuickSubtitleContentSubmitted()
         quickSubtitleInputText = ""
         if (playVoice) {
             speakText(
@@ -1516,15 +1585,31 @@ class MainViewModel(
         navigateToPage: Boolean = true
     ) {
         val normalized = text.trim()
-        if (requestId == lastHandledQuickSubtitleLaunchRequestId) return
+        val openPageTarget = isOverlayOpenTarget(target)
+        val effectiveRequestId = if (openPageTarget) {
+            nextQuickSubtitleLaunchRequestId()
+        } else {
+            requestId
+        }
+        if (effectiveRequestId == Long.MIN_VALUE) return
+        if (effectiveRequestId == lastHandledQuickSubtitleLaunchRequestId) return
         if (!isOverlayOpenTarget(target) && normalized.isEmpty()) return
-        lastHandledQuickSubtitleLaunchRequestId = requestId
+        lastHandledQuickSubtitleLaunchRequestId = effectiveRequestId
         pendingQuickSubtitleLaunchRequest = ExternalQuickSubtitleRequest(
-            requestId = requestId,
+            requestId = effectiveRequestId,
             target = target,
             text = normalized,
             navigateToPage = navigateToPage
         )
+    }
+
+    private fun nextQuickSubtitleLaunchRequestId(): Long {
+        val now = SystemClock.uptimeMillis()
+        return if (now <= lastHandledQuickSubtitleLaunchRequestId) {
+            lastHandledQuickSubtitleLaunchRequestId + 1
+        } else {
+            now
+        }
     }
 
     fun consumeQuickSubtitleLaunchRequest(requestId: Long) {
@@ -1653,6 +1738,7 @@ class MainViewModel(
             else -> {
                 if (normalized.isEmpty()) return
                 quickSubtitleCurrentText = normalized
+                markQuickSubtitleContentSubmitted()
                 saveQuickSubtitleConfig()
             }
         }
@@ -2172,6 +2258,14 @@ class MainViewModel(
         }
     }
 
+    private suspend fun shouldSuppressVoiceTtsForSoundboard(text: String): Boolean {
+        val normalized = text.trim()
+        if (normalized.isEmpty()) return false
+        return uiState.soundboardKeywordTriggerEnabled &&
+            uiState.soundboardSuppressTtsOnKeyword &&
+            SoundboardManager.hasTriggerMatch(appContext, normalized)
+    }
+
     private fun quickCardDir(): File {
         val dir = File(appContext.filesDir, "quick_cards")
         if (!dir.exists()) dir.mkdirs()
@@ -2589,6 +2683,21 @@ class MainViewModel(
 
     private fun isSystemTtsVoicePack(pack: VoicePackInfo): Boolean = isSystemTtsVoiceDir(pack.dir)
 
+    private fun isKokoroVoicePack(pack: VoicePackInfo): Boolean = isKokoroVoiceDir(pack.dir)
+
+    private suspend fun resolvePreferredVoiceDir(lastName: String?): File? {
+        val resolved = when (lastName) {
+            SYSTEM_TTS_VOICE_NAME -> systemTtsVoiceDir()
+            KOKORO_VOICE_NAME -> repo.kokoroVoiceDir().takeIf { repo.kokoroVoiceStatus().installed }
+            null -> null
+            else -> repo.resolveVoicePack(lastName)
+        }
+        if (resolved != null) return resolved
+        return withContext(Dispatchers.IO) { repo.listVoicePacks().firstOrNull()?.dir }
+            ?: repo.kokoroVoiceDir().takeIf { repo.kokoroVoiceStatus().installed }
+            ?: systemTtsVoiceDir()
+    }
+
     private suspend fun loadSystemTtsVoicePackInfo(existing: List<VoicePackInfo>): VoicePackInfo {
         val defaultOrder = (existing.maxOfOrNull { it.meta.order } ?: -1L) + 1L
         val order = UserPrefs.getSystemTtsOrder(appContext) ?: defaultOrder.also {
@@ -2600,7 +2709,7 @@ class MainViewModel(
                 name = SYSTEM_TTS_DEFAULT_LABEL,
                 remark = SYSTEM_TTS_DEFAULT_REMARK,
                 avatar = "avatar.png",
-                pinned = false,
+                pinned = UserPrefs.getSystemTtsPinned(appContext),
                 order = order
             )
         )
@@ -2608,17 +2717,50 @@ class MainViewModel(
 
     private suspend fun loadVoicePackList(): List<VoicePackInfo> {
         val physical = withContext(Dispatchers.IO) { repo.listVoicePacks() }
+        val kokoroStatus = withContext(Dispatchers.IO) { repo.kokoroVoiceStatus() }
+        val kokoro = if (kokoroStatus.installed) {
+            val defaultOrder = (physical.maxOfOrNull { it.meta.order } ?: -1L) + 1L
+            val order = UserPrefs.getKokoroVoiceOrder(appContext) ?: defaultOrder.also {
+                UserPrefs.setKokoroVoiceOrder(appContext, it)
+            }
+            listOf(
+                VoicePackInfo(
+                    dir = repo.kokoroVoiceDir(),
+                    meta = VoicePackMeta(
+                        name = "Kokoro",
+                        remark = "离线朗读声音，可切换多个声音编号",
+                        avatar = "avatar.png",
+                        pinned = UserPrefs.getKokoroVoicePinned(appContext),
+                        order = order
+                    )
+                )
+            )
+        } else {
+            emptyList()
+        }
         val system = loadSystemTtsVoicePackInfo(physical)
-        return sortVoicePacks(physical + system)
+        return sortVoicePacks(kokoro + physical + system)
     }
 
     private suspend fun findFallbackVoicePack(excludingDir: File): File? {
         val excludedPath = excludingDir.absolutePath
-        val listed = loadVoicePackList()
+        val listed = withContext(Dispatchers.IO) { repo.listVoicePacks() }
             .firstOrNull { it.dir.absolutePath != excludedPath }
             ?.dir
         if (listed != null) return listed
+        val kokoro = repo.kokoroVoiceDir()
+        if (kokoro.absolutePath != excludedPath && repo.kokoroVoiceStatus().installed) {
+            return kokoro
+        }
         return systemTtsVoiceDir().takeIf { it.absolutePath != excludedPath }
+    }
+
+    private fun fallbackVoiceStatus(dir: File): String {
+        return when {
+            isSystemTtsVoiceDir(dir) -> "已切换到系统 TTS"
+            isKokoroVoiceDir(dir) -> "已切换备用语音包：Kokoro"
+            else -> "已切换备用语音包：${dir.name}"
+        }
     }
 
     private suspend fun stopRealtimeImmediatelyForVoicePackDeletion() {
@@ -2641,41 +2783,376 @@ class MainViewModel(
     fun loadBundledAsr() {
         if (uiState.asrDir != null) return
         viewModelScope.launch {
-            val dir = withContext(Dispatchers.IO) { repo.ensureBundledAsr() }
+            val (dir, loadStatus) = withContext(Dispatchers.IO) {
+                val resolvedDir = repo.ensureBundledAsr()
+                val resourceStatus = repo.recognitionResourceStatus()
+                val statusText = if (
+                    resolvedDir != null &&
+                    resourceStatus.asrDir?.absolutePath == resolvedDir.absolutePath
+                ) {
+                    "已加载语音识别资源包"
+                } else {
+                    "已加载语音识别资源包"
+                }
+                resolvedDir to statusText
+            }
             if (dir != null) {
                 val host = realtimeHost
                 if (host != null) {
-                    host.updateSelectedAsrDir(dir, status = "已加载内置 ASR 模型", preload = true)
+                    host.updateSelectedAsrDir(dir, status = loadStatus, preload = true)
                 } else {
-                    uiState = uiState.copy(asrDir = dir, status = "已加载内置 ASR 模型")
+                    uiState = uiState.copy(asrDir = dir, status = loadStatus)
                     preloadAsr(dir)
                 }
             } else {
-                uiState = uiState.copy(status = "未找到内置 ASR 模型")
+                uiState = uiState.copy(status = "请先安装语音识别资源包")
             }
         }
+    }
+
+    fun refreshRecognitionResourceStatus() {
+        viewModelScope.launch {
+            val status = withContext(Dispatchers.IO) { repo.recognitionResourceStatus() }
+            val installedAsrDir = status.asrDir
+            val shouldApplyAsrDir =
+                installedAsrDir != null &&
+                    uiState.asrDir?.absolutePath != installedAsrDir.absolutePath
+            uiState = uiState.copy(
+                recognitionResourceInstalled = status.installed,
+                recognitionResourceName = status.name,
+                recognitionResourceVersion = status.version,
+                recognitionResourceStatus = recognitionResourceStatusText(status),
+                recognitionResourceBusy = false,
+                recognitionResourceProgressStage = "",
+                recognitionResourceProgress = -1f,
+                asrDir = installedAsrDir ?: uiState.asrDir
+            )
+            if (shouldApplyAsrDir && installedAsrDir != null) {
+                val host = realtimeHost
+                if (host != null) {
+                    host.updateSelectedAsrDir(installedAsrDir, status = "已加载语音识别资源包", preload = true)
+                } else {
+                    preloadAsr(installedAsrDir)
+                }
+            }
+        }
+    }
+
+    fun setRecognitionResourceSources(
+        modelScopeUrl: String,
+        huggingFaceUrl: String,
+        preferredSource: Int
+    ) {
+        viewModelScope.launch {
+            UserPrefs.setRecognitionResourceSources(
+                appContext,
+                modelScopeUrl = modelScopeUrl,
+                huggingFaceUrl = huggingFaceUrl,
+                preferredSource = preferredSource
+            )
+            uiState = uiState.copy(
+                recognitionResourceModelScopeUrl = modelScopeUrl.trim(),
+                recognitionResourceHuggingFaceUrl = huggingFaceUrl.trim(),
+                recognitionResourcePreferredSource = preferredSource.coerceIn(
+                    UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                    UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE
+                )
+            )
+        }
+    }
+
+    fun downloadRecognitionResources() {
+        if (uiState.recognitionResourceBusy) return
+        val url = preferredRecognitionResourceUrl()
+        if (url.isBlank()) {
+            uiState = uiState.copy(status = "请先配置语音识别资源包下载源")
+            return
+        }
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                recognitionResourceBusy = true,
+                recognitionResourceProgressStage = "准备下载",
+                recognitionResourceProgress = -1f,
+                recognitionResourceStatus = "准备下载语音识别资源包"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.downloadRecognitionResources(url) { progress ->
+                        postRecognitionResourceProgress(progress)
+                    }
+                }
+                applyInstalledRecognitionResource(status, "语音识别资源包安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("downloadRecognitionResources failed", e)
+                uiState = uiState.copy(
+                    recognitionResourceBusy = false,
+                    recognitionResourceProgressStage = "",
+                    recognitionResourceProgress = -1f,
+                    recognitionResourceStatus = "语音识别资源包安装失败：${e.message ?: "未知错误"}",
+                    status = "语音识别资源包安装失败"
+                )
+            }
+        }
+    }
+
+    fun installRecognitionResources(uri: android.net.Uri) {
+        if (uiState.recognitionResourceBusy) return
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                recognitionResourceBusy = true,
+                recognitionResourceProgressStage = "准备安装",
+                recognitionResourceProgress = -1f,
+                recognitionResourceStatus = "准备安装语音识别资源包"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.installRecognitionResources(uri, appContext.contentResolver) { progress ->
+                        postRecognitionResourceProgress(progress)
+                    }
+                }
+                applyInstalledRecognitionResource(status, "语音识别资源包安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("installRecognitionResources failed", e)
+                uiState = uiState.copy(
+                    recognitionResourceBusy = false,
+                    recognitionResourceProgressStage = "",
+                    recognitionResourceProgress = -1f,
+                    recognitionResourceStatus = "语音识别资源包安装失败：${e.message ?: "未知错误"}",
+                    status = "语音识别资源包安装失败"
+                )
+            }
+        }
+    }
+
+    fun refreshKokoroVoiceStatus() {
+        viewModelScope.launch {
+            val status = withContext(Dispatchers.IO) { repo.kokoroVoiceStatus() }
+            uiState = uiState.copy(
+                kokoroInstalled = status.installed,
+                kokoroStatus = kokoroStatusText(status),
+                kokoroBusy = false,
+                kokoroProgressStage = "",
+                kokoroProgress = -1f
+            )
+            refreshVoicePacks()
+        }
+    }
+
+    fun setKokoroSources(hfUrl: String, hfMirrorUrl: String, modelScopeUrl: String, preferredSource: Int) {
+        viewModelScope.launch {
+            UserPrefs.setKokoroSources(appContext, hfUrl, hfMirrorUrl, modelScopeUrl, preferredSource)
+            uiState = uiState.copy(
+                kokoroHfUrl = hfUrl.trim(),
+                kokoroHfMirrorUrl = hfMirrorUrl.trim(),
+                kokoroModelScopeUrl = modelScopeUrl.trim(),
+                kokoroPreferredSource = preferredSource.coerceIn(
+                    UserPrefs.KOKORO_SOURCE_HF,
+                    UserPrefs.KOKORO_SOURCE_MODELSCOPE
+                )
+            )
+        }
+    }
+
+    fun setKokoroSpeakerId(speakerId: Int) {
+        val normalized = speakerId.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, UserPrefs.KOKORO_MAX_SPEAKER_ID)
+        uiState = uiState.copy(kokoroSpeakerId = normalized)
+        realtimeHost?.setKokoroSpeakerId(normalized)
+        viewModelScope.launch {
+            UserPrefs.setKokoroSpeakerId(appContext, normalized)
+        }
+    }
+
+    fun downloadKokoroVoice() {
+        if (uiState.kokoroBusy) return
+        val url = preferredKokoroSourceUrl()
+        if (url.isBlank()) {
+            uiState = uiState.copy(status = "请先配置 Kokoro 下载源")
+            return
+        }
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                kokoroBusy = true,
+                kokoroProgressStage = "准备下载",
+                kokoroProgress = -1f,
+                kokoroStatus = "准备下载 Kokoro 离线语音"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.downloadKokoroVoice(url) { progress -> postKokoroProgress(progress) }
+                }
+                applyInstalledKokoroVoice(status, "Kokoro 离线语音安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("downloadKokoroVoice failed", e)
+                uiState = uiState.copy(
+                    kokoroBusy = false,
+                    kokoroProgressStage = "",
+                    kokoroProgress = -1f,
+                    kokoroStatus = "Kokoro 离线语音安装失败：${e.message ?: "未知错误"}",
+                    status = "Kokoro 离线语音安装失败"
+                )
+            }
+        }
+    }
+
+    fun installKokoroVoice(uri: android.net.Uri) {
+        if (uiState.kokoroBusy) return
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                kokoroBusy = true,
+                kokoroProgressStage = "准备安装",
+                kokoroProgress = -1f,
+                kokoroStatus = "准备安装 Kokoro 离线语音"
+            )
+            try {
+                val status = withContext(Dispatchers.IO) {
+                    repo.installKokoroVoice(uri, appContext.contentResolver) { progress -> postKokoroProgress(progress) }
+                }
+                applyInstalledKokoroVoice(status, "Kokoro 离线语音安装完成")
+            } catch (e: Exception) {
+                AppLogger.e("installKokoroVoice failed", e)
+                uiState = uiState.copy(
+                    kokoroBusy = false,
+                    kokoroProgressStage = "",
+                    kokoroProgress = -1f,
+                    kokoroStatus = "Kokoro 离线语音安装失败：${e.message ?: "未知错误"}",
+                    status = "Kokoro 离线语音安装失败"
+                )
+            }
+        }
+    }
+
+    private fun preferredKokoroSourceUrl(): String {
+        val hf = uiState.kokoroHfUrl.trim()
+        val mirror = uiState.kokoroHfMirrorUrl.trim()
+        val modelScope = uiState.kokoroModelScopeUrl.trim()
+        return when (uiState.kokoroPreferredSource) {
+            UserPrefs.KOKORO_SOURCE_HF -> hf.ifBlank { mirror.ifBlank { modelScope } }
+            UserPrefs.KOKORO_SOURCE_MODELSCOPE -> modelScope.ifBlank { mirror.ifBlank { hf } }
+            else -> mirror.ifBlank { hf.ifBlank { modelScope } }
+        }
+    }
+
+    private fun postKokoroProgress(progress: RecognitionResourceProgress) {
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            uiState = uiState.copy(
+                kokoroBusy = true,
+                kokoroProgressStage = progress.stage,
+                kokoroProgress = progress.fraction,
+                kokoroStatus = if (progress.fraction in 0f..1f) {
+                    "${progress.stage} ${(progress.fraction * 100f).roundToInt()}%"
+                } else {
+                    progress.stage
+                }
+            )
+        }
+    }
+
+    private suspend fun applyInstalledKokoroVoice(status: KokoroVoiceStatus, message: String) {
+        uiState = uiState.copy(
+            kokoroInstalled = status.installed,
+            kokoroStatus = kokoroStatusText(status),
+            kokoroBusy = false,
+            kokoroProgressStage = "",
+            kokoroProgress = -1f,
+            status = message
+        )
+        refreshVoicePacks()
+    }
+
+    private fun kokoroStatusText(status: KokoroVoiceStatus): String {
+        if (!status.installed) return "未安装 Kokoro 离线语音。安装后可以在语音包页面选择 Kokoro。"
+        return buildString {
+            append("已安装 ")
+            append(status.name)
+            if (status.version.isNotBlank()) {
+                append(" / ")
+                append(status.version)
+            }
+            append("，可切换多个声音编号。")
+        }
+    }
+
+    private fun preferredRecognitionResourceUrl(): String {
+        val modelScope = uiState.recognitionResourceModelScopeUrl.trim()
+        val huggingFace = uiState.recognitionResourceHuggingFaceUrl.trim()
+        return if (uiState.recognitionResourcePreferredSource == UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE) {
+            huggingFace.ifBlank { modelScope }
+        } else {
+            modelScope.ifBlank { huggingFace }
+        }
+    }
+
+    private fun postRecognitionResourceProgress(progress: RecognitionResourceProgress) {
+        appContext.runOnUiThread {
+            uiState = uiState.copy(
+                recognitionResourceBusy = true,
+                recognitionResourceProgressStage = progress.stage,
+                recognitionResourceProgress = progress.fraction,
+                recognitionResourceStatus = if (progress.fraction in 0f..1f) {
+                    "${progress.stage} ${(progress.fraction * 100f).roundToInt()}%"
+                } else {
+                    progress.stage
+                }
+            )
+        }
+    }
+
+    private fun recognitionResourceStatusText(status: RecognitionResourceStatus): String {
+        if (!status.installed) return "未安装语音识别资源包，请先从下载源或本地文件安装。"
+        val version = status.version.takeIf { it.isNotBlank() }?.let { "，版本 $it" }.orEmpty()
+        val asr = if (status.asrDir != null) "，ASR 可用" else "，ASR 未找到"
+        return "${status.name}$version 已安装$asr"
+    }
+
+    private suspend fun applyInstalledRecognitionResource(
+        status: RecognitionResourceStatus,
+        message: String
+    ) {
+        val asrDir = status.asrDir
+        if (asrDir != null) {
+            UserPrefs.clearLastAsrName(appContext)
+            val host = realtimeHost
+            if (host != null) {
+                host.updateSelectedAsrDir(asrDir, status = message, preload = true)
+            } else {
+                uiState = uiState.copy(asrDir = asrDir)
+                preloadAsr(asrDir)
+            }
+        }
+        uiState = uiState.copy(
+            recognitionResourceInstalled = status.installed,
+            recognitionResourceName = status.name,
+            recognitionResourceVersion = status.version,
+            recognitionResourceStatus = recognitionResourceStatusText(status),
+            recognitionResourceBusy = false,
+            recognitionResourceProgressStage = "",
+            recognitionResourceProgress = -1f,
+            status = message
+        )
     }
 
     fun loadLastVoice() {
         viewModelScope.launch {
             val lastName = UserPrefs.getLastVoiceName(appContext)
-            val lastDir = when (lastName) {
-                SYSTEM_TTS_VOICE_NAME -> systemTtsVoiceDir()
-                null -> null
-                else -> repo.resolveVoicePack(lastName)
-            }
+            val lastDir = resolvePreferredVoiceDir(lastName)
             if (lastDir != null) {
+                val voiceStatus = when {
+                    isSystemTtsVoiceDir(lastDir) -> "已加载系统 TTS"
+                    isKokoroVoiceDir(lastDir) -> "已加载 Kokoro"
+                    else -> "已加载音色包"
+                }
                 uiState = uiState.copy(
                     voiceDir = lastDir,
-                    status = if (isSystemTtsVoiceDir(lastDir)) "已加载系统 TTS" else "已加载上次音色包"
+                    status = voiceStatus
                 )
-            } else {
-                val selected = systemTtsVoiceDir()
-                uiState = uiState.copy(
-                    voiceDir = selected,
-                    status = "已切换到系统 TTS"
+                UserPrefs.setLastVoiceName(
+                    appContext,
+                    when {
+                        isSystemTtsVoiceDir(lastDir) -> SYSTEM_TTS_VOICE_NAME
+                        isKokoroVoiceDir(lastDir) -> KOKORO_VOICE_NAME
+                        else -> lastDir.name
+                    }
                 )
-                UserPrefs.setLastVoiceName(appContext, SYSTEM_TTS_VOICE_NAME)
             }
             val selectedVoice = uiState.voiceDir
             val host = realtimeHost
@@ -2741,9 +3218,17 @@ class MainViewModel(
         viewModelScope.launch {
             UserPrefs.setLastVoiceName(
                 appContext,
-                if (isSystemTtsVoiceDir(dir)) SYSTEM_TTS_VOICE_NAME else dir.name
+                when {
+                    isSystemTtsVoiceDir(dir) -> SYSTEM_TTS_VOICE_NAME
+                    isKokoroVoiceDir(dir) -> KOKORO_VOICE_NAME
+                    else -> dir.name
+                }
             )
-            val status = if (isSystemTtsVoiceDir(dir)) "已选择系统 TTS" else "已选择音色包"
+            val status = when {
+                isSystemTtsVoiceDir(dir) -> "已选择系统 TTS"
+                isKokoroVoiceDir(dir) -> "已选择 Kokoro"
+                else -> "已选择音色包"
+            }
             val host = realtimeHost
             if (host != null) {
                 host.updateSelectedVoiceDir(dir, status = status, preload = true)
@@ -2769,7 +3254,7 @@ class MainViewModel(
     }
 
     fun updateVoiceMeta(pack: VoicePackInfo, name: String, remark: String) {
-        if (isSystemTtsVoicePack(pack)) return
+        if (isSystemTtsVoicePack(pack) || isKokoroVoicePack(pack)) return
         val trimmedName = name.trim().ifEmpty { "未命名" }
         val trimmedRemark = remark.trim()
         viewModelScope.launch {
@@ -2781,7 +3266,7 @@ class MainViewModel(
     }
 
     fun updateVoiceAvatar(pack: VoicePackInfo, uri: android.net.Uri) {
-        if (isSystemTtsVoicePack(pack)) return
+        if (isSystemTtsVoicePack(pack) || isKokoroVoicePack(pack)) return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 repo.updateVoiceAvatar(pack.dir, appContext.contentResolver, uri, "avatar.png")
@@ -2791,10 +3276,13 @@ class MainViewModel(
     }
 
     fun toggleVoicePin(pack: VoicePackInfo) {
-        if (isSystemTtsVoicePack(pack)) return
         viewModelScope.launch {
-            repo.updateVoiceMeta(pack.dir) { meta ->
-                meta.copy(pinned = !meta.pinned)
+            when {
+                isSystemTtsVoicePack(pack) -> UserPrefs.setSystemTtsPinned(appContext, !pack.meta.pinned)
+                isKokoroVoicePack(pack) -> UserPrefs.setKokoroVoicePinned(appContext, !pack.meta.pinned)
+                else -> repo.updateVoiceMeta(pack.dir) { meta ->
+                    meta.copy(pinned = !meta.pinned)
+                }
             }
             refreshVoicePacks()
         }
@@ -2812,11 +3300,15 @@ class MainViewModel(
         viewModelScope.launch {
             if (isSystemTtsVoiceDir(a.dir)) {
                 UserPrefs.setSystemTtsOrder(appContext, b.meta.order)
+            } else if (isKokoroVoiceDir(a.dir)) {
+                UserPrefs.setKokoroVoiceOrder(appContext, b.meta.order)
             } else {
                 repo.updateVoiceMeta(a.dir) { meta -> meta.copy(order = b.meta.order) }
             }
             if (isSystemTtsVoiceDir(b.dir)) {
                 UserPrefs.setSystemTtsOrder(appContext, a.meta.order)
+            } else if (isKokoroVoiceDir(b.dir)) {
+                UserPrefs.setKokoroVoiceOrder(appContext, a.meta.order)
             } else {
                 repo.updateVoiceMeta(b.dir) { meta -> meta.copy(order = a.meta.order) }
             }
@@ -2832,6 +3324,8 @@ class MainViewModel(
                 newOrder.forEachIndexed { index, pack ->
                     if (isSystemTtsVoiceDir(pack.dir)) {
                         UserPrefs.setSystemTtsOrder(appContext, index.toLong())
+                    } else if (isKokoroVoiceDir(pack.dir)) {
+                        UserPrefs.setKokoroVoiceOrder(appContext, index.toLong())
                     } else {
                         repo.updateVoiceMeta(pack.dir) { meta ->
                             meta.copy(order = index.toLong())
@@ -2857,11 +3351,7 @@ class MainViewModel(
                     val switched = if (host != null) {
                         host.updateSelectedVoiceDir(
                             fallbackVoice,
-                            status = if (isSystemTtsVoiceDir(fallbackVoice)) {
-                                "已切换到系统 TTS"
-                            } else {
-                                "已切换备用语音包：${fallbackVoice.name}"
-                            },
+                            status = fallbackVoiceStatus(fallbackVoice),
                             preload = true
                         )
                         true
@@ -2876,15 +3366,15 @@ class MainViewModel(
                     }
                     UserPrefs.setLastVoiceName(
                         appContext,
-                        if (isSystemTtsVoiceDir(fallbackVoice)) SYSTEM_TTS_VOICE_NAME else fallbackVoice.name
+                        when {
+                            isSystemTtsVoiceDir(fallbackVoice) -> SYSTEM_TTS_VOICE_NAME
+                            isKokoroVoiceDir(fallbackVoice) -> KOKORO_VOICE_NAME
+                            else -> fallbackVoice.name
+                        }
                     )
                     uiState = uiState.copy(
                         voiceDir = fallbackVoice,
-                        status = if (isSystemTtsVoiceDir(fallbackVoice)) {
-                            "已切换到系统 TTS"
-                        } else {
-                            "已切换备用语音包：${fallbackVoice.name}"
-                        }
+                        status = fallbackVoiceStatus(fallbackVoice)
                     )
                 } else {
                     if (uiState.running || host?.isMicActive() == true) {
@@ -2899,7 +3389,11 @@ class MainViewModel(
             }
             try {
                 withContext(Dispatchers.IO) {
-                    repo.deleteVoicePack(pack.dir)
+                    if (isKokoroVoicePack(pack)) {
+                        repo.deleteKokoroVoice()
+                    } else {
+                        repo.deleteVoicePack(pack.dir)
+                    }
                 }
             } catch (e: SecurityException) {
                 uiState = uiState.copy(status = e.message ?: "语音包删除失败")
@@ -2914,6 +3408,7 @@ class MainViewModel(
                 uiState = uiState.copy(status = "语音包已删除")
             }
             refreshVoicePacks()
+            refreshKokoroVoiceStatus()
             if (uiState.floatingOverlayEnabled) {
                 FloatingOverlayService.refresh(appContext)
             }
@@ -2923,6 +3418,10 @@ class MainViewModel(
     fun shareVoice(pack: VoicePackInfo) {
         if (isSystemTtsVoicePack(pack)) {
             uiState = uiState.copy(status = "系统 TTS 不能分享")
+            return
+        }
+        if (isKokoroVoicePack(pack)) {
+            uiState = uiState.copy(status = "Kokoro 离线语音由设置中的资源安装器管理，不能作为普通语音包分享")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -3144,8 +3643,12 @@ class MainViewModel(
     fun setPushToTalkMode(enabled: Boolean) {
         pttSessionLastText = ""
         resetPttHistoryDedup()
+        if (enabled && uiState.running) {
+            stop()
+        }
         uiState = uiState.copy(
             pushToTalkMode = enabled,
+            running = if (enabled) false else uiState.running,
             pushToTalkPressed = false,
             pushToTalkStreamingText = ""
         )
@@ -3182,6 +3685,13 @@ class MainViewModel(
         uiState = uiState.copy(floatingOverlayAutoDock = enabled)
         viewModelScope.launch {
             UserPrefs.setFloatingOverlayAutoDock(appContext, enabled)
+        }
+    }
+
+    fun setFloatingOverlayShowOnLockScreen(enabled: Boolean) {
+        uiState = uiState.copy(floatingOverlayShowOnLockScreen = enabled)
+        viewModelScope.launch {
+            UserPrefs.setFloatingOverlayShowOnLockScreen(appContext, enabled)
         }
     }
 
@@ -3256,6 +3766,13 @@ class MainViewModel(
         }
     }
 
+    fun setSoundboardSuppressTtsOnKeyword(enabled: Boolean) {
+        uiState = uiState.copy(soundboardSuppressTtsOnKeyword = enabled)
+        viewModelScope.launch {
+            UserPrefs.setSoundboardSuppressTtsOnKeyword(appContext, enabled)
+        }
+    }
+
     fun setAllowQuickTextTriggerSoundboard(enabled: Boolean) {
         uiState = uiState.copy(allowQuickTextTriggerSoundboard = enabled)
         viewModelScope.launch {
@@ -3281,6 +3798,20 @@ class MainViewModel(
         uiState = uiState.copy(quickSubtitleCompactControls = enabled)
         viewModelScope.launch {
             UserPrefs.setQuickSubtitleCompactControls(appContext, enabled)
+        }
+    }
+
+    fun setQuickSubtitleKeepInputPreview(enabled: Boolean) {
+        uiState = uiState.copy(quickSubtitleKeepInputPreview = enabled)
+        viewModelScope.launch {
+            UserPrefs.setQuickSubtitleKeepInputPreview(appContext, enabled)
+        }
+    }
+
+    fun setDrawingKeepCanvasOrientationToDevice(enabled: Boolean) {
+        uiState = uiState.copy(drawingKeepCanvasOrientationToDevice = enabled)
+        viewModelScope.launch {
+            UserPrefs.setDrawingKeepCanvasOrientationToDevice(appContext, enabled)
         }
     }
 
@@ -3367,6 +3898,11 @@ class MainViewModel(
             return
         }
         viewModelScope.launch {
+            if (shouldSuppressVoiceTtsForSoundboard(message)) {
+                appendRecognizedHistory(message)
+                uiState = uiState.copy(status = "已触发音效板，跳过本句朗读")
+                return@launch
+            }
             val host = requestRealtimeHost("音频宿主初始化中")
             val queuedId = host?.speakText(message)
             if (queuedId != null) {
@@ -3561,6 +4097,13 @@ class MainViewModel(
         }
     }
 
+    fun setHapticFeedbackEnabled(enabled: Boolean) {
+        uiState = uiState.copy(hapticFeedbackEnabled = enabled)
+        viewModelScope.launch {
+            UserPrefs.setHapticFeedbackEnabled(appContext, enabled)
+        }
+    }
+
     fun setDrawingSaveRelativePath(path: String) {
         val normalized = normalizeDrawingSaveRelativePath(path)
         uiState = uiState.copy(
@@ -3626,6 +4169,11 @@ class MainViewModel(
 
     fun updateDrawingToolbarCollapsed(collapsed: Boolean) {
         drawingToolbarCollapsed = collapsed
+    }
+
+    fun rotateDrawingCanvasQuarterTurns(delta: Int) {
+        drawingManualRotationQuarterTurns =
+            ((drawingManualRotationQuarterTurns + delta) % 4 + 4) % 4
     }
 
     fun clearDrawingBoard() {
@@ -3925,16 +4473,36 @@ class MainViewModel(
     }
 
     fun start() {
-        val host = requestRealtimeHost("音频宿主初始化中")
-        val asr = uiState.asrDir
         val voice = uiState.voiceDir
         val requireVoice = !uiState.ttsDisabled
-        if (asr == null || (requireVoice && voice == null)) {
+        if (requireVoice && voice == null) {
             uiState = uiState.copy(
-                status = if (requireVoice) "请先导入 ASR 模型和 voicepack" else "请先导入 ASR 模型"
+                status = "请先选择语音包"
             )
             return
         }
+        val asr = uiState.asrDir
+        if (asr == null) {
+            uiState = uiState.copy(status = "正在加载语音识别资源包")
+            viewModelScope.launch {
+                val dir = withContext(Dispatchers.IO) { repo.ensureBundledAsr() }
+                if (dir == null) {
+                    refreshRecognitionResourceStatus()
+                    uiState = uiState.copy(status = "请先安装语音识别资源包")
+                    return@launch
+                }
+                uiState = uiState.copy(asrDir = dir, status = "已加载语音识别资源包")
+                val host = realtimeHost
+                if (host != null) {
+                    host.updateSelectedAsrDir(dir, status = "已加载语音识别资源包", preload = true)
+                } else {
+                    preloadAsr(dir)
+                }
+                start()
+            }
+            return
+        }
+        val host = requestRealtimeHost("音频宿主初始化中")
         if (host != null) {
             restartJob?.cancel()
             restartJob = null
@@ -6830,7 +7398,8 @@ private fun QuickCardEditorScreen(
     val context = LocalContext.current
     val uiState = viewModel.uiState
     val draft = viewModel.quickCardDraft
-    var cropLandscape by remember { mutableStateOf(false) }
+    var cropLandscape by rememberSaveable { mutableStateOf(false) }
+    var activeCropLandscape by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
@@ -6860,7 +7429,7 @@ private fun QuickCardEditorScreen(
         if (result.isSuccessful) {
             val uri = result.uriContent
             if (uri != null) {
-                if (!viewModel.setQuickCardDraftImage(uri, landscape = cropLandscape)) {
+                if (!viewModel.setQuickCardDraftImage(uri, landscape = activeCropLandscape)) {
                     toast(context, "设置图片失败")
                 }
             } else {
@@ -6871,11 +7440,21 @@ private fun QuickCardEditorScreen(
         }
     }
     fun launchQuickCardCrop(uri: Uri) {
+        val targetLandscape = cropLandscape
+        activeCropLandscape = targetLandscape
+        val aspectX = if (targetLandscape) 16 else 9
+        val aspectY = if (targetLandscape) 9 else 16
+        val outputWidth = if (targetLandscape) 1920 else 1080
+        val outputHeight = if (targetLandscape) 1080 else 1920
         val options = CropImageOptions(
             fixAspectRatio = true,
-            aspectRatioX = 16,
-            aspectRatioY = 9,
-            activityTitle = "裁剪名片图片",
+            aspectRatioX = aspectX,
+            aspectRatioY = aspectY,
+            activityTitle = if (targetLandscape) {
+                "裁剪横屏名片图片（16:9）"
+            } else {
+                "裁剪竖屏名片图片（9:16）"
+            },
             cropMenuCropButtonTitle = "确认",
             activityMenuIconColor = 0xFFFFFFFF.toInt(),
             activityMenuTextColor = 0xFFFFFFFF.toInt(),
@@ -6885,7 +7464,10 @@ private fun QuickCardEditorScreen(
             toolbarBackButtonColor = 0xFFFFFFFF.toInt(),
             toolbarTintColor = 0xFFFFFFFF.toInt(),
             outputCompressFormat = android.graphics.Bitmap.CompressFormat.PNG,
-            outputCompressQuality = 100
+            outputCompressQuality = 100,
+            outputRequestWidth = outputWidth,
+            outputRequestHeight = outputHeight,
+            outputRequestSizeOptions = CropImageView.RequestSizeOptions.RESIZE_EXACT
         )
         cropLauncher.launch(CropImageContractOptions(uri, options))
     }
@@ -7451,6 +8033,8 @@ internal val LocalFontScaleBlockMode = staticCompositionLocalOf {
     UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY
 }
 
+private val LocalKigttsHapticFeedbackEnabled = staticCompositionLocalOf { false }
+
 @Composable
 internal fun KigttsFontScaleProvider(
     mode: Int = FontScaleBlockRuntime.mode,
@@ -7468,6 +8052,44 @@ internal fun KigttsFontScaleProvider(
         LocalDensity provides providedDensity,
         content = content
     )
+}
+
+private fun View.performKigttsKeyHaptic(enabled: Boolean) {
+    if (!enabled) return
+    performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+}
+
+@Composable
+private fun rememberKigttsKeyHaptic(): () -> Unit {
+    val enabled = LocalKigttsHapticFeedbackEnabled.current
+    val view = LocalView.current
+    return remember(view, enabled) {
+        { view.performKigttsKeyHaptic(enabled) }
+    }
+}
+
+@Composable
+private fun rememberKigttsHapticClick(onClick: () -> Unit): () -> Unit {
+    val performHaptic = rememberKigttsKeyHaptic()
+    val currentOnClick by rememberUpdatedState(onClick)
+    return remember(performHaptic) {
+        {
+            performHaptic()
+            currentOnClick()
+        }
+    }
+}
+
+@Composable
+private fun <T> rememberKigttsHapticValueChange(onValueChange: (T) -> Unit): (T) -> Unit {
+    val performHaptic = rememberKigttsKeyHaptic()
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
+    return remember(performHaptic) {
+        { value ->
+            performHaptic()
+            currentOnValueChange(value)
+        }
+    }
 }
 
 @Composable
@@ -7579,6 +8201,12 @@ private object QuickSubtitleRoutes {
     const val Editor = "quick_subtitle/editor"
     const val History = "quick_subtitle/history"
 }
+
+data class QuickSubtitleFloatingInputPreviewState(
+    val text: AnnotatedString,
+    val cursorIndex: Int,
+    val bottomPadding: Dp
+)
 
 private object SoundboardRoutes {
     const val Main = "soundboard/main"
@@ -7702,7 +8330,10 @@ class MainActivity : ComponentActivity() {
                 val extraColors = if (dark) KgtDarkExtraColors else KgtLightExtraColors
                 val textToolbarState = remember { KigttsTextToolbarState() }
                 val textToolbar = remember(textToolbarState) { KigttsTextToolbar(textToolbarState) }
-                CompositionLocalProvider(LocalMd2ExtraColors provides extraColors) {
+                CompositionLocalProvider(
+                    LocalMd2ExtraColors provides extraColors,
+                    LocalKigttsHapticFeedbackEnabled provides state.hapticFeedbackEnabled
+                ) {
                     CompositionLocalProvider(LocalTextToolbar provides textToolbar) {
                         MaterialTheme(colors = colors, typography = KgtTypography, shapes = Md2Shapes) {
                             Surface(
@@ -8122,8 +8753,9 @@ private fun Md2Button(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     Button(
-        onClick = onClick,
+        onClick = hapticOnClick,
         modifier = modifier,
         enabled = enabled,
         shape = Md2ControlShape,
@@ -8150,8 +8782,9 @@ private fun Md2OutlinedButton(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     OutlinedButton(
-        onClick = onClick,
+        onClick = hapticOnClick,
         modifier = modifier,
         enabled = enabled,
         shape = Md2ControlShape,
@@ -8202,8 +8835,9 @@ private fun Md2TextButton(
     enabled: Boolean = true,
     content: @Composable RowScope.() -> Unit
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     TextButton(
-        onClick = onClick,
+        onClick = hapticOnClick,
         modifier = modifier,
         enabled = enabled,
         shape = Md2ControlShape,
@@ -8223,8 +8857,9 @@ private fun Md2IconButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
+    val hapticOnClick = rememberKigttsHapticClick(onClick)
     IconButton(
-        onClick = onClick,
+        onClick = hapticOnClick,
         enabled = enabled,
         modifier = modifier.size(36.dp)
     ) {
@@ -8237,6 +8872,367 @@ private fun Md2IconButton(
 }
 
 @Composable
+private fun RecognitionResourceSourceDialog(
+    modelScopeUrl: String,
+    huggingFaceUrl: String,
+    preferredSource: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, Int) -> Unit
+) {
+    var modelScope by remember(modelScopeUrl) { mutableStateOf(modelScopeUrl) }
+    var huggingFace by remember(huggingFaceUrl) { mutableStateOf(huggingFaceUrl) }
+    var preferred by remember(preferredSource) {
+        mutableIntStateOf(
+            preferredSource.coerceIn(
+                UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE
+            )
+        )
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text("语音识别资源包下载源") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "下载的资源包会安装到软件内部目录；安装完成后会自动清理下载得到的 7z 包。本地安装不会删除原文件。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Md2OutlinedField(
+                    value = modelScope,
+                    onValueChange = { modelScope = it },
+                    label = "魔搭下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Md2OutlinedField(
+                    value = huggingFace,
+                    onValueChange = { huggingFace = it },
+                    label = "Hugging Face 下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("优先下载源", style = MaterialTheme.typography.bodySmall)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                        onClick = { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_MODELSCOPE }
+                    )
+                    Text("魔搭")
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE,
+                        onClick = { preferred = UserPrefs.RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE }
+                    )
+                    Text("Hugging Face")
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(
+                onClick = { onConfirm(modelScope, huggingFace, preferred) }
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            Md2TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun KokoroSourceDialog(
+    hfUrl: String,
+    hfMirrorUrl: String,
+    modelScopeUrl: String,
+    preferredSource: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, String, Int) -> Unit
+) {
+    var hf by remember(hfUrl) { mutableStateOf(hfUrl) }
+    var hfMirror by remember(hfMirrorUrl) { mutableStateOf(hfMirrorUrl) }
+    var modelScope by remember(modelScopeUrl) { mutableStateOf(modelScopeUrl) }
+    var preferred by remember(preferredSource) {
+        mutableIntStateOf(
+            preferredSource.coerceIn(
+                UserPrefs.KOKORO_SOURCE_HF,
+                UserPrefs.KOKORO_SOURCE_MODELSCOPE
+            )
+        )
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text("Kokoro 下载源") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "如果默认下载速度慢或下载失败，可以在这里切换下载来源。一般建议保持默认源；如果无法下载，再尝试另一个来源。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "下载完成后会自动安装到软件内部目录。安装成功后，Kokoro 会出现在“语音包”页面。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Md2OutlinedField(
+                    value = modelScope,
+                    onValueChange = { modelScope = it },
+                    label = "ModelScope 下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Md2OutlinedField(
+                    value = hfMirror,
+                    onValueChange = { hfMirror = it },
+                    label = "HF-Mirror 下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Md2OutlinedField(
+                    value = hf,
+                    onValueChange = { hf = it },
+                    label = "Hugging Face 下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("优先下载源", style = MaterialTheme.typography.bodySmall)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.KOKORO_SOURCE_MODELSCOPE }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.KOKORO_SOURCE_MODELSCOPE,
+                        onClick = { preferred = UserPrefs.KOKORO_SOURCE_MODELSCOPE }
+                    )
+                    Text("ModelScope（默认）")
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.KOKORO_SOURCE_HFMIRROR,
+                        onClick = { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
+                    )
+                    Text("HF-Mirror")
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.KOKORO_SOURCE_HF }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.KOKORO_SOURCE_HF,
+                        onClick = { preferred = UserPrefs.KOKORO_SOURCE_HF }
+                    )
+                    Text("Hugging Face")
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(
+                onClick = { onConfirm(hf, hfMirror, modelScope, preferred) }
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            Md2TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun KokoroVoiceSettingsDialog(
+    state: UiState,
+    onDismiss: () -> Unit,
+    onSpeakerChange: (Int) -> Unit
+) {
+    val onSpeakerChangeState = rememberUpdatedState(onSpeakerChange)
+    val speakerId = state.kokoroSpeakerId.coerceIn(
+        UserPrefs.KOKORO_MIN_SPEAKER_ID,
+        UserPrefs.KOKORO_MAX_SPEAKER_ID
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text("Kokoro 设置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "关于 Kokoro",
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Kokoro 是一套本地离线朗读声音。安装后不需要联网即可使用，适合想要使用软件自带朗读声音、不依赖系统朗读声音的场景。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "选择声音",
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "编号不是音质等级，只代表不同声音风格。可用范围：0-1 美式女声，2 英式女声，3-57 中文女声，58-102 中文男声。你可以切换编号后试听，选择更适合自己的声音。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text("声音编号：$speakerId", style = MaterialTheme.typography.bodyMedium)
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    factory = { ctx ->
+                        NumberPicker(ctx).apply {
+                            minValue = UserPrefs.KOKORO_MIN_SPEAKER_ID
+                            maxValue = UserPrefs.KOKORO_MAX_SPEAKER_ID
+                            wrapSelectorWheel = false
+                            value = speakerId
+                            setOnValueChangedListener { _, _, newVal ->
+                                onSpeakerChangeState.value(newVal)
+                            }
+                        }
+                    },
+                    update = { picker ->
+                        if (picker.minValue != UserPrefs.KOKORO_MIN_SPEAKER_ID) {
+                            picker.minValue = UserPrefs.KOKORO_MIN_SPEAKER_ID
+                        }
+                        if (picker.maxValue != UserPrefs.KOKORO_MAX_SPEAKER_ID) {
+                            picker.maxValue = UserPrefs.KOKORO_MAX_SPEAKER_ID
+                        }
+                        if (picker.value != speakerId) {
+                            picker.value = speakerId
+                        }
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            Md2TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+@Composable
+private fun RecognitionResourceRequiredDialog(
+    state: UiState,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit,
+    onPickLocalPackage: () -> Unit,
+    onOpenSources: () -> Unit
+) {
+    val busy = state.recognitionResourceBusy
+    val installed = state.recognitionResourceInstalled
+    AlertDialog(
+        onDismissRequest = {
+            if (!busy) onDismiss()
+        },
+        shape = RoundedCornerShape(UiTokens.Radius),
+        title = { Text(if (installed) "语音识别资源包已安装" else "需要语音识别资源包") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = if (installed) {
+                        "资源包安装完成，可以继续开启语音识别。"
+                    } else {
+                        "当前未安装语音识别资源包。语音识别、Silero VAD 和 AI 语音增强模型已经从 APK 解耦，需要先下载或从本地安装资源包。"
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    text = state.recognitionResourceStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (busy) {
+                    val progress = state.recognitionResourceProgress
+                    if (progress in 0f..1f) {
+                        LinearProgressIndicator(
+                            progress = progress.coerceIn(0f, 1f),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                    Text(
+                        text = state.recognitionResourceProgressStage.ifBlank { "处理中" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (!installed) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2Button(
+                            onClick = onDownload,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("下载并安装")
+                        }
+                        Md2OutlinedButton(
+                            onClick = onPickLocalPackage,
+                            enabled = !busy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("本地安装")
+                        }
+                    }
+                    Md2TextButton(
+                        onClick = onOpenSources,
+                        enabled = !busy
+                    ) {
+                        Text("管理下载源")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Md2TextButton(
+                onClick = onDismiss,
+                enabled = !busy
+            ) {
+                Text(if (installed) "完成" else "稍后再说")
+            }
+        }
+    )
+}
+
+@Composable
 private fun Md2Switch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
@@ -8244,6 +9240,7 @@ private fun Md2Switch(
     enabled: Boolean = true
 ) {
     val dark = currentAppDarkTheme()
+    val hapticOnCheckedChange = rememberKigttsHapticValueChange(onCheckedChange)
     val uncheckedTrack = if (dark) Color(0xFF697378) else Color(0xFFB3C1C6)
     val uncheckedThumb = if (dark) Color(0xFFE6EFF2) else Color.White
     // Disabled state should look clearly gray, not transparent/faded-out.
@@ -8251,7 +9248,7 @@ private fun Md2Switch(
     val disabledThumb = if (dark) Color(0xFF99A2A9) else Color(0xFF8E979E)
     Switch(
         checked = checked,
-        onCheckedChange = onCheckedChange,
+        onCheckedChange = hapticOnCheckedChange,
         modifier = modifier,
         enabled = enabled,
         colors = SwitchDefaults.colors(
@@ -8393,6 +9390,7 @@ private fun Md2SettingSwitchRow(
     supportingText: String? = null
 ) {
     val contentAlpha = if (enabled) 1f else 0.56f
+    val hapticToggle = rememberKigttsHapticClick { onCheckedChange(!checked) }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -8401,7 +9399,7 @@ private fun Md2SettingSwitchRow(
                 enabled = enabled,
                 interactionSource = remember { MutableInteractionSource() },
                 indication = rememberRipple(bounded = true)
-            ) { onCheckedChange(!checked) }
+            ) { hapticToggle() }
             .padding(horizontal = 2.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
@@ -8446,6 +9444,7 @@ private fun Md2SettingDropdownRow(
     menuContent: @Composable ColumnScope.() -> Unit
 ) {
     val contentAlpha = if (enabled) 1f else 0.56f
+    val hapticExpand = rememberKigttsHapticClick { onExpandedChange(true) }
     Box(modifier = modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -8455,7 +9454,7 @@ private fun Md2SettingDropdownRow(
                     enabled = enabled,
                     interactionSource = remember { MutableInteractionSource() },
                     indication = rememberRipple(bounded = true)
-                ) { onExpandedChange(true) }
+                ) { hapticExpand() }
                 .padding(horizontal = 2.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -8657,8 +9656,18 @@ fun AppScaffold(viewModel: MainViewModel) {
     var soundboardPresetExportDialog by remember { mutableStateOf(false) }
     var showBuiltinQuickSubtitlePresetPicker by remember { mutableStateOf(false) }
     var showBuiltinSoundboardPresetPicker by remember { mutableStateOf(false) }
+    var showBuiltinRecognitionResourcePicker by remember { mutableStateOf(false) }
+    var showBuiltinKokoroVoicePicker by remember { mutableStateOf(false) }
+    var recognitionResourceSourceDialog by remember { mutableStateOf(false) }
+    var kokoroSourceDialog by remember { mutableStateOf(false) }
+    var kokoroVoiceSettingsDialog by remember { mutableStateOf(false) }
+    var recognitionResourceRequiredDialog by remember { mutableStateOf(false) }
+    var startRealtimeAfterRecognitionResourceInstall by remember { mutableStateOf(false) }
     var quickCardWebMenuExpanded by rememberSaveable { mutableStateOf(false) }
     var quickCardNavReady by remember { mutableStateOf(false) }
+    var quickSubtitleFloatingInputPreview by remember {
+        mutableStateOf<QuickSubtitleFloatingInputPreviewState?>(null)
+    }
     var pendingQuickCardOverlayTarget by rememberSaveable { mutableStateOf<String?>(null) }
     val quickSubtitleNavController = rememberNavController()
     val soundboardNavController = rememberNavController()
@@ -8699,10 +9708,13 @@ fun AppScaffold(viewModel: MainViewModel) {
     val desktopCaptionTopInset = with(density) {
         WindowInsets.captionBar.getTop(this).toDp()
     }
-    val topBarDesktopMaximizeInset = if (!inMultiWindowMode && desktopCaptionTopInset > 0.dp) {
-        desktopCaptionTopInset
-    } else {
-        0.dp
+    val statusTopInset = with(density) {
+        WindowInsets.statusBars.getTop(this).toDp()
+    }
+    val topBarDesktopMaximizeInset = when {
+        desktopCaptionTopInset > 0.dp -> desktopCaptionTopInset
+        inMultiWindowMode && statusTopInset > 0.dp -> statusTopInset
+        else -> 0.dp
     }
     SideEffect {
         activity?.window?.let { window ->
@@ -9088,7 +10100,13 @@ fun AppScaffold(viewModel: MainViewModel) {
         startRealtimeAfterPermissionGrant = false
         if (granted) {
             if (shouldStartRealtime) {
-                viewModel.start()
+                if (state.asrDir == null && !state.recognitionResourceInstalled) {
+                    startRealtimeAfterRecognitionResourceInstall = true
+                    recognitionResourceRequiredDialog = true
+                    viewModel.refreshRecognitionResourceStatus()
+                } else {
+                    viewModel.start()
+                }
             }
         } else {
             toast(context, "需要麦克风权限")
@@ -9110,7 +10128,56 @@ fun AppScaffold(viewModel: MainViewModel) {
     val soundboardPresetPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.importSoundboardPresetPackage(uri) else toast(context, "未选择文件")
     }
+    val recognitionResourcePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.installRecognitionResources(uri) else toast(context, "未选择文件")
+    }
+    val kokoroVoicePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) viewModel.installKokoroVoice(uri) else toast(context, "未选择文件")
+    }
     var showBuiltinVoicePicker by remember { mutableStateOf(false) }
+    val recognitionResourceMissing = state.asrDir == null && !state.recognitionResourceInstalled
+
+    fun requestRecordAudioPermissionAndStart() {
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            viewModel.start()
+        } else {
+            startRealtimeAfterPermissionGrant = true
+            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    fun requestRealtimeStartWithResourceCheck(autoStartAfterInstall: Boolean) {
+        if (recognitionResourceMissing) {
+            startRealtimeAfterPermissionGrant = false
+            startRealtimeAfterRecognitionResourceInstall = autoStartAfterInstall
+            recognitionResourceRequiredDialog = true
+            viewModel.refreshRecognitionResourceStatus()
+            return
+        }
+        requestRecordAudioPermissionAndStart()
+    }
+
+    LaunchedEffect(
+        recognitionResourceRequiredDialog,
+        startRealtimeAfterRecognitionResourceInstall,
+        state.recognitionResourceInstalled,
+        state.recognitionResourceBusy
+    ) {
+        if (
+            recognitionResourceRequiredDialog &&
+            startRealtimeAfterRecognitionResourceInstall &&
+            state.recognitionResourceInstalled &&
+            !state.recognitionResourceBusy
+        ) {
+            recognitionResourceRequiredDialog = false
+            startRealtimeAfterRecognitionResourceInstall = false
+            requestRecordAudioPermissionAndStart()
+        }
+    }
 
     val onToggleRun = {
         if (!state.running && state.ttsDisabled) {
@@ -9119,8 +10186,7 @@ fun AppScaffold(viewModel: MainViewModel) {
         if (state.running) {
             viewModel.stop()
         } else {
-            startRealtimeAfterPermissionGrant = true
-            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            requestRealtimeStartWithResourceCheck(autoStartAfterInstall = true)
         }
     }
     var pttConfirmOwnedByMainPanel by remember { mutableStateOf(false) }
@@ -9136,7 +10202,19 @@ fun AppScaffold(viewModel: MainViewModel) {
             pttConfirmOwnedByMainPanel = false
             pttTemporaryStartByMainPanel = false
             startRealtimeAfterPermissionGrant = false
-            permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            if (recognitionResourceMissing) {
+                recognitionResourceRequiredDialog = true
+                startRealtimeAfterRecognitionResourceInstall = false
+                viewModel.refreshRecognitionResourceStatus()
+            } else {
+                permLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        } else if (recognitionResourceMissing) {
+            pttConfirmOwnedByMainPanel = false
+            pttTemporaryStartByMainPanel = false
+            recognitionResourceRequiredDialog = true
+            startRealtimeAfterRecognitionResourceInstall = false
+            viewModel.refreshRecognitionResourceStatus()
         } else {
             pttTemporaryStartByMainPanel = !state.running
             if (pttTemporaryStartByMainPanel) {
@@ -9204,6 +10282,88 @@ fun AppScaffold(viewModel: MainViewModel) {
             onOpenSystemPicker = {
                 showBuiltinSoundboardPresetPicker = false
                 soundboardPresetPicker.launch("*/*")
+            }
+        )
+    }
+    if (showBuiltinRecognitionResourcePicker) {
+        BuiltinFilePickerDialog(
+            title = "选择语音识别资源包",
+            allowedExtensions = setOf("7z", "zip"),
+            onDismiss = { showBuiltinRecognitionResourcePicker = false },
+            onPicked = { uri ->
+                showBuiltinRecognitionResourcePicker = false
+                viewModel.installRecognitionResources(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinRecognitionResourcePicker = false
+                recognitionResourcePicker.launch("*/*")
+            }
+        )
+    }
+    if (showBuiltinKokoroVoicePicker) {
+        BuiltinFilePickerDialog(
+            title = "选择 Kokoro 离线语音资源",
+            allowedExtensions = setOf("zip", "tar", "bz2", "tbz2"),
+            onDismiss = { showBuiltinKokoroVoicePicker = false },
+            onPicked = { uri ->
+                showBuiltinKokoroVoicePicker = false
+                viewModel.installKokoroVoice(uri)
+            },
+            onOpenSystemPicker = {
+                showBuiltinKokoroVoicePicker = false
+                kokoroVoicePicker.launch("*/*")
+            }
+        )
+    }
+    if (recognitionResourceSourceDialog) {
+        RecognitionResourceSourceDialog(
+            modelScopeUrl = state.recognitionResourceModelScopeUrl,
+            huggingFaceUrl = state.recognitionResourceHuggingFaceUrl,
+            preferredSource = state.recognitionResourcePreferredSource,
+            onDismiss = { recognitionResourceSourceDialog = false },
+            onConfirm = { modelScopeUrl, huggingFaceUrl, preferredSource ->
+                recognitionResourceSourceDialog = false
+                viewModel.setRecognitionResourceSources(modelScopeUrl, huggingFaceUrl, preferredSource)
+            }
+        )
+    }
+    if (kokoroSourceDialog) {
+        KokoroSourceDialog(
+            hfUrl = state.kokoroHfUrl,
+            hfMirrorUrl = state.kokoroHfMirrorUrl,
+            modelScopeUrl = state.kokoroModelScopeUrl,
+            preferredSource = state.kokoroPreferredSource,
+            onDismiss = { kokoroSourceDialog = false },
+            onConfirm = { hfUrl, hfMirrorUrl, modelScopeUrl, preferredSource ->
+                kokoroSourceDialog = false
+                viewModel.setKokoroSources(hfUrl, hfMirrorUrl, modelScopeUrl, preferredSource)
+            }
+        )
+    }
+    if (kokoroVoiceSettingsDialog) {
+        KokoroVoiceSettingsDialog(
+            state = state,
+            onDismiss = { kokoroVoiceSettingsDialog = false },
+            onSpeakerChange = { viewModel.setKokoroSpeakerId(it) }
+        )
+    }
+    if (recognitionResourceRequiredDialog) {
+        RecognitionResourceRequiredDialog(
+            state = state,
+            onDismiss = {
+                if (!state.recognitionResourceBusy) {
+                    recognitionResourceRequiredDialog = false
+                    startRealtimeAfterRecognitionResourceInstall = false
+                }
+            },
+            onDownload = {
+                viewModel.downloadRecognitionResources()
+            },
+            onPickLocalPackage = {
+                showBuiltinRecognitionResourcePicker = true
+            },
+            onOpenSources = {
+                recognitionResourceSourceDialog = true
             }
         )
     }
@@ -9509,7 +10669,8 @@ fun AppScaffold(viewModel: MainViewModel) {
                         showQuickCardMainActions || showQuickCardEditorActions -> 96.dp
                         showQuickCardSortActions -> 48.dp
                         showQuickCardWebActions -> 48.dp
-                        showQuickSubtitleActions || showDrawingActions || showVoicePackActions || showSettingsEntryActions -> 48.dp
+                        showDrawingActions -> 144.dp
+                        showQuickSubtitleActions || showVoicePackActions || showSettingsEntryActions -> 48.dp
                         else -> 0.dp
                     }
                     val actionsWidth by animateDpAsState(
@@ -9625,6 +10786,18 @@ fun AppScaffold(viewModel: MainViewModel) {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.End
                             ) {
+                                IconButton(
+                                    onClick = { viewModel.rotateDrawingCanvasQuarterTurns(-1) },
+                                    enabled = showDrawingActions
+                                ) {
+                                    MsIcon("rotate_left", contentDescription = "向左旋转画布")
+                                }
+                                IconButton(
+                                    onClick = { viewModel.rotateDrawingCanvasQuarterTurns(1) },
+                                    enabled = showDrawingActions
+                                ) {
+                                    MsIcon("rotate_right", contentDescription = "向右旋转画布")
+                                }
                                 IconButton(
                                     onClick = { viewModel.saveDrawingSnapshot() },
                                     enabled = showDrawingActions && viewModel.drawStrokes.isNotEmpty()
@@ -9910,6 +11083,7 @@ fun AppScaffold(viewModel: MainViewModel) {
                         onPushToTalkPressStart = onPushToTalkPressStart,
                         onPushToTalkPressEnd = onPushToTalkPressEnd,
                         pttConfirmOwnedByMainPanel = pttConfirmOwnedByMainPanel,
+                        onFloatingInputPreviewChange = { quickSubtitleFloatingInputPreview = it },
                         onOpenHistory = {
                             quickSubtitleNavController.navigate(QuickSubtitleRoutes.History) {
                                 launchSingleTop = true
@@ -9938,7 +11112,14 @@ fun AppScaffold(viewModel: MainViewModel) {
                         navController = settingsNavController,
                         viewModel = viewModel,
                         state = state,
-                        onTopBarActionsChange = { logTopBarActions = it }
+                        onTopBarActionsChange = { logTopBarActions = it },
+                        onOpenRecognitionResourceSources = { recognitionResourceSourceDialog = true },
+                        onPickRecognitionResourcePackage = { showBuiltinRecognitionResourcePicker = true },
+                        onDownloadRecognitionResources = { viewModel.downloadRecognitionResources() },
+                        onOpenKokoroSources = { kokoroSourceDialog = true },
+                        onPickKokoroVoicePackage = { showBuiltinKokoroVoicePicker = true },
+                        onDownloadKokoroVoice = { viewModel.downloadKokoroVoice() },
+                        onOpenKokoroVoiceSettings = { kokoroVoiceSettingsDialog = true }
                     )
                 }
             }
@@ -10290,6 +11471,124 @@ fun AppScaffold(viewModel: MainViewModel) {
                     }
                 }
         }
+        QuickSubtitleFloatingInputPreviewOverlay(
+            preview = if (
+                basePage == pageQuickSubtitle &&
+                quickSubtitleRoute == QuickSubtitleRoutes.Main
+            ) {
+                quickSubtitleFloatingInputPreview
+            } else {
+                null
+            },
+            textAlign = if (viewModel.quickSubtitleCentered) TextAlign.Center else TextAlign.Start,
+            fontWeight = if (viewModel.quickSubtitleBold) FontWeight.Bold else FontWeight.Normal,
+            maxFontSizeSp = viewModel.quickSubtitleFontSizeSp,
+            autoFitEnabled = state.quickSubtitleAutoFit,
+            rotated180 = viewModel.quickSubtitleRotated180,
+            startPadding = landscapeChromeStartInset + 16.dp,
+            endPadding = landscapeChromeEndInset + 16.dp,
+            topPadding = statusTopInset + 6.dp,
+            modifier = Modifier
+                .matchParentSize()
+                .zIndex(20f)
+        )
+    }
+}
+
+@Composable
+private fun QuickSubtitleFloatingInputPreviewOverlay(
+    preview: QuickSubtitleFloatingInputPreviewState?,
+    textAlign: TextAlign,
+    fontWeight: FontWeight,
+    maxFontSizeSp: Float,
+    autoFitEnabled: Boolean,
+    rotated180: Boolean,
+    startPadding: Dp,
+    endPadding: Dp,
+    topPadding: Dp,
+    modifier: Modifier = Modifier
+) {
+    var retainedPreview by remember { mutableStateOf<QuickSubtitleFloatingInputPreviewState?>(null) }
+    LaunchedEffect(preview) {
+        if (preview != null) retainedPreview = preview
+    }
+    AnimatedVisibility(
+        visible = preview != null,
+        modifier = modifier.padding(
+            start = startPadding,
+            end = endPadding,
+            top = topPadding,
+            bottom = retainedPreview?.bottomPadding ?: 0.dp
+        ),
+        enter = fadeIn(animationSpec = tween(150)) +
+            scaleIn(
+                initialScale = 0.96f,
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            ),
+        exit = fadeOut(animationSpec = tween(120)) +
+            scaleOut(
+                targetScale = 0.98f,
+                animationSpec = tween(140, easing = FastOutSlowInEasing)
+            )
+    ) {
+        val activePreview = retainedPreview
+        if (activePreview != null) {
+            Card(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .mdCenteredShadow(
+                        shape = RoundedCornerShape(UiTokens.Radius),
+                        shadowStyle = MdCardShadowStyle
+                    ),
+                shape = RoundedCornerShape(UiTokens.Radius),
+                backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
+                elevation = 0.dp
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(14.dp)
+                ) {
+                    AnimatedContent(
+                        targetState = activePreview.text to activePreview.cursorIndex,
+                        transitionSpec = {
+                            ContentTransform(
+                                targetContentEnter = fadeIn(initialAlpha = 0.45f, animationSpec = tween(140)),
+                                initialContentExit = fadeOut(targetAlpha = 0.45f, animationSpec = tween(160)),
+                                sizeTransform = null
+                            )
+                        },
+                        label = "quick_subtitle_root_input_preview_text_change"
+                    ) { (text, cursorIndex) ->
+                        Crossfade(
+                            targetState = rotated180,
+                            animationSpec = tween(160),
+                            label = "quick_subtitle_root_input_preview_rotation"
+                        ) { rotated ->
+                            QuickSubtitleAdaptiveText(
+                                text = text,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = textAlign,
+                                fontWeight = fontWeight,
+                                maxFontSizeSp = maxFontSizeSp,
+                                minFontSizeSp = 14f,
+                                lineHeightMultiplier = 1.15f,
+                                autoFitEnabled = autoFitEnabled,
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = if (rotated) {
+                                    if (textAlign == TextAlign.Center) Alignment.BottomCenter else Alignment.BottomStart
+                                } else {
+                                    Alignment.TopStart
+                                },
+                                textRotationZ = if (rotated) 180f else 0f,
+                                cursorIndex = cursorIndex,
+                                cursorColor = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -10425,8 +11724,8 @@ fun ModelScreen(state: UiState) {
             elevation = UiTokens.CardElevation
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("ASR 模型已由应用内置与自动管理", fontWeight = FontWeight.SemiBold)
-                Text("当前 Android 版本默认随应用提供内置 ASR 资源，无需再通过设置页单独导入。")
+                Text("ASR 模型由语音识别资源包管理", fontWeight = FontWeight.SemiBold)
+                Text("当前 Android 版本不再内置 ASR / 语音增强模型，请在“设置 - 识别”安装语音识别资源包。")
                 Spacer(Modifier.height(8.dp))
                 Text("当前 ASR 路径：", style = MaterialTheme.typography.labelSmall)
                 Text(state.asrDir?.absolutePath ?: "未导入")
@@ -10474,6 +11773,7 @@ private fun rememberAvatarBitmap(file: File): android.graphics.Bitmap? {
 private fun VoicePackAvatarPlaceholder(
     modifier: Modifier,
     isSystemPack: Boolean,
+    isKokoroPack: Boolean = false,
     logoSize: Dp = 50.dp
 ) {
     Box(
@@ -10482,15 +11782,34 @@ private fun VoicePackAvatarPlaceholder(
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
-        if (isSystemPack) {
-            Image(
-                painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_monochrome),
-                contentDescription = null,
-                modifier = Modifier.size(logoSize),
-                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(LocalContentColor.current)
-            )
-        } else {
-            Text("无头像", style = MaterialTheme.typography.bodySmall)
+        when {
+            isSystemPack -> {
+                Image(
+                    painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_monochrome),
+                    contentDescription = null,
+                    modifier = Modifier.size(logoSize),
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(LocalContentColor.current)
+                )
+            }
+            isKokoroPack -> {
+                val kokoroIconSize = logoSize * 0.72f
+                val iconTextSize = with(LocalDensity.current) { kokoroIconSize.toSp() }
+                Text(
+                    text = "groups",
+                    color = LocalContentColor.current,
+                    style = TextStyle(
+                        fontFamily = MaterialSymbolsSharp,
+                        fontWeight = FontWeight.W400,
+                        fontSize = iconTextSize,
+                        lineHeight = iconTextSize,
+                        letterSpacing = 0.sp,
+                        fontFeatureSettings = "'liga' 1"
+                    )
+                )
+            }
+            else -> {
+                Text("无头像", style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
@@ -10601,7 +11920,13 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
             }
     }
 
-    if (detailPack != null) {
+    if (detailPack != null && isKokoroVoiceDir(detailPack.dir)) {
+        KokoroVoiceSettingsDialog(
+            state = state,
+            onDismiss = { detailPackPath = null },
+            onSpeakerChange = { viewModel.setKokoroSpeakerId(it) }
+        )
+    } else if (detailPack != null) {
         val avatarFile = remember(detailPack.dir.absolutePath, detailPack.meta.avatar) {
             File(detailPack.dir, detailPack.meta.avatar)
         }
@@ -10639,6 +11964,7 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                             VoicePackAvatarPlaceholder(
                                 modifier = Modifier.size(64.dp),
                                 isSystemPack = isSystemTtsVoiceDir(detailPack.dir),
+                                isKokoroPack = isKokoroVoiceDir(detailPack.dir),
                                 logoSize = 50.dp
                             )
                         }
@@ -10710,10 +12036,19 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
     }
 
     if (deletePack != null) {
+        val deletingKokoro = deletePack?.let { isKokoroVoiceDir(it.dir) } == true
         AlertDialog(
             onDismissRequest = { deletePack = null },
-            title = { Text("删除语音包") },
-            text = { Text("确定删除该语音包吗？此操作不可撤销。") },
+            title = { Text(if (deletingKokoro) "删除 Kokoro 离线语音" else "删除语音包") },
+            text = {
+                Text(
+                    if (deletingKokoro) {
+                        "确定删除 Kokoro 离线语音吗？删除后，“语音包”页面将不再显示 Kokoro，需要重新下载或本地安装后才能使用。"
+                    } else {
+                        "确定删除该语音包吗？此操作不可撤销。"
+                    }
+                )
+            },
             confirmButton = {
                 Md2TextButton(onClick = {
                     val pack = deletePack
@@ -11153,6 +12488,7 @@ private fun VoicePackCardContent(
     onStartDrag: () -> Unit
 ) {
     val isSystemPack = isSystemTtsVoiceDir(pack.dir)
+    val isKokoroPack = isKokoroVoiceDir(pack.dir)
     val avatarFile = File(pack.dir, pack.meta.avatar)
     val avatarBitmap = rememberAvatarBitmap(avatarFile)
     val cardElevation by animateDpAsState(
@@ -11187,6 +12523,7 @@ private fun VoicePackCardContent(
                         VoicePackAvatarPlaceholder(
                             modifier = Modifier.size(72.dp),
                             isSystemPack = isSystemPack,
+                            isKokoroPack = isKokoroPack,
                             logoSize = 58.dp
                         )
                     }
@@ -11197,6 +12534,10 @@ private fun VoicePackCardContent(
                             if (isSystemPack) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("系统", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (isKokoroPack) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("Kokoro", style = MaterialTheme.typography.bodySmall)
                             }
                             if (pack.meta.pinned) {
                                 Spacer(Modifier.width(6.dp))
@@ -11246,12 +12587,11 @@ private fun VoicePackCardContent(
                     Md2IconButton(
                         icon = if (pack.meta.pinned) "keep_off" else "push_pin",
                         contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
-                        onClick = onTogglePin,
-                        enabled = !isSystemPack
+                        onClick = onTogglePin
                     )
                     Md2IconButton(
-                        icon = "info",
-                        contentDescription = "语音包详细信息",
+                        icon = if (isKokoroPack) "settings" else "info",
+                        contentDescription = if (isKokoroPack) "Kokoro 设置" else "语音包详细信息",
                         onClick = onDetail,
                         enabled = !isSystemPack
                     )
@@ -11259,7 +12599,7 @@ private fun VoicePackCardContent(
                         icon = "share",
                         contentDescription = "分享语音包",
                         onClick = onShare,
-                        enabled = !isSystemPack
+                        enabled = !isSystemPack && !isKokoroPack
                     )
                     Md2IconButton(
                         icon = "delete",
@@ -11326,6 +12666,7 @@ private fun QuickSubtitleNavHost(
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
     pttConfirmOwnedByMainPanel: Boolean,
+    onFloatingInputPreviewChange: (QuickSubtitleFloatingInputPreviewState?) -> Unit,
     onOpenHistory: () -> Unit,
     fullscreenMode: Boolean
 ) {
@@ -11394,6 +12735,7 @@ private fun QuickSubtitleNavHost(
                 onPushToTalkPressStart = onPushToTalkPressStart,
                 onPushToTalkPressEnd = onPushToTalkPressEnd,
                 pttConfirmOwnedByMainPanel = pttConfirmOwnedByMainPanel,
+                onFloatingInputPreviewChange = onFloatingInputPreviewChange,
                 onOpenHistory = onOpenHistory,
                 onOpenEditor = { navController.navigate(QuickSubtitleRoutes.Editor) },
                 fullscreenMode = fullscreenMode
@@ -11767,11 +13109,18 @@ private fun SoundboardScreen(
                 modifier = pageModifier,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                contentCard(
-                    Modifier
+                Column(
+                    modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
-                )
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    contentCard(
+                        Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    )
+                }
                 tabsCard(
                     Modifier
                         .width(54.dp)
@@ -11781,14 +13130,14 @@ private fun SoundboardScreen(
             }
         } else {
             Column(
-                modifier = pageModifier
+                modifier = pageModifier,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 contentCard(
                     Modifier
                         .fillMaxWidth()
                         .weight(1f)
                 )
-                Spacer(Modifier.height(8.dp))
                 tabsCard(Modifier.fillMaxWidth(), false)
             }
         }
@@ -12095,6 +13444,21 @@ private fun SoundboardEditorScreen(
                                 onCheckedChange = { viewModel.setSoundboardKeywordTriggerEnabled(it) }
                             )
                         }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("触发关键词时不进行朗读", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                            Md2Switch(
+                                checked = state.soundboardSuppressTtsOnKeyword,
+                                onCheckedChange = { viewModel.setSoundboardSuppressTtsOnKeyword(it) }
+                            )
+                        }
+                        Text(
+                            "命中音效板唤醒词时只上屏并播放音效，跳过本句 TTS。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.66f)
+                        )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
@@ -13076,7 +14440,14 @@ private fun SettingsNavHost(
     navController: NavHostController,
     viewModel: MainViewModel,
     state: UiState,
-    onTopBarActionsChange: (LogTopBarActions?) -> Unit
+    onTopBarActionsChange: (LogTopBarActions?) -> Unit,
+    onOpenRecognitionResourceSources: () -> Unit,
+    onPickRecognitionResourcePackage: () -> Unit,
+    onDownloadRecognitionResources: () -> Unit,
+    onOpenKokoroSources: () -> Unit,
+    onPickKokoroVoicePackage: () -> Unit,
+    onDownloadKokoroVoice: () -> Unit,
+    onOpenKokoroVoiceSettings: () -> Unit
 ) {
     fun isSettingsSubPage(route: String?): Boolean = route != null && route != SettingsRoutes.Main
     NavHost(
@@ -13145,7 +14516,14 @@ private fun SettingsNavHost(
                 },
                 onOpenPrivacy = {
                     navController.navigate(SettingsRoutes.Privacy) { launchSingleTop = true }
-                }
+                },
+                onOpenRecognitionResourceSources = onOpenRecognitionResourceSources,
+                onPickRecognitionResourcePackage = onPickRecognitionResourcePackage,
+                onDownloadRecognitionResources = onDownloadRecognitionResources,
+                onOpenKokoroSources = onOpenKokoroSources,
+                onPickKokoroVoicePackage = onPickKokoroVoicePackage,
+                onDownloadKokoroVoice = onDownloadKokoroVoice,
+                onOpenKokoroVoiceSettings = onOpenKokoroVoiceSettings
             )
         }
         composable(SettingsRoutes.Log) {
@@ -13330,6 +14708,7 @@ fun QuickSubtitleScreen(
     onPushToTalkPressStart: () -> Unit,
     onPushToTalkPressEnd: (PttConfirmReleaseAction) -> Unit,
     pttConfirmOwnedByMainPanel: Boolean,
+    onFloatingInputPreviewChange: (QuickSubtitleFloatingInputPreviewState?) -> Unit = {},
     onOpenHistory: () -> Unit,
     onOpenEditor: () -> Unit,
     fullscreenMode: Boolean
@@ -13359,8 +14738,10 @@ fun QuickSubtitleScreen(
     val quickInputCollapsed = viewModel.quickSubtitleInputCollapsed
     val subtitleFullscreenDialogVisible = viewModel.quickSubtitlePreviewVisible
     val quickSubtitleAutoFit = state.quickSubtitleAutoFit
+    val quickSubtitleContentRevision = viewModel.quickSubtitleContentRevision
     val useCompactQuickTextControls = state.quickSubtitleCompactControls && !isLandscape
     val showQuickSubtitleActionButtons = viewModel.quickSubtitleShowActionButtons
+    val density = LocalDensity.current
     val actionPanelToggleIcon =
         if (showQuickSubtitleActionButtons) {
             "search"
@@ -13384,17 +14765,19 @@ fun QuickSubtitleScreen(
         if (showQuickSubtitleActionButtons) "切换到字体缩放" else "切换到快捷操作"
     val portraitSubtitleControlAreaHeight = 48.dp
     val portraitSubtitleControlBaselineOffset = (-6).dp
-    val compactQuickGroupSwipeThresholdPx = with(LocalDensity.current) { 18.dp.toPx() }
+    val compactQuickGroupSwipeThresholdPx = with(density) { 18.dp.toPx() }
     var compactQuickGroupSuppressAnimation by remember { mutableStateOf(false) }
     val currentCompactSelectedGroupIndex by rememberUpdatedState(selectedGroupIndex)
+    val performKeyHaptic = rememberKigttsKeyHaptic()
     val rotatedSubtitleText: @Composable (
-        text: String,
+        text: AnnotatedString,
         color: Color,
         maxFontSizeSp: Float,
         minFontSizeSp: Float,
         lineHeightMultiplier: Float,
-        modifier: Modifier
-    ) -> Unit = { text, color, maxFontSizeSp, minFontSizeSp, lineHeightMultiplier, modifier ->
+        modifier: Modifier,
+        cursorIndex: Int?
+    ) -> Unit = { text, color, maxFontSizeSp, minFontSizeSp, lineHeightMultiplier, modifier, cursorIndex ->
         Crossfade(
             targetState = subtitleRotated180,
             animationSpec = tween(160),
@@ -13409,9 +14792,15 @@ fun QuickSubtitleScreen(
                 minFontSizeSp = minFontSizeSp,
                 lineHeightMultiplier = lineHeightMultiplier,
                 autoFitEnabled = quickSubtitleAutoFit,
-                modifier = modifier.then(
-                    if (rotated) Modifier.graphicsLayer(rotationZ = 180f) else Modifier
-                )
+                modifier = modifier,
+                contentAlignment = if (rotated) {
+                    if (subtitleCentered) Alignment.BottomCenter else Alignment.BottomStart
+                } else {
+                    Alignment.TopStart
+                },
+                textRotationZ = if (rotated) 180f else 0f,
+                cursorIndex = cursorIndex,
+                cursorColor = MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -13500,19 +14889,20 @@ fun QuickSubtitleScreen(
     val pttStatusStripBottomBleed = if (isLandscape) 12.dp else 14.dp
     val compactModeDetectionEnabled =
         isLandscape && state.pushToTalkMode && state.pushToTalkConfirmInputMode
-    val imeBottomInset =
+    val pttImeBottomInset =
         if (compactModeDetectionEnabled) WindowInsets.ime.asPaddingValues().calculateBottomPadding() else 0.dp
-    val navBottomInset =
+    val pttNavBottomInset =
         if (compactModeDetectionEnabled) WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() else 0.dp
-    val bottomObstructionInset = if (imeBottomInset > navBottomInset) imeBottomInset else navBottomInset
-    val imeVisible = imeBottomInset > 0.dp
+    val pttBottomObstructionInset =
+        if (pttImeBottomInset > pttNavBottomInset) pttImeBottomInset else pttNavBottomInset
+    val pttImeVisible = pttImeBottomInset > 0.dp
     val pttPendingText = state.pushToTalkStreamingText.ifBlank { "正在识别..." }
     val pttTopButtonsRequiredHeight = 96.dp
     val pttTopEstimatedAvailableHeight =
-        configuration.screenHeightDp.dp - bottomObstructionInset -
+        configuration.screenHeightDp.dp - pttBottomObstructionInset -
             (pttFabSize + pttFabBottomOffset + pttStatusStripBottomBleed + 72.dp)
     val compactPttSideButtonsMode =
-        compactModeDetectionEnabled && (imeVisible || pttTopEstimatedAvailableHeight < pttTopButtonsRequiredHeight)
+        compactModeDetectionEnabled && (pttImeVisible || pttTopEstimatedAvailableHeight < pttTopButtonsRequiredHeight)
     val pttGuideText = when (pttDragTarget) {
         PttConfirmDragTarget.DefaultSend ->
             if (compactPttSideButtonsMode) pttPendingText else "松开手指上屏"
@@ -13550,12 +14940,71 @@ fun QuickSubtitleScreen(
             )
         )
     }
+    var inputFieldFocused by remember { mutableStateOf(false) }
+    var keyboardSeenWhileInputFocused by remember { mutableStateOf(false) }
+    var bottomInputBarHeightPx by remember { mutableIntStateOf(0) }
+    var inputPreviewBlockedRevision by remember { mutableLongStateOf(Long.MIN_VALUE) }
+    val imeBottomInset = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val keyboardVisible = imeBottomInset > 0.dp
+    val bottomInputBarHeight = with(density) { bottomInputBarHeightPx.toDp() }
+    val inputTextHasContent = inputFieldValue.text.isNotEmpty()
+    LaunchedEffect(quickSubtitleContentRevision) {
+        if (quickSubtitleContentRevision > 0L && inputTextHasContent) {
+            inputPreviewBlockedRevision = quickSubtitleContentRevision
+        }
+    }
+    LaunchedEffect(inputFieldValue.text) {
+        if (inputFieldValue.text.isNotEmpty()) {
+            inputPreviewBlockedRevision = Long.MIN_VALUE
+        }
+    }
+    val inputPreviewAllowed =
+        inputTextHasContent && inputPreviewBlockedRevision != quickSubtitleContentRevision
+    val persistentInputPreviewActive =
+        state.quickSubtitleKeepInputPreview && inputPreviewAllowed && !inputFieldFocused
+    val editingInputPreviewActive = inputPreviewAllowed && inputFieldFocused
+    val screenLongSideDp = maxOf(configuration.screenWidthDp, configuration.screenHeightDp)
+    val screenShortSideDp = minOf(configuration.screenWidthDp, configuration.screenHeightDp)
+    val portraitKeyboardAvailableHeight =
+        (configuration.screenHeightDp.dp - imeBottomInset - bottomInputBarHeight - 24.dp)
+            .coerceAtLeast(0.dp)
+    val phoneUa =
+        screenShortSideDp < 600 ||
+        screenLongSideDp < 900 ||
+        (!isLandscape && keyboardVisible && portraitKeyboardAvailableHeight < 620.dp)
+    val landscapePhoneInputPreviewMode = isLandscape && phoneUa && configuration.screenHeightDp < 500
+    val portraitPhoneKeyboardInputMode = !isLandscape && phoneUa && keyboardVisible && inputFieldFocused
+    val floatingInputPreviewActive = editingInputPreviewActive && landscapePhoneInputPreviewMode
+    val inlineInputPreviewActive =
+        (editingInputPreviewActive && !landscapePhoneInputPreviewMode) ||
+            (persistentInputPreviewActive && !floatingInputPreviewActive)
+    val inputPreviewCursorIndex = inputFieldValue.selection.start.coerceIn(0, inputFieldValue.text.length)
+    val inputPreviewText = remember(inputFieldValue.text) { AnnotatedString(inputFieldValue.text) }
+    val displayedSubtitleText = if (inlineInputPreviewActive) inputPreviewText else AnnotatedString(subtitleText)
+    val shouldHideSubtitleControlsForInput =
+        !floatingInputPreviewActive && (editingInputPreviewActive && phoneUa || portraitPhoneKeyboardInputMode)
+    val subtitleControlsVisible = floatingInputPreviewActive || !shouldHideSubtitleControlsForInput
     LaunchedEffect(inputText) {
         if (inputText != inputFieldValue.text) {
             inputFieldValue = TextFieldValue(
                 text = inputText,
                 selection = TextRange(inputText.length)
             )
+        }
+    }
+    LaunchedEffect(inputFieldFocused) {
+        if (!inputFieldFocused) {
+            keyboardSeenWhileInputFocused = false
+        }
+    }
+    LaunchedEffect(keyboardVisible, inputFieldFocused, keyboardSeenWhileInputFocused) {
+        if (!inputFieldFocused) return@LaunchedEffect
+        if (keyboardVisible) {
+            keyboardSeenWhileInputFocused = true
+        } else if (keyboardSeenWhileInputFocused) {
+            focusManager.clearFocus(force = true)
+            inputFieldFocused = false
+            keyboardSeenWhileInputFocused = false
         }
     }
     val hasVoice = state.voiceDir != null
@@ -13571,10 +15020,88 @@ fun QuickSubtitleScreen(
     )
     val landscapeQuickPanelWidth = 220.dp
     val landscapeQuickPanelGap = 8.dp
-    val quickSubtitleBottomBlank = if (isLandscape) {
+    val quickSubtitleBottomBlankBase = if (isLandscape) {
         UiTokens.PageBottomBlank - 12.dp + navBarsBottomInset
     } else {
         UiTokens.PageBottomBlank + 50.dp + navBarsBottomInset
+    }
+    val keyboardRaisedBottomBlank = imeBottomInset + bottomInputBarHeight + 8.dp
+    val quickSubtitleBottomBlankTarget = if (
+        keyboardVisible &&
+        keyboardRaisedBottomBlank > quickSubtitleBottomBlankBase
+    ) {
+        keyboardRaisedBottomBlank
+    } else {
+        quickSubtitleBottomBlankBase
+    }
+    val quickSubtitleBottomBlank by animateDpAsState(
+        targetValue = quickSubtitleBottomBlankTarget,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "quick_subtitle_bottom_blank"
+    )
+    LaunchedEffect(
+        floatingInputPreviewActive,
+        inputPreviewText,
+        inputPreviewCursorIndex,
+        imeBottomInset,
+        bottomInputBarHeight
+    ) {
+        onFloatingInputPreviewChange(
+            if (floatingInputPreviewActive) {
+                QuickSubtitleFloatingInputPreviewState(
+                    text = inputPreviewText,
+                    cursorIndex = inputPreviewCursorIndex,
+                    bottomPadding = imeBottomInset + bottomInputBarHeight + 8.dp
+                )
+            } else {
+                null
+            }
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onFloatingInputPreviewChange(null) }
+    }
+    val subtitleDisplayContent: @Composable (Boolean, AnnotatedString, Int?, Modifier) -> Unit =
+        { preview, displayText, cursorIndex, modifier ->
+        AnimatedContent(
+            targetState = Triple(preview, displayText, cursorIndex),
+            transitionSpec = {
+                val previewTextEditTransition = initialState.first && targetState.first
+                ContentTransform(
+                    targetContentEnter = if (previewTextEditTransition) {
+                        fadeIn(initialAlpha = 0.45f, animationSpec = tween(140))
+                    } else {
+                        fadeIn(animationSpec = tween(180)) +
+                            slideInVertically(
+                                initialOffsetY = { full -> full / 8 },
+                                animationSpec = tween(200, easing = FastOutSlowInEasing)
+                        )
+                    },
+                    initialContentExit = if (previewTextEditTransition) {
+                        fadeOut(targetAlpha = 0.45f, animationSpec = tween(160))
+                    } else {
+                        fadeOut(animationSpec = tween(120))
+                    },
+                    sizeTransform = null
+                )
+            },
+            label = "quick_subtitle_display_text_change"
+        ) { (preview, text, cursorIndex) ->
+            val textColor = when {
+                preview -> MaterialTheme.colorScheme.onSurface
+                text.text == QUICK_SUBTITLE_CLEARED_HINT -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                else -> MaterialTheme.colorScheme.onSurface
+            }
+            rotatedSubtitleText(
+                text,
+                textColor,
+                subtitleSize,
+                14f,
+                1.15f,
+                modifier,
+                if (preview) cursorIndex else null
+            )
+        }
     }
     val quickPanelExpanded = !quickInputCollapsed
     val quickPanelAnimatedWidth by animateDpAsState(
@@ -13657,108 +15184,95 @@ fun QuickSubtitleScreen(
                                     Box(
                                         modifier = Modifier.fillMaxSize()
                                     ) {
-                                        AnimatedContent(
-                                            targetState = subtitleText,
-                                            transitionSpec = {
-                                                ContentTransform(
-                                                    targetContentEnter = fadeIn(animationSpec = tween(180)) +
-                                                        slideInVertically(
-                                                            initialOffsetY = { full -> full / 6 },
-                                                            animationSpec = tween(200, easing = FastOutSlowInEasing)
-                                                        ),
-                                                    initialContentExit = fadeOut(animationSpec = tween(120)),
-                                                    sizeTransform = null
-                                                )
-                                            },
-                                            label = "quick_subtitle_text_change"
-                                        ) { text ->
-                                            val textColor = if (text == QUICK_SUBTITLE_CLEARED_HINT) {
-                                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurface
-                                            }
-                                            rotatedSubtitleText(
-                                                text,
-                                                textColor,
-                                                subtitleSize,
-                                                14f,
-                                                1.15f,
-                                                Modifier.fillMaxSize()
-                                            )
-                                        }
+                                        subtitleDisplayContent(
+                                            inlineInputPreviewActive,
+                                            displayedSubtitleText,
+                                            if (editingInputPreviewActive && inlineInputPreviewActive) inputPreviewCursorIndex else null,
+                                            Modifier.fillMaxSize()
+                                        )
                                     }
                                 }
-                                Row(
-                                    modifier = Modifier
-                                        .wrapContentWidth()
-                                        .fillMaxHeight(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                AnimatedVisibility(
+                                    visible = subtitleControlsVisible,
+                                    enter = fadeIn(animationSpec = tween(140)) + expandHorizontally(
+                                        animationSpec = tween(180, easing = FastOutSlowInEasing)
+                                    ),
+                                    exit = fadeOut(animationSpec = tween(120)) + shrinkHorizontally(
+                                        animationSpec = tween(160, easing = FastOutSlowInEasing)
+                                    )
                                 ) {
-                                    Column(
+                                    Row(
                                         modifier = Modifier
-                                            .width(40.dp)
+                                            .wrapContentWidth()
                                             .fillMaxHeight(),
-                                        horizontalAlignment = Alignment.CenterHorizontally
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Box(
+                                        Column(
                                             modifier = Modifier
-                                                .weight(1f)
-                                                .fillMaxWidth()
+                                                .width(40.dp)
+                                                .fillMaxHeight(),
+                                            horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
-                                            Crossfade(
-                                                targetState = showQuickSubtitleActionButtons,
-                                                animationSpec = tween(180),
-                                                label = "quick_subtitle_controls_landscape"
-                                            ) { showButtons ->
-                                                if (showButtons) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .fillMaxSize(),
-                                                        contentAlignment = Alignment.TopCenter
-                                                    ) {
-                                                        subtitleActionButtonsColumn(
-                                                            Modifier
-                                                                .fillMaxWidth()
-                                                                .verticalScroll(rememberScrollState())
-                                                                .padding(top = 4.dp, bottom = 4.dp)
-                                                        )
-                                                    }
-                                                } else {
-                                                    Column(
-                                                        modifier = Modifier
-                                                            .fillMaxSize(),
-                                                        horizontalAlignment = Alignment.CenterHorizontally
-                                                    ) {
-                                                        MsIcon("search", contentDescription = "字体大小")
-                                                        Spacer(Modifier.height(4.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxWidth()
+                                            ) {
+                                                Crossfade(
+                                                    targetState = showQuickSubtitleActionButtons,
+                                                    animationSpec = tween(180),
+                                                    label = "quick_subtitle_controls_landscape"
+                                                ) { showButtons ->
+                                                    if (showButtons) {
                                                         Box(
                                                             modifier = Modifier
-                                                                .padding(top = 4.dp, bottom = 4.dp)
-                                                                .weight(1f)
-                                                                .fillMaxWidth(),
-                                                            contentAlignment = Alignment.Center
+                                                                .fillMaxSize(),
+                                                            contentAlignment = Alignment.TopCenter
                                                         ) {
-                                                            Md2VerticalSlider(
-                                                                value = subtitleSize,
-                                                                onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
-                                                                valueRange = 28f..96f,
-                                                                modifier = Modifier
-                                                                    .fillMaxHeight()
-                                                                    .width(28.dp)
+                                                            subtitleActionButtonsColumn(
+                                                                Modifier
+                                                                    .fillMaxWidth()
+                                                                    .verticalScroll(rememberScrollState())
+                                                                    .padding(top = 4.dp, bottom = 4.dp)
                                                             )
+                                                        }
+                                                    } else {
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxSize(),
+                                                            horizontalAlignment = Alignment.CenterHorizontally
+                                                        ) {
+                                                            MsIcon("search", contentDescription = "字体大小")
+                                                            Spacer(Modifier.height(4.dp))
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .padding(top = 4.dp, bottom = 4.dp)
+                                                                    .weight(1f)
+                                                                    .fillMaxWidth(),
+                                                                contentAlignment = Alignment.Center
+                                                            ) {
+                                                                Md2VerticalSlider(
+                                                                    value = subtitleSize,
+                                                                    onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                                                    valueRange = 28f..96f,
+                                                                    modifier = Modifier
+                                                                        .fillMaxHeight()
+                                                                        .width(28.dp)
+                                                                )
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
+                                            Md2IconButton(
+                                                icon = actionPanelToggleIcon,
+                                                contentDescription = actionPanelToggleDescription,
+                                                onClick = {
+                                                    viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
+                                                }
+                                            )
                                         }
-                                        Md2IconButton(
-                                    icon = actionPanelToggleIcon,
-                                    contentDescription = actionPanelToggleDescription,
-                                    onClick = {
-                                        viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
-                                    }
-                                )
                                     }
                                 }
                             }
@@ -13842,6 +15356,7 @@ fun QuickSubtitleScreen(
                                                                 shadowStyle = MdCardShadowStyle
                                                             )
                                                             .clickable {
+                                                                performKeyHaptic()
                                                                 viewModel.submitQuickSubtitlePreset(
                                                                     text = text,
                                                                     hasVoice = hasVoice
@@ -13874,7 +15389,10 @@ fun QuickSubtitleScreen(
                                                             shape = RoundedCornerShape(UiTokens.Radius),
                                                             shadowStyle = MdCardShadowStyle
                                                         )
-                                                        .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                        .clickable {
+                                                            performKeyHaptic()
+                                                            addCurrentTextToQuickItems(groupIndex)
+                                                        },
                                                     shape = RoundedCornerShape(UiTokens.Radius),
                                                     backgroundColor = md2ElevatedCardContainerColor(UiTokens.MenuElevation),
                                                     elevation = 0.dp
@@ -13919,7 +15437,10 @@ fun QuickSubtitleScreen(
                                                         .height(44.dp)
                                                         .clip(RoundedCornerShape(UiTokens.Radius))
                                                         .background(tabBg)
-                                                        .clickable { viewModel.selectQuickSubtitleGroup(index) },
+                                                        .clickable {
+                                                            performKeyHaptic()
+                                                            viewModel.selectQuickSubtitleGroup(index)
+                                                        },
                                                     contentAlignment = Alignment.Center
                                                 ) {
                                                     MsIcon(
@@ -13936,7 +15457,10 @@ fun QuickSubtitleScreen(
                                             color = MaterialTheme.colorScheme.primary
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
-                                                IconButton(onClick = onOpenEditor) {
+                                                IconButton(onClick = {
+                                                    performKeyHaptic()
+                                                    onOpenEditor()
+                                                }) {
                                                     MsIcon(
                                                         "edit",
                                                         contentDescription = "编辑快捷文本",
@@ -13984,103 +15508,90 @@ fun QuickSubtitleScreen(
                                 Box(
                                     modifier = Modifier.fillMaxSize()
                                 ) {
-                                    AnimatedContent(
-                                        targetState = subtitleText,
-                                        transitionSpec = {
-                                            ContentTransform(
-                                                targetContentEnter = fadeIn(animationSpec = tween(180)) +
-                                                    slideInVertically(
-                                                        initialOffsetY = { full -> full / 6 },
-                                                        animationSpec = tween(200, easing = FastOutSlowInEasing)
-                                                    ),
-                                                initialContentExit = fadeOut(animationSpec = tween(120)),
-                                                sizeTransform = null
-                                            )
-                                        },
-                                        label = "quick_subtitle_text_change"
-                                    ) { text ->
-                                        val textColor = if (text == QUICK_SUBTITLE_CLEARED_HINT) {
-                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        }
-                                        rotatedSubtitleText(
-                                            text,
-                                            textColor,
-                                            subtitleSize,
-                                            14f,
-                                            1.15f,
-                                            Modifier.fillMaxSize()
-                                        )
-                                    }
+                                    subtitleDisplayContent(
+                                        inlineInputPreviewActive,
+                                        displayedSubtitleText,
+                                        if (editingInputPreviewActive && inlineInputPreviewActive) inputPreviewCursorIndex else null,
+                                        Modifier.fillMaxSize()
+                                    )
                                 }
                             }
-                            Spacer(Modifier.height(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(portraitSubtitleControlAreaHeight)
+                            AnimatedVisibility(
+                                visible = subtitleControlsVisible,
+                                enter = fadeIn(animationSpec = tween(140)) +
+                                    expandVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)),
+                                exit = fadeOut(animationSpec = tween(120)) +
+                                    shrinkVertically(animationSpec = tween(160, easing = FastOutSlowInEasing))
                             ) {
-                                Crossfade(
-                                    targetState = showQuickSubtitleActionButtons,
-                                    animationSpec = tween(180),
-                                    label = "quick_subtitle_controls_portrait"
-                                ) { showButtons ->
-                                    if (showButtons) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize(),
-                                            contentAlignment = Alignment.BottomStart
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(end = 44.dp)
-                                                    .offset(y = portraitSubtitleControlBaselineOffset),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                subtitleActionButtonsRow(Modifier.weight(1f))
-                                            }
-                                        }
-                                    } else {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize(),
-                                            contentAlignment = Alignment.BottomStart
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(start = 4.dp, end = 44.dp)
-                                                    .offset(y = portraitSubtitleControlBaselineOffset),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                MsIcon("search", contentDescription = "字体大小")
-                                                CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
-                                                    Slider(
-                                                        value = subtitleSize,
-                                                        onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
-                                                        valueRange = 28f..96f,
+                                Column {
+                                    Spacer(Modifier.height(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(portraitSubtitleControlAreaHeight)
+                                    ) {
+                                        Crossfade(
+                                            targetState = showQuickSubtitleActionButtons,
+                                            animationSpec = tween(180),
+                                            label = "quick_subtitle_controls_portrait"
+                                        ) { showButtons ->
+                                            if (showButtons) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize(),
+                                                    contentAlignment = Alignment.BottomStart
+                                                ) {
+                                                    Row(
                                                         modifier = Modifier
-                                                            .weight(1f)
-                                                            .height(36.dp)
-                                                    )
+                                                            .fillMaxWidth()
+                                                            .padding(end = 44.dp)
+                                                            .offset(y = portraitSubtitleControlBaselineOffset),
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        subtitleActionButtonsRow(Modifier.weight(1f))
+                                                    }
+                                                }
+                                            } else {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxSize(),
+                                                    contentAlignment = Alignment.BottomStart
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(start = 4.dp, end = 44.dp)
+                                                            .offset(y = portraitSubtitleControlBaselineOffset),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        MsIcon("search", contentDescription = "字体大小")
+                                                        CompositionLocalProvider(LocalMinimumInteractiveComponentEnforcement provides false) {
+                                                            Slider(
+                                                                value = subtitleSize,
+                                                                onValueChange = { viewModel.setQuickSubtitleFontSize(it) },
+                                                                valueRange = 28f..96f,
+                                                                modifier = Modifier
+                                                                    .weight(1f)
+                                                                    .height(36.dp)
+                                                            )
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                        Md2IconButton(
+                                            icon = actionPanelToggleIcon,
+                                            contentDescription = actionPanelToggleDescription,
+                                            onClick = {
+                                                viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .offset(y = portraitSubtitleControlBaselineOffset)
+                                        )
                                     }
                                 }
-                                Md2IconButton(
-                                    icon = actionPanelToggleIcon,
-                                    contentDescription = actionPanelToggleDescription,
-                                    onClick = {
-                                        viewModel.updateQuickSubtitleShowActionButtons(!showQuickSubtitleActionButtons)
-                                    },
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .offset(y = portraitSubtitleControlBaselineOffset)
-                                )
                             }
                         }
                     }
@@ -14089,7 +15600,7 @@ fun QuickSubtitleScreen(
 
             if (!isLandscape) {
                 AnimatedVisibility(
-                    visible = !quickInputCollapsed,
+                    visible = !quickInputCollapsed && !portraitPhoneKeyboardInputMode,
                     enter = fadeIn(animationSpec = tween(140)) +
                         expandVertically(animationSpec = tween(180, easing = FastOutSlowInEasing)),
                     exit = fadeOut(animationSpec = tween(120)) +
@@ -14099,6 +15610,8 @@ fun QuickSubtitleScreen(
                         Spacer(Modifier.height(8.dp))
                         Md2StaggeredFloatIn(index = 1, enabled = false) {
                             if (useCompactQuickTextControls) {
+                                val compactQuickTextCardColor =
+                                    md2ElevatedCardContainerColor(UiTokens.CardElevation)
                                 Row(
                                     modifier = Modifier
                                         .padding(horizontal = 16.dp, vertical = 3.dp)
@@ -14111,7 +15624,7 @@ fun QuickSubtitleScreen(
                                             .weight(1f)
                                             .height(110.dp),
                                         shape = RoundedCornerShape(UiTokens.Radius),
-                                        backgroundColor = md2CardContainerColor(),
+                                        backgroundColor = compactQuickTextCardColor,
                                         elevation = UiTokens.CardElevation
                                     ) {
                                         Box(
@@ -14181,6 +15694,7 @@ fun QuickSubtitleScreen(
                                                                     .width(148.dp)
                                                                     .height(94.dp)
                                                                     .clickable {
+                                                                        performKeyHaptic()
                                                                         viewModel.submitQuickSubtitlePreset(
                                                                             text = text,
                                                                             hasVoice = hasVoice,
@@ -14210,7 +15724,10 @@ fun QuickSubtitleScreen(
                                                             modifier = Modifier
                                                                 .width(86.dp)
                                                                 .height(94.dp)
-                                                                .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                                .clickable {
+                                                                    performKeyHaptic()
+                                                                    addCurrentTextToQuickItems(groupIndex)
+                                                                },
                                                             contentAlignment = Alignment.Center
                                                         ) {
                                                             MsIcon("add", contentDescription = "添加当前文本")
@@ -14225,8 +15742,8 @@ fun QuickSubtitleScreen(
                                                             .background(
                                                                 Brush.horizontalGradient(
                                                                     listOf(
-                                                                        md2CardContainerColor(),
-                                                                        md2CardContainerColor().copy(alpha = 0f)
+                                                                        compactQuickTextCardColor,
+                                                                        compactQuickTextCardColor.copy(alpha = 0f)
                                                                     )
                                                                 )
                                                             )
@@ -14240,8 +15757,8 @@ fun QuickSubtitleScreen(
                                                             .background(
                                                                 Brush.horizontalGradient(
                                                                     listOf(
-                                                                        md2CardContainerColor().copy(alpha = 0f),
-                                                                        md2CardContainerColor()
+                                                                        compactQuickTextCardColor.copy(alpha = 0f),
+                                                                        compactQuickTextCardColor
                                                                     )
                                                                 )
                                                             )
@@ -14281,13 +15798,14 @@ fun QuickSubtitleScreen(
                                                         } else {
                                                             if (currentCompactSelectedGroupIndex < groups.lastIndex) currentCompactSelectedGroupIndex + 1 else 0
                                                         }
+                                                        performKeyHaptic()
                                                         viewModel.selectQuickSubtitleGroup(target)
                                                         accumulatedDrag = 0f
                                                     }
                                                 }
-                                            },
+                                        },
                                         shape = RoundedCornerShape(UiTokens.Radius),
-                                        backgroundColor = md2CardContainerColor(),
+                                        backgroundColor = compactQuickTextCardColor,
                                         elevation = UiTokens.CardElevation
                                     ) {
                                         Column(
@@ -14394,6 +15912,7 @@ fun QuickSubtitleScreen(
                                                         .width(148.dp)
                                                         .height(94.dp)
                                                         .clickable {
+                                                            performKeyHaptic()
                                                             viewModel.submitQuickSubtitlePreset(
                                                                 text = text,
                                                                 hasVoice = hasVoice
@@ -14423,7 +15942,10 @@ fun QuickSubtitleScreen(
                                                     .padding(vertical = 3.dp)
                                                     .width(86.dp)
                                                     .height(94.dp)
-                                                    .clickable { addCurrentTextToQuickItems(groupIndex) },
+                                                    .clickable {
+                                                        performKeyHaptic()
+                                                        addCurrentTextToQuickItems(groupIndex)
+                                                    },
                                                 shape = RoundedCornerShape(UiTokens.Radius),
                                                 backgroundColor = md2CardContainerColor(),
                                                 elevation = UiTokens.CardElevation
@@ -14477,7 +15999,10 @@ fun QuickSubtitleScreen(
                                                                 .height(48.dp)
                                                                 .clip(RoundedCornerShape(UiTokens.Radius))
                                                                 .background(tabBg)
-                                                                .clickable { viewModel.selectQuickSubtitleGroup(index) }
+                                                                .clickable {
+                                                                    performKeyHaptic()
+                                                                    viewModel.selectQuickSubtitleGroup(index)
+                                                                }
                                                                 .padding(horizontal = 10.dp),
                                                             verticalAlignment = Alignment.CenterVertically,
                                                             horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -14498,7 +16023,10 @@ fun QuickSubtitleScreen(
                                                     color = MaterialTheme.colorScheme.primary
                                                 ) {
                                                     Box(contentAlignment = Alignment.Center) {
-                                                        IconButton(onClick = onOpenEditor) {
+                                                        IconButton(onClick = {
+                                                            performKeyHaptic()
+                                                            onOpenEditor()
+                                                        }) {
                                                             MsIcon(
                                                                 "edit",
                                                                 contentDescription = "编辑快捷文本",
@@ -14580,6 +16108,7 @@ fun QuickSubtitleScreen(
             }
             Column(
                 modifier = Modifier
+                    .onSizeChanged { bottomInputBarHeightPx = it.height }
                     .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
                     .padding(
                         start = 10.dp,
@@ -14607,7 +16136,9 @@ fun QuickSubtitleScreen(
                                 inputFieldValue = it
                                 viewModel.updateQuickSubtitleInputText(it.text)
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { inputFieldFocused = it.isFocused },
                             singleLine = true,
                             placeholder = { Text("请输入文本") },
                             keyboardOptions = KeyboardOptions(
@@ -14683,7 +16214,9 @@ fun QuickSubtitleScreen(
                                 inputFieldValue = it
                                 viewModel.updateQuickSubtitleInputText(it.text)
                             },
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier
+                                .weight(1f)
+                                .onFocusChanged { inputFieldFocused = it.isFocused },
                             singleLine = true,
                             placeholder = { Text("请输入文本") },
                             keyboardOptions = KeyboardOptions(
@@ -14832,14 +16365,15 @@ fun QuickSubtitleScreen(
                         elevation = UiTokens.MenuElevation
                     ) {
                         rotatedSubtitleText(
-                            subtitleText,
+                            AnnotatedString(subtitleText),
                             subtitleTextColor,
                             (subtitleSize * 1.25f).coerceIn(36f, 140f),
                             18f,
                             1.36f,
                             Modifier
                                 .fillMaxSize()
-                                .padding(16.dp)
+                                .padding(16.dp),
+                            null
                         )
                     }
                 }
@@ -14855,7 +16389,7 @@ private data class QuickSubtitleFitResult(
 
 @Composable
 private fun QuickSubtitleAdaptiveText(
-    text: String,
+    text: AnnotatedString,
     color: Color,
     textAlign: TextAlign,
     fontWeight: FontWeight,
@@ -14863,12 +16397,19 @@ private fun QuickSubtitleAdaptiveText(
     minFontSizeSp: Float,
     lineHeightMultiplier: Float,
     autoFitEnabled: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentAlignment: Alignment = Alignment.TopStart,
+    textRotationZ: Float = 0f,
+    cursorIndex: Int? = null,
+    cursorColor: Color = Color.Unspecified,
+    cursorWidth: Dp = 2.5.dp
 ) {
     BoxWithConstraints(modifier = modifier) {
         val density = LocalDensity.current
         val scrollState = rememberScrollState()
         val textMeasurer = rememberTextMeasurer()
+        var textLayoutResult by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
+        val cursorStrokeWidthPx = with(density) { cursorWidth.toPx() }
         val maxWidthPx = remember(maxWidth, density) { with(density) { maxWidth.roundToPx() }.coerceAtLeast(1) }
         val maxHeightPx = remember(maxHeight, density) { with(density) { maxHeight.roundToPx() }.coerceAtLeast(1) }
         val boundedMaxFont = maxFontSizeSp.coerceAtLeast(minFontSizeSp)
@@ -14891,7 +16432,7 @@ private fun QuickSubtitleAdaptiveText(
                 fun overflows(sizeSp: Float): Boolean {
                     val lineHeightSp = (sizeSp * lineHeightMultiplier).coerceAtLeast(sizeSp)
                     val result = textMeasurer.measure(
-                        text = AnnotatedString(text),
+                        text = text,
                         style = TextStyle(
                             fontWeight = fontWeight,
                             fontSize = sizeSp.sp,
@@ -14939,7 +16480,10 @@ private fun QuickSubtitleAdaptiveText(
         } else {
             Modifier.fillMaxSize()
         }
-        Box(modifier = contentModifier) {
+        Box(
+            modifier = contentModifier,
+            contentAlignment = contentAlignment
+        ) {
             Text(
                 text = text,
                 style = MaterialTheme.typography.bodyLarge.copy(
@@ -14949,7 +16493,24 @@ private fun QuickSubtitleAdaptiveText(
                 ),
                 color = color,
                 textAlign = textAlign,
-                modifier = Modifier.fillMaxWidth()
+                onTextLayout = { textLayoutResult = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .drawWithContent {
+                        drawContent()
+                        val index = cursorIndex?.coerceIn(0, text.text.length) ?: return@drawWithContent
+                        if (cursorColor == Color.Unspecified) return@drawWithContent
+                        val layout = textLayoutResult ?: return@drawWithContent
+                        val rect = layout.getCursorRect(index)
+                        val x = rect.left.coerceIn(0f, size.width)
+                        drawLine(
+                            color = cursorColor,
+                            start = Offset(x, rect.top),
+                            end = Offset(x, rect.bottom),
+                            strokeWidth = cursorStrokeWidthPx
+                        )
+                    }
+                    .then(if (textRotationZ != 0f) Modifier.graphicsLayer(rotationZ = textRotationZ) else Modifier)
             )
         }
     }
@@ -16216,6 +17777,21 @@ fun FloatingOverlayScreen(
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Md2Switch(
+                        checked = state.floatingOverlayShowOnLockScreen,
+                        onCheckedChange = { viewModel.setFloatingOverlayShowOnLockScreen(it) }
+                    )
+                    Text("锁屏时显示悬浮窗")
+                }
+                Text(
+                    "开启后会尝试让悬浮窗在锁屏界面上显示并响应操作。部分系统还需要在系统权限中允许锁屏显示或后台弹出界面。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
                 Md2OutlinedButton(onClick = onOpenMainSettings) {
                     Text("前往主设置页")
                 }
@@ -17044,12 +18620,21 @@ fun DrawingBoardScreen(
     val configuration = androidx.compose.ui.platform.LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val isDark = currentAppDarkTheme()
-    val rotationDegrees = when (context.display?.rotation ?: Surface.ROTATION_0) {
+    val state = viewModel.uiState
+    val deviceRotationDegrees = when (context.display?.rotation ?: Surface.ROTATION_0) {
         Surface.ROTATION_90 -> 90f
         Surface.ROTATION_180 -> 180f
         Surface.ROTATION_270 -> 270f
         else -> 0f
     }
+    val autoRotationDegrees = if (state.drawingKeepCanvasOrientationToDevice) deviceRotationDegrees else 0f
+    val manualRotationDegrees = viewModel.drawingManualRotationQuarterTurns * 90f
+    val rotationDegrees = ((autoRotationDegrees - manualRotationDegrees) % 360f + 360f) % 360f
+    val animatedRotationDegrees by animateFloatAsState(
+        targetValue = rotationDegrees,
+        animationSpec = tween(180, easing = FastOutSlowInEasing),
+        label = "drawing_canvas_rotation"
+    )
     val boardFillColor = if (isDark) Color(0xFF2C3237) else Color(0xFFFCFDFE)
     val currentPoints = remember { mutableStateListOf<DrawPoint>() }
     var currentStrokeEraser by remember { mutableStateOf(false) }
@@ -17057,6 +18642,9 @@ fun DrawingBoardScreen(
     var viewportPanX by rememberSaveable { mutableFloatStateOf(0f) }
     var viewportPanY by rememberSaveable { mutableFloatStateOf(0f) }
     val toolbarCollapsed = viewModel.drawingToolbarCollapsed
+    val navigationBarBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val hasPortraitThreeButtonNav = !isLandscape && navigationBarBottomInset >= 32.dp
+    val portraitToolbarBottomInset = if (hasPortraitThreeButtonNav) navigationBarBottomInset else 0.dp
     val boardReserveEndTarget = if (isLandscape) {
         if (toolbarCollapsed) 76.dp else 128.dp
     } else {
@@ -17065,7 +18653,12 @@ fun DrawingBoardScreen(
     val boardReserveBottomTarget = if (isLandscape) {
         0.dp
     } else {
-        if (toolbarCollapsed) 76.dp else 168.dp
+        when {
+            toolbarCollapsed && hasPortraitThreeButtonNav -> 76.dp
+            toolbarCollapsed -> 66.dp
+            hasPortraitThreeButtonNav -> 168.dp
+            else -> 120.dp
+        }
     }
     val boardReserveEnd by animateDpAsState(
         targetValue = boardReserveEndTarget,
@@ -17183,60 +18776,64 @@ fun DrawingBoardScreen(
                 y = ((containerH - canvasH) * 0.5f).coerceAtLeast(0f)
             )
 
-            Card(
+            Box(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .size(cardWidthDp, cardHeightDp)
-                    .onSizeChanged { boardSize = it }
-                    .mdCenteredShadow(
-                        shape = RoundedCornerShape(UiTokens.Radius),
-                        shadowStyle = MdCardShadowStyle
-                    )
                     .graphicsLayer {
                         scaleX = viewportScale
                         scaleY = viewportScale
                         translationX = viewportPanX
                         translationY = viewportPanY
-                    },
-                shape = RoundedCornerShape(UiTokens.Radius),
-                backgroundColor = md2CardContainerColor(),
-                elevation = 0.dp
+                    }
             ) {
-                Canvas(
+                Card(
                     modifier = Modifier
                         .fillMaxSize()
+                        .onSizeChanged { boardSize = it }
+                        .mdCenteredShadow(
+                            shape = RoundedCornerShape(UiTokens.Radius),
+                            shadowStyle = MdCardShadowStyle
+                        ),
+                    shape = RoundedCornerShape(UiTokens.Radius),
+                    backgroundColor = md2CardContainerColor(),
+                    elevation = 0.dp
                 ) {
-                    withTransform({
-                        rotate(degrees = -rotationDegrees, pivot = center)
-                    }) {
-                        drawRoundRect(
-                            color = boardFillColor,
-                            topLeft = Offset(left, top),
-                            size = Size(fitW, fitH),
-                            cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx())
-                        )
+                    Canvas(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        withTransform({
+                            rotate(degrees = -animatedRotationDegrees, pivot = center)
+                        }) {
+                            drawRoundRect(
+                                color = boardFillColor,
+                                topLeft = Offset(left, top),
+                                size = Size(fitW, fitH),
+                                cornerRadius = CornerRadius(UiTokens.Radius.toPx(), UiTokens.Radius.toPx())
+                            )
 
-                        viewModel.drawStrokes.forEach { stroke ->
-                            drawStrokeOnBoard(
-                                points = stroke.points,
-                                color = if (stroke.eraser) boardFillColor else stroke.color,
-                                width = stroke.width * pxScale,
-                                left = left,
-                                top = top,
-                                widthPx = fitW,
-                                heightPx = fitH
-                            )
-                        }
-                        if (currentPoints.size > 1) {
-                            drawStrokeOnBoard(
-                                points = currentPoints,
-                                color = if (activeEraser) boardFillColor else viewModel.drawColor,
-                                width = activeWidth * pxScale,
-                                left = left,
-                                top = top,
-                                widthPx = fitW,
-                                heightPx = fitH
-                            )
+                            viewModel.drawStrokes.forEach { stroke ->
+                                drawStrokeOnBoard(
+                                    points = stroke.points,
+                                    color = if (stroke.eraser) boardFillColor else stroke.color,
+                                    width = stroke.width * pxScale,
+                                    left = left,
+                                    top = top,
+                                    widthPx = fitW,
+                                    heightPx = fitH
+                                )
+                            }
+                            if (currentPoints.size > 1) {
+                                drawStrokeOnBoard(
+                                    points = currentPoints,
+                                    color = if (activeEraser) boardFillColor else viewModel.drawColor,
+                                    width = activeWidth * pxScale,
+                                    left = left,
+                                    top = top,
+                                    widthPx = fitW,
+                                    heightPx = fitH
+                                )
+                            }
                         }
                     }
                 }
@@ -17411,8 +19008,7 @@ fun DrawingBoardScreen(
         } else {
             Modifier
                 .align(Alignment.BottomCenter)
-                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom))
-                .padding(bottom = 10.dp)
+                .padding(bottom = 10.dp + portraitToolbarBottomInset)
         }
 
         DrawingToolbar(
@@ -17940,7 +19536,14 @@ fun SettingsScreen(
     viewModel: MainViewModel,
     state: UiState,
     onOpenLicenses: () -> Unit,
-    onOpenPrivacy: () -> Unit
+    onOpenPrivacy: () -> Unit,
+    onOpenRecognitionResourceSources: () -> Unit,
+    onPickRecognitionResourcePackage: () -> Unit,
+    onDownloadRecognitionResources: () -> Unit,
+    onOpenKokoroSources: () -> Unit,
+    onPickKokoroVoicePackage: () -> Unit,
+    onDownloadKokoroVoice: () -> Unit,
+    onOpenKokoroVoiceSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -18108,6 +19711,7 @@ fun SettingsScreen(
     val numberReplaceOptions = remember { listOf("不替换", "数字替换为中文字符", "数字替换为中文表达") }
     var numberReplaceExpanded by remember { mutableStateOf(false) }
     val isSystemTtsSelected = isSystemTtsVoiceDir(state.voiceDir)
+    val isKokoroTtsSelected = isKokoroVoiceDir(state.voiceDir)
 
     LaunchedEffect(selectedCategory) {
         scroll.animateScrollTo(0)
@@ -18332,6 +19936,76 @@ fun SettingsScreen(
     fun RecognitionSettingsContent() {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Md2StaggeredFloatIn(index = 0) {
+                Md2SettingsCard(title = "语音识别资源包") {
+                    Text(
+                        text = state.recognitionResourceStatus,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    if (state.recognitionResourceInstalled) {
+                        Text(
+                            text = buildString {
+                                append("当前资源：")
+                                append(state.recognitionResourceName)
+                                if (state.recognitionResourceVersion.isNotBlank()) {
+                                    append(" / ")
+                                    append(state.recognitionResourceVersion)
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            text = "资源包用于统一管理 ASR、Silero VAD、GTCRN/DPDFNet 语音增强模型；未安装时语音识别与 AI 语音增强不可用。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (state.recognitionResourceBusy) {
+                        val progress = state.recognitionResourceProgress
+                        if (progress in 0f..1f) {
+                            LinearProgressIndicator(
+                                progress = progress.coerceIn(0f, 1f),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            text = state.recognitionResourceProgressStage.ifBlank { "处理中" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2Button(
+                            onClick = onDownloadRecognitionResources,
+                            enabled = !state.recognitionResourceBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("下载资源包")
+                        }
+                        Md2OutlinedButton(
+                            onClick = onPickRecognitionResourcePackage,
+                            enabled = !state.recognitionResourceBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("本地安装")
+                        }
+                    }
+                    Md2TextButton(
+                        onClick = onOpenRecognitionResourceSources,
+                        enabled = !state.recognitionResourceBusy
+                    ) {
+                        Text("管理下载源")
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 1) {
                 Md2SettingsCard(title = "识别与转换") {
                     Md2SettingSwitchRow(
                         title = "识别结果自动上屏大字幕",
@@ -18502,7 +20176,7 @@ fun SettingsScreen(
                 }
             }
 
-            Md2StaggeredFloatIn(index = 1) {
+            Md2StaggeredFloatIn(index = 2) {
                 Md2SettingsCard(title = "说话人验证") {
                     Md2SettingSwitchRow(
                         title = "说话人验证",
@@ -18622,7 +20296,11 @@ fun SettingsScreen(
             Md2StaggeredFloatIn(index = 1) {
                 Md2SettingsCard(title = "播放与合成") {
                     Text(
-                        "当前朗读后端：${if (isSystemTtsSelected) SYSTEM_TTS_DEFAULT_LABEL else "语音包"}",
+                        "当前朗读后端：${when {
+                            isSystemTtsSelected -> SYSTEM_TTS_DEFAULT_LABEL
+                            isKokoroTtsSelected -> "Kokoro"
+                            else -> "语音包"
+                        }}",
                         style = MaterialTheme.typography.bodySmall
                     )
                     Md2SettingSwitchRow(
@@ -18649,6 +20327,21 @@ fun SettingsScreen(
                             }
                         ) {
                             Text("打开系统 TTS 设置")
+                        }
+                    } else if (isKokoroTtsSelected) {
+                        Text(
+                            "Kokoro 使用独立音色编号。Piper 专属随机度参数在 Kokoro 下不生效。",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "当前声音编号：${state.kokoroSpeakerId.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, UserPrefs.KOKORO_MAX_SPEAKER_ID)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Md2Button(
+                            onClick = onOpenKokoroVoiceSettings,
+                            enabled = state.kokoroInstalled && !state.kokoroBusy
+                        ) {
+                            Text("选择 Kokoro 音色")
                         }
                     } else {
                         Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
@@ -18688,6 +20381,61 @@ fun SettingsScreen(
             }
 
             Md2StaggeredFloatIn(index = 2) {
+                Md2SettingsCard(title = "Kokoro 离线语音") {
+                    Text(
+                        text = state.kokoroStatus,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "Kokoro 是一套可选的离线朗读声音。安装后，你可以在“语音包”页面选择 Kokoro，并在设置或语音包页面切换不同声音用于朗读。\n\n由于资源体积较大，Kokoro 需要单独下载或从本地安装，不会直接内置在安装包中。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (state.kokoroBusy) {
+                        val progress = state.kokoroProgress
+                        if (progress in 0f..1f) {
+                            LinearProgressIndicator(
+                                progress = progress.coerceIn(0f, 1f),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        Text(
+                            text = state.kokoroProgressStage.ifBlank { "处理中" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Md2Button(
+                            onClick = onDownloadKokoroVoice,
+                            enabled = !state.kokoroBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (state.kokoroInstalled) "重新下载" else "下载 Kokoro")
+                        }
+                        Md2OutlinedButton(
+                            onClick = onPickKokoroVoicePackage,
+                            enabled = !state.kokoroBusy,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("本地安装")
+                        }
+                    }
+                    Md2TextButton(
+                        onClick = onOpenKokoroSources,
+                        enabled = !state.kokoroBusy
+                    ) {
+                        Text("下载源设置")
+                    }
+                }
+            }
+
+            Md2StaggeredFloatIn(index = 3) {
                 Md2SettingsCard(title = "回声与降噪") {
                     Md2SettingSwitchRow(
                         title = "回声抑制",
@@ -18729,7 +20477,7 @@ fun SettingsScreen(
                 }
             }
 
-            Md2StaggeredFloatIn(index = 3) {
+            Md2StaggeredFloatIn(index = 4) {
                 Md2SettingsCard(title = "设备路由") {
                     Md2SettingDropdownRow(
                         title = "优先选择的音频输入设备类型",
@@ -18893,6 +20641,12 @@ fun SettingsScreen(
                             ) { Text(label) }
                         }
                     }
+                    Md2SettingSwitchRow(
+                        title = "按键震动反馈",
+                        checked = state.hapticFeedbackEnabled,
+                        onCheckedChange = { viewModel.setHapticFeedbackEnabled(it) },
+                        supportingText = "开启后主界面和悬浮窗按键、快捷字幕分组滑动切换会调用系统原生按键触感反馈。"
+                    )
                     Md2SettingDropdownRow(
                         title = "横屏抽屉模式",
                         value = drawerModeOptions.firstOrNull { it.first == state.landscapeDrawerMode }?.second
@@ -18928,8 +20682,20 @@ fun SettingsScreen(
                         onCheckedChange = { viewModel.setQuickSubtitleCompactControls(it) },
                         supportingText = "仅影响主界面竖屏便捷字幕。开启后会改为类似迷你快捷字幕的紧凑快捷文本区，并把编辑入口移到顶栏。"
                     )
+                    Md2SettingSwitchRow(
+                        title = "输入框内容保持预览",
+                        checked = state.quickSubtitleKeepInputPreview,
+                        onCheckedChange = { viewModel.setQuickSubtitleKeepInputPreview(it) },
+                        supportingText = "开启后输入框有内容时，键盘收起后大字幕仍显示输入预览；直到下一次语音或快捷文本提交前保持。"
+                    )
                     Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
                     Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)
+                    Md2SettingSwitchRow(
+                        title = "将画板画布方向保持设备方向",
+                        checked = state.drawingKeepCanvasOrientationToDevice,
+                        onCheckedChange = { viewModel.setDrawingKeepCanvasOrientationToDevice(it) },
+                        supportingText = "开启后设备旋转时画布会自动反向旋转以保持原有朝向；手动旋转会继续叠加。"
+                    )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)

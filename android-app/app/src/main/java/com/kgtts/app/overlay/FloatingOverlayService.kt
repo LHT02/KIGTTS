@@ -6,9 +6,11 @@ import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
@@ -45,6 +47,7 @@ import android.text.TextWatcher
 import android.util.DisplayMetrics
 import android.util.TypedValue
 import android.view.Display
+import android.view.HapticFeedbackConstants
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.ViewConfiguration
@@ -114,14 +117,32 @@ class FloatingOverlayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val windowManager by lazy { getSystemService(WindowManager::class.java) }
     private val iconTypeface: Typeface? by lazy {
-        ResourcesCompat.getFont(this, R.font.material_symbols_sharp)
+        runCatching {
+            ResourcesCompat.getFont(this, R.font.material_symbols_sharp)
+        }.onFailure {
+            AppLogger.e("FloatingOverlayService.material symbol font load failed", it)
+        }.getOrNull()
     }
 
     private var settings = UserPrefs.AppSettings()
     private var settingsJob: Job? = null
+    private var screenStateReceiverRegistered = false
+    private val screenStateReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (!settings.floatingOverlayShowOnLockScreen) return
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_ON -> refreshOverlayForLockScreen()
+                    Intent.ACTION_USER_PRESENT -> applyOverlayWindowFlags()
+                }
+            }
+        }
 
     private var fabRoot: LinearLayout? = null
     private var fabParams: WindowManager.LayoutParams? = null
+    private var fabTouchProxy: FrameLayout? = null
+    private var fabTouchParams: WindowManager.LayoutParams? = null
+    private var fabRootTouchPassthrough = false
     private var bubbleRow: LinearLayout? = null
     private var bubbleTextView: TextView? = null
     private var fabSpacerView: View? = null
@@ -230,9 +251,12 @@ class FloatingOverlayService : Service() {
     private var currentDragAction = OverlayReleaseAction.SendToSubtitle
     private var overlayDarkTheme = false
     private var overlayStatusExpanded = false
-    private var fabSnapAnimator: ValueAnimator? = null
     private var fabIdleDockJob: Job? = null
     private var fabIdleDocked = false
+    private var fabContainerAnimator: ValueAnimator? = null
+    private var fabInnerFoldAnimator: ValueAnimator? = null
+    private var fabInnerFoldEdge = FAB_EDGE_RIGHT
+    private var fabInnerFoldFraction = 0f
     private var fabVisibilityTarget: Boolean? = null
     private var portraitFabAnchor: OverlayFabAnchor? = null
     private var landscapeFabAnchor: OverlayFabAnchor? = null
@@ -274,7 +298,13 @@ class FloatingOverlayService : Service() {
                 realtimeHostStateJob = null
                 realtimeHost = null
                 realtimeHostBound = false
-                scope.launch { updateFabUi() }
+                scope.launch {
+                    updateFabUi()
+                    delay(800L)
+                    if (settings.floatingOverlayEnabled && realtimeHost == null) {
+                        ensureRealtimeHostBound()
+                    }
+                }
             }
         }
     private val runtimeBridgeListener =
@@ -296,8 +326,14 @@ class FloatingOverlayService : Service() {
         val items: List<String>
     )
 
+    private data class MiniQuickItemsScrollState(
+        val position: Int,
+        val offsetPx: Int
+    )
+
     private var quickSubtitleGroups = defaultQuickSubtitleGroups()
     private var quickSubtitleSelectedGroupId = 1L
+    private var miniQuickSubtitleSelectedGroupId: Long? = null
     private var quickSubtitleCurrentText = defaultQuickSubtitleText
     private var quickSubtitleFontSizeSp = 56f
     private var quickSubtitlePlayOnSend = true
@@ -306,10 +342,12 @@ class FloatingOverlayService : Service() {
     private var quickSubtitleInputText = ""
     private var quickSubtitleNextGroupId = 4L
     private var quickSubtitleSaving = false
+    private var quickSubtitleConfigLoaded = false
     private var topStatusLastContent = ""
     private var topStatusShowingText = false
     private var topStatusResetJob: Job? = null
     private var miniQuickItemsCollapsed = false
+    private val miniQuickItemsScrollStates = mutableMapOf<String, MiniQuickItemsScrollState>()
     private var miniMode = MiniOverlayMode.Subtitle
     private var miniPreviewMode = MiniPreviewMode.None
     private var miniPreviewQuickCardId: Long? = null
@@ -325,7 +363,11 @@ class FloatingOverlayService : Service() {
     private var launchableAppsCache: List<OverlayAppShortcut> = emptyList()
     private var launchableAppsLoaded = false
     private var launchableAppsLoading = false
+    private var panelPickerPreparing = false
     private var panelPickerSearchQuery = ""
+    private var panelPickerSuppressSearchChange = false
+    private var panelPickerCard: View? = null
+    private var panelPickerListRefreshToken = 0
     private val shortcutIconStateCache = linkedMapOf<String, Drawable.ConstantState?>()
     private var panelEditMode = false
     private var panelPageCount = 1
@@ -641,6 +683,7 @@ class FloatingOverlayService : Service() {
             holder.textView.text = item
             holder.root.setOnClickListener {
                 if (item.isBlank()) return@setOnClickListener
+                performOverlayKeyHaptic(holder.root)
                 submitQuickSubtitleText(item)
             }
         }
@@ -701,14 +744,18 @@ class FloatingOverlayService : Service() {
 
     private fun fabMinY(): Int = dp(48)
 
-    private fun fabVisibleHeightPx(): Int =
-        max(
-            fabRoot?.measuredHeight?.takeIf { it > 0 } ?: 0,
+    private fun fabVisibleHeightPx(): Int {
+        val shellHeight =
+            dp(FAB_SIZE_DP) + fabExpandedVerticalPaddingPx() * 2
+        if (bubbleRow?.visibility != View.VISIBLE) return shellHeight
+        return max(
+            shellHeight,
             max(
-                fabRoot?.height?.takeIf { it > 0 } ?: 0,
-                dp(FAB_SIZE_DP)
+                fabRoot?.measuredHeight?.takeIf { it > 0 } ?: 0,
+                fabRoot?.height?.takeIf { it > 0 } ?: 0
             )
         )
+    }
 
     private fun fabMaxY(screenHeight: Int = displayHeight()): Int =
         max(fabMinY(), screenHeight - fabVisibleHeightPx())
@@ -790,6 +837,7 @@ class FloatingOverlayService : Service() {
         }
         val resolved = anchor ?: converted
         if (resolved != null) {
+            updateFabDockLayout(resolved.edge)
             applyFabAnchor(
                 params = params,
                 anchor = resolved,
@@ -798,40 +846,40 @@ class FloatingOverlayService : Service() {
             )
             setFabAnchorForOrientation(currentFabOrientation, resolved)
         } else {
+            val edge = buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+            updateFabDockLayout(edge)
             clampFabToScreen()
         }
         fabRoot?.let { root ->
             runCatching { windowManager.updateViewLayout(root, params) }
         }
+        updateFabTouchProxyLayout()
         if (converted != null) saveOverlayLauncherLayout()
     }
 
     private fun fabDockExposedWidthPx(): Int {
-        val buttonWidth =
-            fabButton?.measuredWidth?.takeIf { it > 0 }
-                ?: fabButton?.width?.takeIf { it > 0 }
-                ?: dp(FAB_SIZE_DP)
-        return max(1, buttonWidth / 2)
+        return max(1, fabButtonWidthPx() / 2)
     }
 
-    private fun fabDockOuterPaddingPx(): Int = dp(14)
+    private fun fabButtonWidthPx(): Int =
+        fabButton?.measuredWidth?.takeIf { it > 0 }
+            ?: fabButton?.width?.takeIf { it > 0 }
+            ?: dp(FAB_SIZE_DP)
 
-    private fun fabDockShadowPaddingPx(): Int = dp(8)
+    private fun fabExpandedOuterPaddingPx(): Int = dp(14)
+
+    private fun fabExpandedVerticalPaddingPx(): Int = dp(14)
 
     private fun lerpInt(start: Int, end: Int, fraction: Float): Int {
-        return (start + (end - start) * fraction).roundToInt()
+        return (start + (end - start) * fraction.coerceIn(0f, 1f)).roundToInt()
     }
 
     private fun fabDockVisibleWidthPx(): Int {
-        return fabDockExposedWidthPx() + fabDockShadowPaddingPx()
-    }
-
-    private fun fabDockWindowWidthPx(): Int {
-        return fabDockVisibleWidthPx() + fabDockOuterPaddingPx()
+        return fabDockExposedWidthPx()
     }
 
     private fun fabExpandedWindowWidthPx(): Int {
-        return dp(FAB_SIZE_DP) + fabDockOuterPaddingPx() * 2
+        return dp(FAB_SIZE_DP) + fabExpandedOuterPaddingPx() * 2
     }
 
     private fun fabWindowWidthPx(): Int {
@@ -840,23 +888,24 @@ class FloatingOverlayService : Service() {
             paramsWidth > 0 -> paramsWidth
             fabRoot?.measuredWidth?.takeIf { it > 0 } != null -> fabRoot!!.measuredWidth
             fabRoot?.width?.takeIf { it > 0 } != null -> fabRoot!!.width
-            else -> dp(FAB_SIZE_DP) + fabDockOuterPaddingPx() * 2
+            else -> fabExpandedWindowWidthPx()
         }
     }
 
     private fun cancelFabSnapAnimation() {
-        val animator = fabSnapAnimator
-        fabSnapAnimator = null
-        animator?.cancel()
+        fabContainerAnimator?.cancel()
+        fabContainerAnimator = null
+        fabRoot?.translationX = 0f
     }
 
-    private fun dockedFabXForEdge(edge: String, screenWidth: Int): Int {
-        val dockWindowWidth = fabDockWindowWidthPx()
-        return if (edge == FAB_EDGE_LEFT) {
-            0
-        } else {
-            max(0, screenWidth - dockWindowWidth)
-        }
+    private fun cancelFabInnerFoldAnimation() {
+        fabInnerFoldAnimator?.cancel()
+        fabInnerFoldAnimator = null
+        fabButton?.animate()?.cancel()
+    }
+
+    private fun cancelFabDockAlphaAnimation() {
+        fabRoot?.animate()?.cancel()
     }
 
     private fun expandedFabXForEdge(edge: String, screenWidth: Int): Int {
@@ -867,99 +916,271 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private fun expandedFabDragStartX(edge: String, currentX: Int, currentWindowWidth: Int): Int {
-        if (edge != FAB_EDGE_RIGHT) return currentX
-        val maxExpandedX = max(0, displayWidth() - fabExpandedWindowWidthPx())
-        return (currentX + currentWindowWidth - fabExpandedWindowWidthPx())
-            .coerceIn(0, maxExpandedX)
-    }
-
-    private fun updateFabDockLayout(edge: String) {
+    private fun applyFabInnerFoldLayout(edge: String, foldFraction: Float, foldedWindow: Boolean) {
         val root = fabRoot ?: return
-        val params = fabParams ?: return
         val host = fabButtonHost ?: return
         val button = fabButton ?: return
         val spacer = fabSpacerView
         val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return
         val buttonLayoutParams = button.layoutParams as? FrameLayout.LayoutParams ?: return
-        val buttonWidth =
-            button.measuredWidth.takeIf { it > 0 }
-                ?: button.width.takeIf { it > 0 }
-                ?: dp(FAB_SIZE_DP)
-        val outerPadding = fabDockOuterPaddingPx()
-        if (fabIdleDocked) {
-            val exposedWidth = fabDockExposedWidthPx()
-            val shadowPadding = fabDockShadowPaddingPx()
-            val visibleWidth = fabDockVisibleWidthPx()
-            root.clipChildren = false
-            root.clipToPadding = false
-            root.gravity = Gravity.END
-            root.setPadding(
-                if (edge == FAB_EDGE_LEFT) 0 else outerPadding,
-                dp(14),
-                if (edge == FAB_EDGE_LEFT) outerPadding else 0,
-                dp(14)
-            )
-            params.width = fabDockWindowWidthPx()
-            spacer?.visibility = View.VISIBLE
-            host.clipChildren = true
-            host.clipToPadding = true
-            hostLayoutParams.width = visibleWidth
-            hostLayoutParams.height = dp(FAB_SIZE_DP)
-            hostLayoutParams.gravity = Gravity.START
-            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            button.translationX =
-                if (edge == FAB_EDGE_LEFT) {
-                    -(buttonWidth - exposedWidth).toFloat()
-                } else {
-                    shadowPadding.toFloat()
-                }
-        } else {
-            root.clipChildren = false
-            root.clipToPadding = false
-            root.gravity = Gravity.END
-            root.setPadding(outerPadding, dp(14), outerPadding, dp(14))
-            params.width = fabExpandedWindowWidthPx()
-            spacer?.visibility = View.VISIBLE
-            host.clipChildren = false
-            host.clipToPadding = false
-            hostLayoutParams.width = dp(FAB_SIZE_DP)
-            hostLayoutParams.height = dp(FAB_SIZE_DP)
-            hostLayoutParams.gravity = Gravity.START
-            buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            button.translationX = 0f
-        }
+        val fraction = foldFraction.coerceIn(0f, 1f)
+        fabInnerFoldEdge = edge
+        fabInnerFoldFraction = fraction
+        val buttonWidth = fabButtonWidthPx()
+        val exposedWidth = fabDockExposedWidthPx()
+        val outerPadding = lerpInt(fabExpandedOuterPaddingPx(), 0, fraction)
+        val verticalPadding = fabExpandedVerticalPaddingPx()
+        root.clipChildren = false
+        root.clipToPadding = false
+        root.gravity =
+            if (edge == FAB_EDGE_RIGHT) Gravity.END else Gravity.START
+        root.setPadding(outerPadding, verticalPadding, outerPadding, verticalPadding)
+        spacer?.visibility = View.GONE
+        host.clipChildren = fraction > 0f || foldedWindow
+        host.clipToPadding = fraction > 0f || foldedWindow
+        hostLayoutParams.width =
+            if (foldedWindow) {
+                exposedWidth
+            } else {
+                lerpInt(buttonWidth, exposedWidth, fraction)
+            }
+        hostLayoutParams.height = dp(FAB_SIZE_DP)
+        hostLayoutParams.gravity =
+            (if (edge == FAB_EDGE_RIGHT) Gravity.END else Gravity.START) or Gravity.CENTER_VERTICAL
+        buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        button.translationX =
+            if (edge == FAB_EDGE_LEFT) {
+                -(buttonWidth - hostLayoutParams.width).toFloat()
+            } else {
+                0f
+            }
         host.layoutParams = hostLayoutParams
         button.layoutParams = buttonLayoutParams
         host.requestLayout()
         root.requestLayout()
     }
 
-    private fun restoreFabFromIdleDock(animateRestore: Boolean = false) {
+    private fun updateFabDockLayout(edge: String) {
+        val params = fabParams ?: return
+        params.width = fabExpandedWindowWidthPx()
+        applyFabInnerFoldLayout(
+            edge,
+            foldFraction = if (fabIdleDocked) 1f else 0f,
+            foldedWindow = false
+        )
+    }
+
+    private fun updateFabWindowLayout() {
+        val root = fabRoot ?: return
+        val params = fabParams ?: return
+        runCatching { windowManager.updateViewLayout(root, params) }
+        updateFabTouchProxyLayout()
+    }
+
+    private fun updateFabRootTouchPassthrough(notTouchable: Boolean) {
+        val root = fabRoot ?: return
+        val params = fabParams ?: return
+        val flags = overlayWindowFlags(notTouchable = notTouchable)
+        if (fabRootTouchPassthrough == notTouchable && params.flags == flags) return
+        fabRootTouchPassthrough = notTouchable
+        params.flags = flags
+        runCatching { windowManager.updateViewLayout(root, params) }
+    }
+
+    private fun updateFabTouchProxyLayout() {
+        val proxy = fabTouchProxy ?: return
+        val proxyParams = fabTouchParams ?: return
+        val params = fabParams ?: return
+        val root = fabRoot
+        val visible =
+            root?.visibility == View.VISIBLE &&
+                fabVisibilityTarget != false &&
+                !panelVisible &&
+                !miniVisible
+        proxy.visibility = if (visible) View.VISIBLE else View.GONE
+
+        val buttonSize = dp(FAB_SIZE_DP)
+        val exposedWidth = fabDockExposedWidthPx()
+        val edge = if (fabInnerFoldFraction > 0.01f) {
+            fabInnerFoldEdge
+        } else {
+            currentOrientationFabAnchor()?.edge
+                ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+        }
+        val folded = fabIdleDocked || fabInnerFoldFraction >= 0.99f
+        updateFabRootTouchPassthrough(fabIdleDocked || fabInnerFoldFraction > 0.01f)
+        proxyParams.width = if (folded) exposedWidth else buttonSize
+        proxyParams.height = buttonSize
+        proxyParams.x =
+            if (folded) {
+                if (edge == FAB_EDGE_LEFT) {
+                    0
+                } else {
+                    max(0, displayWidth() - exposedWidth)
+                }
+            } else {
+                params.x + fabExpandedOuterPaddingPx()
+            }
+        proxyParams.y =
+            (params.y + fabExpandedVerticalPaddingPx())
+                .coerceIn(0, max(0, displayHeight() - buttonSize))
+        runCatching { windowManager.updateViewLayout(proxy, proxyParams) }
+    }
+
+    private fun animateFabContainerTo(
+        targetX: Int,
+        targetY: Int,
+        durationMs: Long = 180L,
+        endAction: (() -> Unit)? = null
+    ) {
+        val params = fabParams ?: return
+        val root = fabRoot ?: return
+        cancelFabSnapAnimation()
+        val startX = params.x
+        val startY = params.y
+        if (startX == targetX && startY == targetY) {
+            endAction?.invoke()
+            return
+        }
+        var cancelled = false
+        fabContainerAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = durationMs
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val fraction = animator.animatedFraction
+                params.x = (startX + (targetX - startX) * fraction).roundToInt()
+                params.y = (startY + (targetY - startY) * fraction).roundToInt()
+                runCatching { windowManager.updateViewLayout(root, params) }
+                updateFabTouchProxyLayout()
+            }
+            addListener(
+                object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        cancelled = true
+                    }
+
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        if (fabContainerAnimator === animation) {
+                            fabContainerAnimator = null
+                        }
+                        if (cancelled) return
+                        params.x = targetX
+                        params.y = targetY
+                        runCatching { windowManager.updateViewLayout(root, params) }
+                        updateFabTouchProxyLayout()
+                        endAction?.invoke()
+                    }
+                }
+            )
+            start()
+        }
+    }
+
+    private fun animateFabInnerFold(
+        edge: String,
+        fromFraction: Float,
+        toFraction: Float,
+        endAction: (() -> Unit)? = null
+    ) {
+        cancelFabInnerFoldAnimation()
+        val start = fromFraction.coerceIn(0f, 1f)
+        val end = toFraction.coerceIn(0f, 1f)
+        if (abs(start - end) < 0.01f) {
+            applyFabInnerFoldLayout(edge, end, foldedWindow = false)
+            endAction?.invoke()
+            return
+        }
+        var cancelled = false
+        fabInnerFoldAnimator = ValueAnimator.ofFloat(start, end).apply {
+            duration = 170L
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animator ->
+                val fraction = animator.animatedValue as Float
+                applyFabInnerFoldLayout(edge, fraction, foldedWindow = false)
+                updateFabTouchProxyLayout()
+            }
+            addListener(
+                object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationCancel(animation: android.animation.Animator) {
+                        cancelled = true
+                    }
+
+                    override fun onAnimationEnd(animation: android.animation.Animator) {
+                        if (fabInnerFoldAnimator === animation) {
+                            fabInnerFoldAnimator = null
+                        }
+                        if (cancelled) return
+                        applyFabInnerFoldLayout(edge, end, foldedWindow = false)
+                        updateFabTouchProxyLayout()
+                        endAction?.invoke()
+                    }
+                }
+            )
+            start()
+        }
+    }
+
+    private fun restoreFabFromIdleDock() {
         if (!fabIdleDocked) return
         val params = fabParams ?: return
         val root = fabRoot ?: return
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
         val anchor = currentOrientationFabAnchor()
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
         val screenWidth = displayWidth()
         val screenHeight = displayHeight()
+        fabIdleDocked = false
+        params.width = fabExpandedWindowWidthPx()
         val minY = fabMinY()
         val maxY = fabMaxY(screenHeight)
-        fabIdleDocked = false
-        updateFabDockLayout(anchor.edge)
         params.x = expandedFabXForEdge(anchor.edge, screenWidth)
         params.y =
             if (maxY <= minY) {
                 minY
             } else {
                 (minY + (maxY - minY) * anchor.verticalRatio.coerceIn(0f, 1f)).roundToInt()
-            }
+        }
         root.alpha = 1f
-        runCatching { windowManager.updateViewLayout(root, params) }
-        if (animateRestore) animateFabRestoreFromDockEdge(anchor.edge)
+        applyFabInnerFoldLayout(anchor.edge, foldFraction = 0f, foldedWindow = false)
+        updateFabWindowLayout()
+    }
+
+    private fun prepareFabRestoreForVisibilityHide() {
+        val params = fabParams ?: return
+        val root = fabRoot ?: return
+        val fromFraction = fabInnerFoldFraction.coerceIn(0f, 1f)
+        fabIdleDockJob?.cancel()
+        fabIdleDockJob = null
+        if (!fabIdleDocked && fromFraction <= 0.01f) return
+        val edge =
+            if (fromFraction > 0.01f) {
+                fabInnerFoldEdge
+            } else {
+                resolveCurrentFabDockEdge(params)
+            }
+        val keepAlpha = root.alpha
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        fabIdleDocked = false
+        params.width = fabExpandedWindowWidthPx()
+        params.x = expandedFabXForEdge(edge, displayWidth())
+        params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
+        root.alpha = keepAlpha
+        applyFabInnerFoldLayout(
+            edge,
+            foldFraction = if (fromFraction > 0.01f) fromFraction else 1f,
+            foldedWindow = false
+        )
+        updateFabWindowLayout()
+        animateFabInnerFold(
+            edge,
+            fromFraction = if (fromFraction > 0.01f) fromFraction else 1f,
+            toFraction = 0f
+        )
     }
 
     private fun prepareFabForDockedDrag(edge: String, params: WindowManager.LayoutParams) {
@@ -967,71 +1188,92 @@ class FloatingOverlayService : Service() {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         cancelFabSnapAnimation()
-        resetFabRestoreAnimation()
+        cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
 
-        val currentWindowWidth =
-            params.width.takeIf { it > 0 }
-                ?: fabRoot?.width?.takeIf { it > 0 }
-                ?: fabWindowWidthPx()
-        val dragStartX = expandedFabDragStartX(edge, params.x, currentWindowWidth)
+        val wasFoldedWindow = fabIdleDocked || fabInnerFoldFraction > 0.01f
+        val dragStartX =
+            if (wasFoldedWindow) {
+                expandedFabXForEdge(edge, displayWidth())
+            } else {
+                params.x.coerceIn(0, max(0, displayWidth() - fabExpandedWindowWidthPx()))
+            }
+        val rawDragStartY = params.y
         fabIdleDocked = false
-        updateFabDockLayout(edge)
+        params.width = fabExpandedWindowWidthPx()
+        applyFabInnerFoldLayout(edge, foldFraction = 0f, foldedWindow = false)
+        val dragStartY = rawDragStartY.coerceIn(fabMinY(), fabMaxY(displayHeight()))
         params.x = dragStartX
+        params.y = dragStartY
         downWinX = dragStartX
+        downWinY = dragStartY
         root.alpha = 1f
         runCatching { windowManager.updateViewLayout(root, params) }
+        updateFabTouchProxyLayout()
     }
 
     private fun resetFabRestoreAnimation() {
-        fabButton?.animate()?.cancel()
-        fabButton?.translationX = 0f
+        cancelFabInnerFoldAnimation()
+        val edge = currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT
+        applyFabInnerFoldLayout(edge, foldFraction = 0f, foldedWindow = false)
+        updateFabTouchProxyLayout()
     }
 
-    private fun animateFabRestoreFromDockEdge(edge: String, endAction: (() -> Unit)? = null) {
-        val button = fabButton ?: run {
-            endAction?.invoke()
-            return
+    private fun cancelFabAutoDockForTouch(params: WindowManager.LayoutParams) {
+        cancelFabIdleDock(restoreFab = false)
+        cancelFabSnapAnimation()
+        cancelFabDockAlphaAnimation()
+        if (!fabIdleDocked && fabInnerFoldFraction > 0.01f) {
+            cancelFabInnerFoldAnimation()
+            params.width = fabExpandedWindowWidthPx()
+            applyFabInnerFoldLayout(fabInnerFoldEdge, foldFraction = 0f, foldedWindow = false)
+            fabRoot?.alpha = 1f
+            updateFabWindowLayout()
         }
-        val buttonWidth =
-            button.measuredWidth.takeIf { it > 0 }
-                ?: button.width.takeIf { it > 0 }
-                ?: dp(FAB_SIZE_DP)
-        val startTranslation =
-            if (edge == FAB_EDGE_LEFT) {
-                -(buttonWidth - fabDockExposedWidthPx()).toFloat()
-            } else {
-                fabDockShadowPaddingPx().toFloat()
-            }
-        if (abs(startTranslation) < 0.5f) {
-            endAction?.invoke()
-            return
-        }
-        button.animate().cancel()
-        button.translationX = startTranslation
-        button.animate()
-            .translationX(0f)
-            .setDuration(160L)
-            .setInterpolator(DecelerateInterpolator())
-            .withEndAction { endAction?.invoke() }
-            .start()
     }
 
     private fun applyFabIdleDockVisualState() {
         val root = fabRoot ?: return
+        val params = fabParams ?: return
+        if (fabContainerAnimator?.isRunning == true || fabInnerFoldAnimator?.isRunning == true) return
         if (fabIdleDocked) {
+            val anchor = currentOrientationFabAnchor()
+                ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
             bubbleRow?.visibility = View.GONE
-            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
+            updateFabDockLayout(anchor.edge)
+            params.x = expandedFabXForEdge(anchor.edge, displayWidth())
+            params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
             root.alpha = fabIdleDockAlpha
         } else {
-            updateFabDockLayout(currentOrientationFabAnchor()?.edge ?: FAB_EDGE_RIGHT)
+            val edge = currentOrientationFabAnchor()?.edge
+                ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+            updateFabDockLayout(edge)
             root.alpha = 1f
         }
+        updateFabWindowLayout()
     }
 
-    private fun cancelFabIdleDock(restoreFab: Boolean, animateRestore: Boolean = false) {
+    private fun cancelFabIdleDock(restoreFab: Boolean) {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
-        if (restoreFab) restoreFabFromIdleDock(animateRestore)
+        if (!restoreFab) return
+        if (fabIdleDocked) {
+            restoreFabFromIdleDock()
+            return
+        }
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
+        val params = fabParams ?: return
+        val root = fabRoot ?: return
+        val edge = currentOrientationFabAnchor()?.edge
+            ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight()).edge
+        fabIdleDocked = false
+        updateFabDockLayout(edge)
+        params.x = params.x.coerceIn(0, fabMaxX(displayWidth()))
+        params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
+        root.alpha = 1f
+        updateFabWindowLayout()
     }
 
     private fun resolveCurrentFabDockEdge(params: WindowManager.LayoutParams): String {
@@ -1046,128 +1288,32 @@ class FloatingOverlayService : Service() {
             ?: buildFabAnchor(params.x, params.y, displayWidth(), displayHeight())
         setFabAnchorForOrientation(currentFabOrientation, anchor)
         bubbleRow?.visibility = View.GONE
-        root.requestLayout()
-        root.post {
-            val liveParams = fabParams ?: return@post
-            val liveRoot = fabRoot ?: return@post
-            val host = fabButtonHost ?: return@post
-            val button = fabButton ?: return@post
-            val spacer = fabSpacerView
-            val hostLayoutParams = host.layoutParams as? LinearLayout.LayoutParams ?: return@post
-            val buttonLayoutParams = button.layoutParams as? FrameLayout.LayoutParams ?: return@post
-            val spacerLayoutParams = spacer?.layoutParams as? LinearLayout.LayoutParams
-            val buttonWidth =
-                button.measuredWidth.takeIf { it > 0 }
-                    ?: button.width.takeIf { it > 0 }
-                    ?: dp(FAB_SIZE_DP)
-            val outerPadding = fabDockOuterPaddingPx()
-            val startPaddingLeft = liveRoot.paddingLeft
-            val startPaddingTop = liveRoot.paddingTop
-            val startPaddingRight = liveRoot.paddingRight
-            val startPaddingBottom = liveRoot.paddingBottom
-            val startHostWidth = hostLayoutParams.width.takeIf { it > 0 } ?: dp(FAB_SIZE_DP)
-            val startWindowWidth =
-                liveParams.width.takeIf { it > 0 }
-                    ?: liveRoot.width.takeIf { it > 0 }
-                    ?: (dp(FAB_SIZE_DP) + outerPadding * 2)
-            val startSpacerHeight =
-                spacerLayoutParams?.height?.takeIf { it >= 0 }
-                    ?: if (spacer?.visibility == View.VISIBLE) dp(12) else 0
-            val startButtonTranslation = button.translationX
-            val targetVisibleWidth = fabDockVisibleWidthPx()
-            val targetWindowWidth = fabDockWindowWidthPx()
-            val targetExposedWidth = fabDockExposedWidthPx()
-            val targetShadowPadding = fabDockShadowPaddingPx()
-            val targetPaddingLeft = if (anchor.edge == FAB_EDGE_LEFT) 0 else outerPadding
-            val targetPaddingRight = if (anchor.edge == FAB_EDGE_LEFT) outerPadding else 0
-            val targetPaddingVertical = dp(14)
-            val targetSpacerHeight = startSpacerHeight.takeIf { it > 0 } ?: dp(12)
-            val targetButtonTranslation =
-                if (anchor.edge == FAB_EDGE_LEFT) {
-                    -(buttonWidth - targetExposedWidth).toFloat()
-                } else {
-                    targetShadowPadding.toFloat()
-                }
-            fabIdleDocked = true
-            val targetX = dockedFabXForEdge(anchor.edge, displayWidth())
-            val targetY = liveParams.y
-            val startX = liveParams.x
-            val startY = liveParams.y
-            val needsLayoutTransition =
-                startHostWidth != targetVisibleWidth ||
-                    startWindowWidth != targetWindowWidth ||
-                    startPaddingLeft != targetPaddingLeft ||
-                    startPaddingRight != targetPaddingRight ||
-                    abs(startButtonTranslation - targetButtonTranslation) > 0.5f
-            cancelFabSnapAnimation()
-            if (startX == targetX && startY == targetY && !needsLayoutTransition) {
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
+        cancelFabDockAlphaAnimation()
+        fabIdleDocked = false
+        updateFabDockLayout(anchor.edge)
+        val screenWidth = displayWidth()
+        val screenHeight = displayHeight()
+        val targetX = expandedFabXForEdge(anchor.edge, screenWidth)
+        val targetY = params.y.coerceIn(fabMinY(), fabMaxY(screenHeight))
+        root.alpha = 1f
+        animateFabContainerTo(targetX, targetY, durationMs = 160L) {
+            if (!canAutoDockFab() || draggingFab) return@animateFabContainerTo
+            root.animate()
+                .alpha(fabIdleDockAlpha)
+                .setDuration(170L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+            animateFabInnerFold(anchor.edge, fromFraction = 0f, toFraction = 1f) {
+                if (!canAutoDockFab() || draggingFab) return@animateFabInnerFold
+                fabIdleDocked = true
                 updateFabDockLayout(anchor.edge)
-                liveParams.x = targetX
-                liveParams.y = targetY
-                liveRoot.alpha = fabIdleDockAlpha
-                runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
-                return@post
+                params.x = expandedFabXForEdge(anchor.edge, displayWidth())
+                params.y = params.y.coerceIn(fabMinY(), fabMaxY(displayHeight()))
+                root.alpha = fabIdleDockAlpha
+                updateFabWindowLayout()
             }
-            var wasCancelled = false
-            fabSnapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 220L
-                interpolator = DecelerateInterpolator()
-                addUpdateListener { animator ->
-                    val fraction = animator.animatedFraction
-                    liveRoot.gravity = Gravity.END
-                    liveRoot.clipChildren = false
-                    liveRoot.clipToPadding = false
-                    liveRoot.setPadding(
-                        lerpInt(startPaddingLeft, targetPaddingLeft, fraction),
-                        lerpInt(startPaddingTop, targetPaddingVertical, fraction),
-                        lerpInt(startPaddingRight, targetPaddingRight, fraction),
-                        lerpInt(startPaddingBottom, targetPaddingVertical, fraction)
-                    )
-                    spacer?.visibility = View.VISIBLE
-                    spacer?.alpha = 1f
-                    if (spacerLayoutParams != null) {
-                        spacerLayoutParams.height = lerpInt(startSpacerHeight, targetSpacerHeight, fraction)
-                        spacer.layoutParams = spacerLayoutParams
-                    }
-                    host.clipChildren = fraction > 0f
-                    host.clipToPadding = fraction > 0f
-                    hostLayoutParams.width = lerpInt(startHostWidth, targetVisibleWidth, fraction)
-                    hostLayoutParams.height = dp(FAB_SIZE_DP)
-                    hostLayoutParams.gravity = Gravity.START
-                    host.layoutParams = hostLayoutParams
-                    buttonLayoutParams.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                    button.layoutParams = buttonLayoutParams
-                    button.translationX =
-                        startButtonTranslation + (targetButtonTranslation - startButtonTranslation) * fraction
-                    liveParams.width = lerpInt(startWindowWidth, targetWindowWidth, fraction)
-                    liveParams.x = (startX + (targetX - startX) * fraction).roundToInt()
-                    liveParams.y = (startY + (targetY - startY) * fraction).roundToInt()
-                    liveRoot.alpha = 1f + (fabIdleDockAlpha - 1f) * fraction
-                    host.requestLayout()
-                    liveRoot.requestLayout()
-                    runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
-                }
-                addListener(
-                    object : android.animation.AnimatorListenerAdapter() {
-                        override fun onAnimationCancel(animation: android.animation.Animator) {
-                            wasCancelled = true
-                        }
-
-                        override fun onAnimationEnd(animation: android.animation.Animator) {
-                            if (fabSnapAnimator === animation) {
-                                fabSnapAnimator = null
-                            }
-                            if (wasCancelled) return
-                            spacer?.alpha = 1f
-                            updateFabDockLayout(anchor.edge)
-                            liveParams.x = targetX
-                            liveParams.y = targetY
-                            liveRoot.alpha = fabIdleDockAlpha
-                            runCatching { windowManager.updateViewLayout(liveRoot, liveParams) }
-                        }
-                    }
-                )
-            }.also { it.start() }
         }
     }
 
@@ -1266,15 +1412,17 @@ class FloatingOverlayService : Service() {
         overlayDarkTheme = isOverlayDarkTheme()
         updateFabDisplaySnapshot()
         startForegroundInternal()
+        registerScreenStateReceiver()
         ensureWindows()
         RealtimeRuntimeBridge.addListener(runtimeBridgeListener)
         observeSettings()
         scope.launch {
+            settings = UserPrefs.getSettings(this@FloatingOverlayService)
+            applyOverlayWindowFlags()
             loadQuickSubtitleConfig()
             loadOverlayShortcuts()
             loadOverlayLauncherLayout()
             restoreFabPositionForCurrentOrientation(allowOppositeConversion = true)
-            loadLaunchableApps()
             refreshPanelUi()
             refreshQuickSubtitleUi()
             updateFabUi()
@@ -1299,11 +1447,11 @@ class FloatingOverlayService : Service() {
             ACTION_REFRESH -> {
                 scope.launch {
                     settings = UserPrefs.getSettings(this@FloatingOverlayService)
+                    applyOverlayWindowFlags()
                     loadQuickSubtitleConfig()
                     loadOverlayShortcuts()
                     loadOverlayLauncherLayout()
                     restoreFabPositionForCurrentOrientation(allowOppositeConversion = true)
-                    loadLaunchableApps()
                     refreshPanelUi()
                     refreshQuickSubtitleUi()
                     updateFabUi()
@@ -1326,10 +1474,19 @@ class FloatingOverlayService : Service() {
         realtimeHostStateJob = null
         realtimeHost = null
         RealtimeRuntimeBridge.removeListener(runtimeBridgeListener)
+        unregisterScreenStateReceiver()
         hideConfirmOverlay()
         removeWindows()
         scope.cancel()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (settings.floatingOverlayEnabled && canDrawOverlays(this)) {
+            runCatching { start(this) }
+                .onFailure { AppLogger.e("FloatingOverlayService restart after task removed failed", it) }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -1368,6 +1525,7 @@ class FloatingOverlayService : Service() {
             UserPrefs.observeSettings(this@FloatingOverlayService).collectLatest { next ->
                 val previousDarkTheme = overlayDarkTheme
                 val previousFontScaleBlockMode = settings.fontScaleBlockMode
+                val previousShowOnLockScreen = settings.floatingOverlayShowOnLockScreen
                 settings = next
                 if (!next.floatingOverlayEnabled) {
                     stopSelf()
@@ -1380,6 +1538,10 @@ class FloatingOverlayService : Service() {
                     return@collectLatest
                 }
                 if (next.fontScaleBlockMode != previousFontScaleBlockMode) {
+                    rebuildWindowsPreservingState()
+                    return@collectLatest
+                }
+                if (next.floatingOverlayShowOnLockScreen != previousShowOnLockScreen) {
                     rebuildWindowsPreservingState()
                     return@collectLatest
                 }
@@ -1423,10 +1585,93 @@ class FloatingOverlayService : Service() {
         }
     }
 
+    private fun registerScreenStateReceiver() {
+        if (screenStateReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(screenStateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                @Suppress("DEPRECATION")
+                registerReceiver(screenStateReceiver, filter)
+            }
+            screenStateReceiverRegistered = true
+        }.onFailure {
+            AppLogger.e("FloatingOverlayService.registerScreenStateReceiver failed", it)
+        }
+    }
+
+    private fun unregisterScreenStateReceiver() {
+        if (!screenStateReceiverRegistered) return
+        runCatching { unregisterReceiver(screenStateReceiver) }
+            .onFailure { AppLogger.e("FloatingOverlayService.unregisterScreenStateReceiver failed", it) }
+        screenStateReceiverRegistered = false
+    }
+
+    private fun refreshOverlayForLockScreen() {
+        applyOverlayWindowFlags()
+        fabRoot?.postDelayed({
+            if (settings.floatingOverlayShowOnLockScreen && fabRoot != null) {
+                rebuildWindowsPreservingState()
+            }
+        }, 80L)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun overlayWindowFlags(
+        notFocusable: Boolean = true,
+        notTouchable: Boolean = false
+    ): Int {
+        var flags = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        if (notFocusable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        if (notTouchable) flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if (settings.floatingOverlayShowOnLockScreen) {
+            flags = flags or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        }
+        return flags
+    }
+
+    private fun updateOverlayWindowFlags(
+        view: View?,
+        params: WindowManager.LayoutParams?,
+        notFocusable: Boolean = true,
+        notTouchable: Boolean = false
+    ) {
+        if (view == null || params == null) return
+        params.flags = overlayWindowFlags(
+            notFocusable = notFocusable,
+            notTouchable = notTouchable
+        )
+        runCatching { windowManager.updateViewLayout(view, params) }
+            .onFailure { AppLogger.e("FloatingOverlayService.updateOverlayWindowFlags failed", it) }
+    }
+
+    private fun applyOverlayWindowFlags() {
+        updateOverlayWindowFlags(fabRoot, fabParams, notTouchable = fabRootTouchPassthrough)
+        updateOverlayWindowFlags(fabTouchProxy, fabTouchParams)
+        updateOverlayWindowFlags(panelRoot, panelParams)
+        updateOverlayWindowFlags(panelPickerOverlay, panelPickerParams, notFocusable = false)
+        updateOverlayWindowFlags(miniRoot, miniParams)
+        updateOverlayWindowFlags(confirmOverlay, confirmParams, notTouchable = true)
+    }
+
     @Suppress("DEPRECATION")
     @SuppressLint("ClickableViewAccessibility")
     private fun ensureWindows() {
-        if (fabRoot != null) return
+        if (
+            fabRoot != null &&
+            fabTouchProxy != null &&
+            panelRoot != null &&
+            miniRoot != null &&
+            confirmOverlay != null
+        ) return
+        if (fabRoot != null || fabTouchProxy != null || panelRoot != null || miniRoot != null || confirmOverlay != null) {
+            removeWindows()
+        }
 
         bubbleTextView = TextView(this).apply {
             setTextColor(overlayOnSurfaceColor())
@@ -1466,7 +1711,6 @@ class FloatingOverlayService : Service() {
                     Gravity.CENTER
                 )
             )
-            setOnTouchListener { _, event -> handleFabTouch(event) }
         }
         fabButtonHost = FrameLayout(this).apply {
             clipChildren = false
@@ -1504,15 +1748,35 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
+            windowAnimations = 0
             x = displayWidth() - dp(96)
             y = displayHeight() - dp(180)
         }
+        updateFabDockLayout(FAB_EDGE_RIGHT)
         windowManager.addView(fabRoot, fabParams)
+
+        fabTouchProxy = FrameLayout(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setOnTouchListener { _, event -> handleFabTouch(event) }
+        }
+        fabTouchParams = WindowManager.LayoutParams(
+            dp(FAB_SIZE_DP),
+            dp(FAB_SIZE_DP),
+            overlayWindowType(),
+            overlayWindowFlags(),
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            windowAnimations = 0
+            x = (fabParams?.x ?: 0) + fabExpandedOuterPaddingPx()
+            y = (fabParams?.y ?: 0) + fabExpandedVerticalPaddingPx()
+        }
+        windowManager.addView(fabTouchProxy, fabTouchParams)
+        updateFabTouchProxyLayout()
 
         val panelTopMicIcon = symbolTextView("mic", 24f, overlayOnSurfaceColor()).also {
             panelStatusMicIconView = it
@@ -1732,6 +1996,7 @@ class FloatingOverlayService : Service() {
                 symbolTextView("edit", 24f, overlayOnSurfaceColor()).apply {
                     panelEditButtonView = this
                     setOnClickListener {
+                        performOverlayKeyHaptic(this)
                         panelEditMode = !panelEditMode
                         refreshPanelUi()
                     }
@@ -1748,6 +2013,7 @@ class FloatingOverlayService : Service() {
                 symbolTextView("open_in_new", 24f, overlayOnSurfaceColor()).apply {
                     panelOpenButtonView = this
                     setOnClickListener {
+                        performOverlayKeyHaptic(this)
                         hidePanel()
                         launchQuickSubtitlePage()
                     }
@@ -1889,8 +2155,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -1913,6 +2178,7 @@ class FloatingOverlayService : Service() {
                 object : TextWatcher {
                     override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                     override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        if (panelPickerSuppressSearchChange) return
                         panelPickerSearchQuery = s?.toString().orEmpty()
                         refreshShortcutPickerUi()
                     }
@@ -1933,7 +2199,12 @@ class FloatingOverlayService : Service() {
                     orientation = LinearLayout.VERTICAL
                     background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
                     elevation = dp(8).toFloat()
+                    isClickable = true
+                    alpha = 0f
+                    scaleX = 0.96f
+                    scaleY = 0.96f
                     setPadding(dp(16), dp(16), dp(16), dp(16))
+                    panelPickerCard = this
                     addView(
                         TextView(this@FloatingOverlayService).apply {
                             setTextColor(overlayOnSurfaceColor())
@@ -1980,7 +2251,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(notFocusable = false),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -2075,7 +2346,10 @@ class FloatingOverlayService : Service() {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                         foreground = selectableDrawable()
                     }
-                    setOnClickListener { openMainAppAndCollapseOverlay(fromMiniPanel = true) }
+                    setOnClickListener {
+                        performOverlayKeyHaptic(this)
+                        openMainAppAndCollapseOverlay(fromMiniPanel = true)
+                    }
                     addView(
                         miniStatusTextView,
                         FrameLayout.LayoutParams(
@@ -2097,7 +2371,10 @@ class FloatingOverlayService : Service() {
             )
             addView(spaceView(dp(10), 1))
             addView(miniStatusTriggerContainer)
-            setOnClickListener { returnFromMiniToPanel() }
+            setOnClickListener {
+                performOverlayKeyHaptic(this)
+                returnFromMiniToPanel()
+            }
         }
         miniTopStripView = topStrip
 
@@ -2726,8 +3003,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -2812,9 +3088,7 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            overlayWindowFlags(notTouchable = true),
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -2826,6 +3100,7 @@ class FloatingOverlayService : Service() {
 
     private fun removeWindows() {
         cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
         confirmOverlay?.let { runCatching { windowManager.removeView(it) } }
         confirmOverlay = null
         confirmTextCardView = null
@@ -2863,6 +3138,7 @@ class FloatingOverlayService : Service() {
         panelNextPageButtonView = null
         panelPager = null
         panelPagerAdapter = null
+        saveMiniQuickItemsScrollState()
         miniRoot?.let { runCatching { windowManager.removeView(it) } }
         miniRoot = null
         miniContent = null
@@ -2908,6 +3184,10 @@ class FloatingOverlayService : Service() {
         miniActionFabIconView = null
         miniBackButtonView = null
         miniOpenButtonView = null
+        fabTouchProxy?.let { runCatching { windowManager.removeView(it) } }
+        fabTouchProxy = null
+        fabTouchParams = null
+        fabRootTouchPassthrough = false
         fabRoot?.let { runCatching { windowManager.removeView(it) } }
         fabRoot = null
         fabButton = null
@@ -2990,12 +3270,14 @@ class FloatingOverlayService : Service() {
 
     private fun syncFabVisibility(show: Boolean) {
         if (!show) {
-            cancelFabIdleDock(restoreFab = true)
+            prepareFabRestoreForVisibilityHide()
+            fabTouchProxy?.visibility = View.GONE
         }
         if (fabVisibilityTarget == show) return
         fabVisibilityTarget = show
         animateFabVisibility(show)
         if (show) {
+            updateFabTouchProxyLayout()
             refreshFabIdleDockState()
         }
     }
@@ -3239,6 +3521,7 @@ class FloatingOverlayService : Service() {
     private fun submitQuickSubtitleText(text: String) {
         val normalized = text.trim()
         if (normalized.isEmpty()) return
+        saveMiniQuickItemsScrollState()
         overlayHintText = ""
         quickSubtitleCurrentText = normalized
         saveQuickSubtitleConfig()
@@ -3321,9 +3604,14 @@ class FloatingOverlayService : Service() {
         val params = fabParams ?: return false
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                fabTouchDockEdge = if (fabIdleDocked) resolveCurrentFabDockEdge(params) else null
-                cancelFabIdleDock(restoreFab = false, animateRestore = false)
-                cancelFabSnapAnimation()
+                performOverlayKeyHaptic(fabButton)
+                fabTouchDockEdge =
+                    if (fabIdleDocked || fabInnerFoldFraction > 0.01f) {
+                        if (fabInnerFoldFraction > 0.01f) fabInnerFoldEdge else resolveCurrentFabDockEdge(params)
+                    } else {
+                        null
+                    }
+                cancelFabAutoDockForTouch(params)
                 if (fabTouchDockEdge == null) {
                     resetFabRestoreAnimation()
                 }
@@ -3339,17 +3627,27 @@ class FloatingOverlayService : Service() {
                 val dy = (event.rawY - downRawY).roundToInt()
                 if (!draggingFab && (abs(dx) > dp(6) || abs(dy) > dp(6))) draggingFab = true
                 if (draggingFab) {
-                    val dockEdge = fabTouchDockEdge ?: if (fabIdleDocked) resolveCurrentFabDockEdge(params) else null
-                    fabTouchDockEdge = null
-                    resetFabRestoreAnimation()
+                    val dockEdge =
+                        fabTouchDockEdge
+                            ?: if (fabIdleDocked) {
+                                resolveCurrentFabDockEdge(params)
+                            } else if (fabInnerFoldFraction > 0.01f) {
+                                fabInnerFoldEdge
+                            } else {
+                                null
+                            }
                     cancelFabSnapAnimation()
                     if (dockEdge != null) {
+                        fabTouchDockEdge = null
                         prepareFabForDockedDrag(dockEdge, params)
+                    } else if (fabInnerFoldFraction <= 0.01f) {
+                        resetFabRestoreAnimation()
                     }
                     params.x = downWinX + dx
                     params.y = downWinY + dy
                     clampFabToScreen()
                     windowManager.updateViewLayout(fabRoot, params)
+                    updateFabTouchProxyLayout()
                     if (!panelVisible) updatePanelPosition()
                     if (!miniVisible) updateMiniPanelPosition()
                 }
@@ -3360,13 +3658,11 @@ class FloatingOverlayService : Service() {
                 fabTouchDockEdge = null
                 if (!draggingFab) {
                     if (tapRestoreEdge != null) {
-                        cancelFabIdleDock(restoreFab = true, animateRestore = false)
-                        animateFabRestoreFromDockEdge(tapRestoreEdge) { togglePanel() }
+                        togglePanel()
                     } else {
                         togglePanel()
                     }
                 } else {
-                    resetFabRestoreAnimation()
                     snapFabToEdge()
                 }
                 draggingFab = false
@@ -3374,7 +3670,6 @@ class FloatingOverlayService : Service() {
             }
             MotionEvent.ACTION_CANCEL -> {
                 fabTouchDockEdge = null
-                resetFabRestoreAnimation()
                 if (draggingFab) snapFabToEdge()
                 draggingFab = false
                 refreshFabIdleDockState()
@@ -3396,6 +3691,9 @@ class FloatingOverlayService : Service() {
 
     @SuppressLint("ClickableViewAccessibility")
     private fun handleSharedActionTouch(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            performOverlayKeyHaptic(activeConfirmFab())
+        }
         if (settings.pushToTalkMode) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -3439,6 +3737,12 @@ class FloatingOverlayService : Service() {
 
     private fun showPanel() {
         scope.launch {
+            if (!canDrawOverlays(this@FloatingOverlayService)) {
+                stopSelf()
+                return@launch
+            }
+            ensureWindows()
+            ensureRealtimeHostBound()
             collapseOverlayStatusExpanded(animate = false)
             val switchingFromMini = miniVisible
             panelVisible = true
@@ -3485,6 +3789,12 @@ class FloatingOverlayService : Service() {
 
     private fun showMiniPanel(mode: MiniOverlayMode = MiniOverlayMode.Subtitle) {
         scope.launch {
+            if (!canDrawOverlays(this@FloatingOverlayService)) {
+                stopSelf()
+                return@launch
+            }
+            ensureWindows()
+            ensureRealtimeHostBound()
             collapseOverlayStatusExpanded(animate = false)
             val switchingFromPanel = panelVisible
             miniMode = mode
@@ -3492,7 +3802,9 @@ class FloatingOverlayService : Service() {
             syncFabVisibility(false)
             when (miniMode) {
                 MiniOverlayMode.Subtitle -> {
-                    loadQuickSubtitleConfig()
+                    if (!quickSubtitleConfigLoaded) {
+                        loadQuickSubtitleConfig()
+                    }
                     refreshQuickSubtitleUi()
                 }
                 MiniOverlayMode.QuickCard -> {
@@ -3527,6 +3839,9 @@ class FloatingOverlayService : Service() {
 
     private fun hideMiniPanel() {
         if (!miniVisible) return
+        if (miniMode == MiniOverlayMode.Subtitle) {
+            saveMiniQuickItemsScrollState()
+        }
         closeMiniPreview()
         animateOverlayOut(miniContent) {
             miniVisible = false
@@ -3581,6 +3896,7 @@ class FloatingOverlayService : Service() {
         val root = fabRoot ?: return
         root.animate().cancel()
         if (show) {
+            updateFabTouchProxyLayout()
             if (root.visibility != View.VISIBLE) {
                 root.alpha = 0f
                 root.scaleX = 0.88f
@@ -3594,6 +3910,7 @@ class FloatingOverlayService : Service() {
                 .setDuration(180L)
                 .start()
         } else if (root.visibility == View.VISIBLE) {
+            fabTouchProxy?.visibility = View.GONE
             root.animate()
                 .alpha(0f)
                 .scaleX(0.88f)
@@ -4329,11 +4646,14 @@ class FloatingOverlayService : Service() {
             quickSubtitleBold = true
             quickSubtitleCentered = false
             quickSubtitleNextGroupId = 4L
+            reconcileMiniQuickSubtitleState()
+            quickSubtitleConfigLoaded = true
             return
         }
         runCatching { parseQuickSubtitleConfig(raw) }
             .onFailure { AppLogger.e("FloatingOverlayService.parseQuickSubtitleConfig failed", it) }
         quickSubtitleFontSizeSp = overlayFontSize ?: sharedFontFallback
+        quickSubtitleConfigLoaded = true
     }
 
     private fun parseQuickSubtitleConfig(raw: String) {
@@ -4373,6 +4693,19 @@ class FloatingOverlayService : Service() {
         quickSubtitleBold = root.optBoolean("fontBold", true)
         quickSubtitleCentered = root.optBoolean("textCentered", false)
         quickSubtitleNextGroupId = maxOf(maxId + 1L, 4L)
+        reconcileMiniQuickSubtitleState()
+    }
+
+    private fun reconcileMiniQuickSubtitleState() {
+        val validIds = quickSubtitleGroups.map { it.id }.toSet()
+        miniQuickSubtitleSelectedGroupId = when {
+            miniQuickSubtitleSelectedGroupId?.let { it in validIds } == true -> miniQuickSubtitleSelectedGroupId
+            quickSubtitleSelectedGroupId in validIds -> quickSubtitleSelectedGroupId
+            else -> quickSubtitleGroups.firstOrNull()?.id
+        }
+        miniQuickItemsScrollStates.keys
+            .filter { key -> key.substringBefore(':').toLongOrNull() !in validIds }
+            .forEach { key -> miniQuickItemsScrollStates.remove(key) }
     }
 
     private fun saveQuickSubtitleConfig() {
@@ -4550,20 +4883,73 @@ class FloatingOverlayService : Service() {
         )
     }
 
+    private fun currentMiniQuickSubtitleGroupId(): Long {
+        val selectedId = miniQuickSubtitleSelectedGroupId
+        if (selectedId != null && quickSubtitleGroups.any { it.id == selectedId }) {
+            return selectedId
+        }
+        val fallbackId =
+            quickSubtitleGroups.firstOrNull { it.id == quickSubtitleSelectedGroupId }?.id
+                ?: quickSubtitleGroups.firstOrNull()?.id
+                ?: defaultQuickSubtitleGroups().first().id
+        miniQuickSubtitleSelectedGroupId = fallbackId
+        return fallbackId
+    }
+
     private fun selectedQuickSubtitleGroup(): QuickSubtitleGroupConfig {
-        return quickSubtitleGroups.firstOrNull { it.id == quickSubtitleSelectedGroupId }
+        val selectedId = currentMiniQuickSubtitleGroupId()
+        return quickSubtitleGroups.firstOrNull { it.id == selectedId }
             ?: quickSubtitleGroups.firstOrNull()
             ?: defaultQuickSubtitleGroups().first()
     }
 
     private fun shiftQuickSubtitleGroup(delta: Int) {
         if (quickSubtitleGroups.isEmpty()) return
-        val currentIndex = quickSubtitleGroups.indexOfFirst { it.id == quickSubtitleSelectedGroupId }
+        saveMiniQuickItemsScrollState()
+        val currentGroupId = currentMiniQuickSubtitleGroupId()
+        val currentIndex = quickSubtitleGroups.indexOfFirst { it.id == currentGroupId }
             .coerceAtLeast(0)
         val nextIndex = (currentIndex + delta).floorMod(quickSubtitleGroups.size)
-        quickSubtitleSelectedGroupId = quickSubtitleGroups[nextIndex].id
-        saveQuickSubtitleConfig()
+        if (nextIndex == currentIndex) return
+        performOverlayKeyHaptic(miniQuickSwitcherView ?: miniGroupIconView)
+        miniQuickSubtitleSelectedGroupId = quickSubtitleGroups[nextIndex].id
         refreshQuickSubtitleUi()
+    }
+
+    private fun miniQuickItemsScrollKey(groupId: Long): String {
+        return "${groupId}:${if (isPhoneLandscapeUi()) "landscape" else "portrait"}"
+    }
+
+    private fun saveMiniQuickItemsScrollState(groupId: Long = currentMiniQuickSubtitleGroupId()) {
+        val recycler = miniQuickItemsRecyclerView ?: return
+        val layoutManager = miniQuickItemsLayoutManager ?: return
+        val position = layoutManager.findFirstVisibleItemPosition()
+        if (position == RecyclerView.NO_POSITION) return
+        val child = layoutManager.findViewByPosition(position) ?: return
+        val offset = if (layoutManager.orientation == RecyclerView.VERTICAL) {
+            child.top - recycler.paddingTop
+        } else {
+            child.left - recycler.paddingLeft
+        }
+        miniQuickItemsScrollStates[miniQuickItemsScrollKey(groupId)] =
+            MiniQuickItemsScrollState(position = position, offsetPx = offset)
+    }
+
+    private fun restoreMiniQuickItemsScrollState(groupId: Long) {
+        val recycler = miniQuickItemsRecyclerView ?: return
+        val layoutManager = miniQuickItemsLayoutManager ?: return
+        val saved = miniQuickItemsScrollStates[miniQuickItemsScrollKey(groupId)]
+        recycler.post {
+            val itemCount = miniQuickItemsAdapter?.itemCount ?: 0
+            if (itemCount <= 0) {
+                updateMiniQuickItemsEdgeFade(false)
+                return@post
+            }
+            val position = (saved?.position ?: 0).coerceIn(0, itemCount - 1)
+            val offset = saved?.offsetPx ?: 0
+            layoutManager.scrollToPositionWithOffset(position, offset)
+            recycler.post { updateMiniQuickItemsEdgeFade(false) }
+        }
     }
 
     private fun refreshQuickSubtitleUi() {
@@ -4599,9 +4985,8 @@ class FloatingOverlayService : Service() {
         miniQuickRow?.visibility = if (miniQuickItemsCollapsed) View.GONE else View.VISIBLE
         miniQuickRow?.requestLayout()
         miniQuickItemsAdapter?.submitItems(group.items)
-        miniQuickItemsRecyclerView?.scrollToPosition(0)
-        miniQuickItemsRecyclerView?.post { updateMiniQuickItemsEdgeFade(false) }
         refreshMiniSubtitleLayoutMetrics()
+        restoreMiniQuickItemsScrollState(group.id)
         refreshMiniPreviewUi()
     }
 
@@ -5504,8 +5889,8 @@ class FloatingOverlayService : Service() {
                 maxLines = 1
                 ellipsize = null
                 isSingleLine = true
-                setHorizontallyScrolling(false)
-                maxWidth = maxWatermarkWidth
+                setHorizontallyScrolling(true)
+                minWidth = maxWatermarkWidth
                 includeFontPadding = false
                 text = watermarkText
             }
@@ -6101,6 +6486,7 @@ class FloatingOverlayService : Service() {
                             ellipsize = null
                             isSingleLine = true
                             setHorizontallyScrolling(true)
+                            minWidth = container.height.takeIf { it > 0 } ?: dp(220)
                             includeFontPadding = false
                             text = watermarkText
                         }
@@ -6552,6 +6938,9 @@ class FloatingOverlayService : Service() {
             return
         }
         launchableAppsLoading = true
+        if (panelPickerOverlay?.visibility == View.VISIBLE) {
+            refreshShortcutPickerUi()
+        }
         try {
             launchableAppsCache = withContext(Dispatchers.IO) {
                 val intents = listOf(
@@ -7209,6 +7598,7 @@ class FloatingOverlayService : Service() {
             snapPanelToNearestPage()
             return
         }
+        performOverlayKeyHaptic(panelPager ?: panelRoot)
         panelPageIndex = targetIndex
         refreshPanelIndicators()
         scrollPanelToPage(targetIndex, animate = true)
@@ -7216,6 +7606,7 @@ class FloatingOverlayService : Service() {
 
     private fun handlePanelLauncherTileClick(tile: OverlayLauncherTile) {
         if (panelEditMode && !tile.isAddButton) return
+        performOverlayKeyHaptic(panelRoot)
         when {
             tile.isAddButton -> showShortcutPicker()
             tile.shortcut != null -> {
@@ -7800,14 +8191,60 @@ class FloatingOverlayService : Service() {
 
     private fun refreshShortcutPickerUi() {
         val container = panelPickerListContainer ?: return
+        val token = ++panelPickerListRefreshToken
+        val animate = panelPickerOverlay?.visibility == View.VISIBLE && container.childCount > 0
+        container.animate().cancel()
+        if (!animate) {
+            container.alpha = 1f
+            populateShortcutPickerUi(container)
+            return
+        }
+        container.animate()
+            .alpha(0f)
+            .setDuration(80L)
+            .withEndAction {
+                if (panelPickerListRefreshToken != token) return@withEndAction
+                populateShortcutPickerUi(container)
+                container.animate().cancel()
+                container.animate()
+                    .alpha(1f)
+                    .setDuration(140L)
+                    .start()
+            }
+            .start()
+    }
+
+    private fun populateShortcutPickerUi(container: LinearLayout) {
         container.removeAllViews()
-        if (launchableAppsLoading) {
+        val token = panelPickerListRefreshToken
+        if (panelPickerPreparing || launchableAppsLoading || (!launchableAppsLoaded && launchableAppsCache.isEmpty())) {
             container.addView(
-                TextView(this).apply {
-                    setTextColor(overlayOnSurfaceVariantColor())
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                LinearLayout(this).apply {
                     gravity = Gravity.CENTER
-                    text = "正在加载应用..."
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(0, dp(24), 0, dp(24))
+                    addView(
+                        ProgressBar(this@FloatingOverlayService).apply {
+                            isIndeterminate = true
+                            indeterminateTintList = ColorStateList.valueOf(overlayPrimaryColor())
+                        },
+                        LinearLayout.LayoutParams(dp(36), dp(36)).apply {
+                            gravity = Gravity.CENTER_HORIZONTAL
+                        }
+                    )
+                    addView(spaceView(1, dp(10)))
+                    addView(
+                        TextView(this@FloatingOverlayService).apply {
+                            setTextColor(overlayOnSurfaceVariantColor())
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                            gravity = Gravity.CENTER
+                            text = "正在加载应用..."
+                        },
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        )
+                    )
                 },
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -7842,50 +8279,67 @@ class FloatingOverlayService : Service() {
             )
             return
         }
-        items.forEachIndexed { index, shortcut ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
-                setPadding(dp(10), dp(10), dp(10), dp(10))
-                addView(
-                    ImageView(this@FloatingOverlayService).apply {
-                        val icon = resolveShortcutIcon(shortcut)
-                        if (icon != null) setImageDrawable(icon)
-                    },
-                    LinearLayout.LayoutParams(dp(24), dp(24))
+        fun addBatch(startIndex: Int) {
+            if (panelPickerListRefreshToken != token || panelPickerOverlay?.visibility != View.VISIBLE) return
+            val endIndex = min(items.size, startIndex + 24)
+            for (index in startIndex until endIndex) {
+                container.addView(
+                    createShortcutPickerRow(items[index], token),
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        if (index > 0) topMargin = dp(8)
+                    }
                 )
-                addView(spaceView(dp(12), 1))
-                addView(
-                    TextView(this@FloatingOverlayService).apply {
-                        setTextColor(overlayOnSurfaceColor())
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.END
-                        text = shortcut.label
-                    },
-                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                )
-                if (overlayShortcuts.any {
-                        it.packageName == shortcut.packageName && it.className == shortcut.className
-                    }) {
-                    addView(spaceView(dp(8), 1))
-                    addView(symbolTextView("check", 18f, overlayPrimaryColor()))
-                }
-                setOnClickListener {
-                    addOverlayShortcut(shortcut)
-                    hideShortcutPicker()
-                }
             }
-            container.addView(
-                row,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    if (index > 0) topMargin = dp(8)
+            if (endIndex < items.size) {
+                container.post { addBatch(endIndex) }
+            }
+        }
+        addBatch(0)
+    }
+
+    private fun createShortcutPickerRow(shortcut: OverlayAppShortcut, token: Int): View {
+        val iconView = ImageView(this).apply {
+            alpha = 0.82f
+        }
+        scope.launch(Dispatchers.IO) {
+            val iconState = resolveShortcutIconState(shortcut)
+            withContext(Dispatchers.Main) {
+                if (panelPickerListRefreshToken != token || panelPickerOverlay?.visibility != View.VISIBLE) {
+                    return@withContext
                 }
+                iconView.setImageDrawable(iconState?.newDrawable(resources))
+            }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            addView(iconView, LinearLayout.LayoutParams(dp(24), dp(24)))
+            addView(spaceView(dp(12), 1))
+            addView(
+                TextView(this@FloatingOverlayService).apply {
+                    setTextColor(overlayOnSurfaceColor())
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    text = shortcut.label
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             )
+            if (overlayShortcuts.any {
+                    it.packageName == shortcut.packageName && it.className == shortcut.className
+                }) {
+                addView(spaceView(dp(8), 1))
+                addView(symbolTextView("check", 18f, overlayPrimaryColor()))
+            }
+            setOnClickListener {
+                addOverlayShortcut(shortcut)
+                hideShortcutPicker()
+            }
         }
     }
 
@@ -7906,30 +8360,87 @@ class FloatingOverlayService : Service() {
 
     private fun showShortcutPicker() {
         scope.launch {
+            panelPickerSuppressSearchChange = true
             panelPickerSearchInput?.setText(panelPickerSearchQuery)
+            panelPickerSearchInput?.setSelection(panelPickerSearchInput?.text?.length ?: 0)
+            panelPickerSuppressSearchChange = false
             updatePickerLayout()
             val overlay = panelPickerOverlay ?: return@launch
+            val card = panelPickerCard
             overlay.visibility = View.VISIBLE
             overlay.animate().cancel()
-            overlay.animate().alpha(1f).setDuration(160L).start()
+            overlay.alpha = 0f
+            panelPickerPreparing = true
+            card?.animate()?.cancel()
+            card?.alpha = 0f
+            card?.scaleX = 0.96f
+            card?.scaleY = 0.96f
+            overlay.animate()
+                .alpha(1f)
+                .setDuration(150L)
+                .start()
+            card?.animate()
+                ?.alpha(1f)
+                ?.scaleX(1f)
+                ?.scaleY(1f)
+                ?.setDuration(190L)
+                ?.setInterpolator(DecelerateInterpolator())
+                ?.start()
             refreshShortcutPickerUi()
-            if (!launchableAppsLoaded || launchableAppsCache.isEmpty()) {
-                loadLaunchableApps()
+            panelPickerListContainer?.postDelayed({
+                if (panelPickerOverlay?.visibility != View.VISIBLE) return@postDelayed
+                panelPickerPreparing = false
+                if (!launchableAppsLoaded || launchableAppsCache.isEmpty()) {
+                    scope.launch { loadLaunchableApps() }
+                } else {
+                    refreshShortcutPickerUi()
+                }
+            }, 80L)
+            if (panelPickerListContainer == null) {
+                panelPickerPreparing = false
             }
         }
     }
 
     private fun hideShortcutPicker() {
         val overlay = panelPickerOverlay ?: return
+        val card = panelPickerCard
+        panelPickerPreparing = false
+        panelPickerListRefreshToken++
         panelPickerSearchQuery = ""
-        panelPickerSearchInput?.setText("")
+        panelPickerSuppressSearchChange = true
+        if (!panelPickerSearchInput?.text.isNullOrEmpty()) {
+            panelPickerSearchInput?.setText("")
+        }
+        panelPickerSuppressSearchChange = false
         overlay.animate().cancel()
-        overlay.alpha = 0f
-        overlay.visibility = View.GONE
+        card?.animate()?.cancel()
+        overlay.animate()
+            .alpha(0f)
+            .setDuration(130L)
+            .withEndAction {
+                overlay.visibility = View.GONE
+                overlay.alpha = 0f
+                card?.alpha = 0f
+                card?.scaleX = 0.96f
+                card?.scaleY = 0.96f
+            }
+            .start()
+        card?.animate()
+            ?.alpha(0f)
+            ?.scaleX(0.96f)
+            ?.scaleY(0.96f)
+            ?.setDuration(130L)
+            ?.start()
     }
 
     private fun updatePickerLayout() {
         val params = panelPickerParams ?: return
+        if (params.width == WindowManager.LayoutParams.MATCH_PARENT &&
+            params.height == WindowManager.LayoutParams.MATCH_PARENT
+        ) {
+            return
+        }
         params.width = WindowManager.LayoutParams.MATCH_PARENT
         params.height = WindowManager.LayoutParams.MATCH_PARENT
         panelPickerOverlay?.let { runCatching { windowManager.updateViewLayout(it, params) } }
@@ -8144,8 +8655,12 @@ class FloatingOverlayService : Service() {
             )
             addView(pttIcon)
             setOnClickListener {
-                scope.launch(Dispatchers.IO) {
-                    UserPrefs.setPushToTalkMode(this@FloatingOverlayService, !settings.pushToTalkMode)
+                scope.launch {
+                    val nextEnabled = !settings.pushToTalkMode
+                    if (nextEnabled && effectiveRunningState()) {
+                        stopListeningInternal()
+                    }
+                    UserPrefs.setPushToTalkMode(this@FloatingOverlayService, nextEnabled)
                 }
             }
         }
@@ -8364,16 +8879,29 @@ class FloatingOverlayService : Service() {
     }
 
     private fun resolveShortcutIcon(shortcut: OverlayAppShortcut): Drawable? {
+        return resolveShortcutIconState(shortcut)?.let { state ->
+            runCatching { state.newDrawable(resources).mutate() }.getOrNull()
+        }
+    }
+
+    private fun resolveShortcutIconState(shortcut: OverlayAppShortcut): Drawable.ConstantState? {
         val key = shortcutKey(shortcut)
-        shortcutIconStateCache[key]?.let { state ->
-            return runCatching { state.newDrawable(resources).mutate() }.getOrNull()
+        synchronized(shortcutIconStateCache) {
+            if (shortcutIconStateCache.containsKey(key)) return shortcutIconStateCache[key]
         }
         val drawable = runCatching {
             val component = android.content.ComponentName(shortcut.packageName, shortcut.className)
             packageManager.getActivityIcon(component)
         }.getOrNull()
-        shortcutIconStateCache[key] = drawable?.constantState
-        return drawable
+        val state = drawable?.constantState
+        synchronized(shortcutIconStateCache) {
+            shortcutIconStateCache[key] = state
+            while (shortcutIconStateCache.size > 96) {
+                val eldest = shortcutIconStateCache.keys.firstOrNull() ?: break
+                shortcutIconStateCache.remove(eldest)
+            }
+        }
+        return state
     }
 
     private fun launchAppPage(target: String) {
@@ -8653,54 +9181,23 @@ class FloatingOverlayService : Service() {
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         fabIdleDocked = false
+        cancelFabSnapAnimation()
+        cancelFabInnerFoldAnimation()
         root.alpha = 1f
         val screenWidth = displayWidth()
         val screenHeight = displayHeight()
-        val maxX = fabMaxX(screenWidth)
-        val leftDistance = params.x
-        val rightDistance = maxX - params.x
-        val targetX =
-            if (leftDistance <= rightDistance) fabSnapLeftX() else fabSnapRightX(screenWidth)
+        val centerX = params.x + fabExpandedWindowWidthPx() / 2
+        val targetEdge = if (centerX <= screenWidth / 2) FAB_EDGE_LEFT else FAB_EDGE_RIGHT
+        updateFabDockLayout(targetEdge)
+        val targetX = expandedFabXForEdge(targetEdge, screenWidth)
         val targetY = params.y.coerceIn(fabMinY(), fabMaxY(screenHeight))
         val targetAnchor = buildFabAnchor(targetX, targetY, screenWidth, screenHeight)
         setFabAnchorForOrientation(currentFabOrientation, targetAnchor)
         saveOverlayLauncherLayout()
-        val startX = params.x
-        val startY = params.y
-        cancelFabSnapAnimation()
-        if (startX == targetX && startY == targetY) {
-            params.x = targetX
-            params.y = targetY
-            windowManager.updateViewLayout(root, params)
+        animateFabContainerTo(targetX, targetY) {
+            updateFabDockLayout(targetEdge)
+            updateFabWindowLayout()
             refreshFabIdleDockState()
-            return
-        }
-        var wasCancelled = false
-        fabSnapAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 220L
-            interpolator = DecelerateInterpolator()
-            addUpdateListener { animator ->
-                val fraction = animator.animatedFraction
-                params.x = (startX + (targetX - startX) * fraction).roundToInt()
-                params.y = (startY + (targetY - startY) * fraction).roundToInt()
-                runCatching { windowManager.updateViewLayout(root, params) }
-            }
-            addListener(
-                object : android.animation.AnimatorListenerAdapter() {
-                    override fun onAnimationCancel(animation: android.animation.Animator) {
-                        wasCancelled = true
-                    }
-
-                    override fun onAnimationEnd(animation: android.animation.Animator) {
-                        if (fabSnapAnimator === animation) {
-                            fabSnapAnimator = null
-                        }
-                        if (wasCancelled) return
-                        refreshFabIdleDockState()
-                    }
-                }
-            )
-            start()
         }
     }
 
@@ -8749,6 +9246,12 @@ class FloatingOverlayService : Service() {
     }
 
     private fun overlayPrimaryColor(): Int = 0xFF038387.toInt()
+
+    private fun performOverlayKeyHaptic(anchor: View? = null) {
+        if (!settings.hapticFeedbackEnabled) return
+        (anchor ?: fabButton ?: panelActionFab ?: miniActionFab ?: panelRoot ?: miniRoot ?: fabRoot)
+            ?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+    }
 
     private fun overlayCardColor(): Int =
         if (overlayDarkTheme) 0xFF1D2023.toInt() else Color.WHITE
@@ -8831,6 +9334,9 @@ class FloatingOverlayService : Service() {
             setTextColor(color)
             setSymbolTextSize(sp)
             typeface = iconTypeface
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                fontFeatureSettings = "liga"
+            }
             includeFontPadding = false
         }
 

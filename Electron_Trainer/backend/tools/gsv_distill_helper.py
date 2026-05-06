@@ -75,8 +75,9 @@ def main() -> int:
 
     try:
         wav_dir.mkdir(parents=True, exist_ok=True)
-        for stale in wav_dir.glob("*.wav"):
-            stale.unlink(missing_ok=True)
+        if not output_paths:
+            for stale in wav_dir.glob("*.wav"):
+                stale.unlink(missing_ok=True)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
         my_infer.pre_infer(config_path, str(gsv_root / "custom_refs"))

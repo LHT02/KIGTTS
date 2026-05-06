@@ -42,10 +42,29 @@ object UserPrefs {
     const val VOLUME_HOTKEY_MIN_WINDOW_MS = 500
     const val VOLUME_HOTKEY_MAX_WINDOW_MS = 3000
     const val VOLUME_HOTKEY_DEFAULT_WINDOW_MS = 1500
+    const val RECOGNITION_RESOURCE_SOURCE_MODELSCOPE = 0
+    const val RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE = 1
+    const val KOKORO_SOURCE_HF = 0
+    const val KOKORO_SOURCE_HFMIRROR = 1
+    const val KOKORO_SOURCE_MODELSCOPE = 2
+    const val KOKORO_MIN_SPEAKER_ID = 0
+    const val KOKORO_MAX_SPEAKER_ID = 102
+    const val KOKORO_DEFAULT_SPEAKER_ID = 3
+    const val DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL =
+        "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_ASR_Resource/resolve/master/kigtts-recognition-resources-20260505.7z"
+    const val DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL =
+        "https://huggingface.co/LHT02/KIGTTS_ASR_Resource/resolve/main/kigtts-recognition-resources-20260505.7z"
+    const val DEFAULT_KOKORO_HF_URL =
+        "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_1"
+    const val DEFAULT_KOKORO_HFMIRROR_URL =
+        "https://hf-mirror.com/csukuangfj/kokoro-multi-lang-v1_1"
+    const val DEFAULT_KOKORO_MODELSCOPE_URL =
+        "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_KOKORO_Resource"
 
     private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
     private val KEY_SYSTEM_TTS_ORDER = longPreferencesKey("system_tts_order")
+    private val KEY_SYSTEM_TTS_PINNED = booleanPreferencesKey("system_tts_pinned")
     private val KEY_MUTE_WHILE_PLAYING = booleanPreferencesKey("mute_while_playing")
     private val KEY_MUTE_DELAY_SEC = floatPreferencesKey("mute_delay_sec")
     private val KEY_ECHO_SUPPRESSION = booleanPreferencesKey("echo_suppression")
@@ -62,6 +81,19 @@ object UserPrefs {
     private val KEY_SILERO_VAD_ENABLED = booleanPreferencesKey("silero_vad_enabled")
     private val KEY_SILERO_VAD_THRESHOLD = floatPreferencesKey("silero_vad_threshold")
     private val KEY_SILERO_VAD_PRE_ROLL_MS = intPreferencesKey("silero_vad_pre_roll_ms")
+    private val KEY_RECOGNITION_RESOURCE_MODELSCOPE_URL =
+        stringPreferencesKey("recognition_resource_modelscope_url")
+    private val KEY_RECOGNITION_RESOURCE_HUGGINGFACE_URL =
+        stringPreferencesKey("recognition_resource_huggingface_url")
+    private val KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE =
+        intPreferencesKey("recognition_resource_preferred_source")
+    private val KEY_KOKORO_HF_URL = stringPreferencesKey("kokoro_hf_url")
+    private val KEY_KOKORO_HFMIRROR_URL = stringPreferencesKey("kokoro_hfmirror_url")
+    private val KEY_KOKORO_MODELSCOPE_URL = stringPreferencesKey("kokoro_modelscope_url")
+    private val KEY_KOKORO_PREFERRED_SOURCE = intPreferencesKey("kokoro_preferred_source")
+    private val KEY_KOKORO_SPEAKER_ID = intPreferencesKey("kokoro_speaker_id")
+    private val KEY_KOKORO_VOICE_ORDER = longPreferencesKey("kokoro_voice_order")
+    private val KEY_KOKORO_VOICE_PINNED = booleanPreferencesKey("kokoro_voice_pinned")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -75,6 +107,7 @@ object UserPrefs {
     private val KEY_THEME_MODE = intPreferencesKey("theme_mode")
     private val KEY_OVERLAY_THEME_MODE = intPreferencesKey("overlay_theme_mode")
     private val KEY_FONT_SCALE_BLOCK_MODE = intPreferencesKey("font_scale_block_mode")
+    private val KEY_HAPTIC_FEEDBACK_ENABLED = booleanPreferencesKey("haptic_feedback_enabled")
     private val KEY_DRAWING_SAVE_RELATIVE_PATH = stringPreferencesKey("drawing_save_relative_path")
     private val KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT = booleanPreferencesKey("quick_card_auto_save_on_exit")
     private val KEY_USE_BUILTIN_FILE_MANAGER = booleanPreferencesKey("use_builtin_file_manager")
@@ -84,6 +117,8 @@ object UserPrefs {
     private val KEY_PUSH_TO_TALK_CONFIRM_INPUT = booleanPreferencesKey("push_to_talk_confirm_input")
     private val KEY_FLOATING_OVERLAY_ENABLED = booleanPreferencesKey("floating_overlay_enabled")
     private val KEY_FLOATING_OVERLAY_AUTO_DOCK = booleanPreferencesKey("floating_overlay_auto_dock")
+    private val KEY_FLOATING_OVERLAY_SHOW_ON_LOCK_SCREEN =
+        booleanPreferencesKey("floating_overlay_show_on_lock_screen")
     private val KEY_FLOATING_OVERLAY_HARDCODED_SHORTCUT_SUPPLEMENT =
         booleanPreferencesKey("floating_overlay_hardcoded_shortcut_supplement")
     private val KEY_VOLUME_HOTKEY_UP_DOWN_ENABLED = booleanPreferencesKey("volume_hotkey_up_down_enabled")
@@ -105,10 +140,15 @@ object UserPrefs {
     private val KEY_QUICK_CARD_CONFIG = stringPreferencesKey("quick_card_config")
     private val KEY_TTS_DISABLED = booleanPreferencesKey("tts_disabled")
     private val KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED = booleanPreferencesKey("soundboard_keyword_trigger_enabled")
+    private val KEY_SOUNDBOARD_SUPPRESS_TTS_ON_KEYWORD = booleanPreferencesKey("soundboard_suppress_tts_on_keyword")
     private val KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD = booleanPreferencesKey("allow_quick_text_trigger_soundboard")
     private val KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE = booleanPreferencesKey("quick_subtitle_interrupt_queue")
     private val KEY_QUICK_SUBTITLE_AUTO_FIT = booleanPreferencesKey("quick_subtitle_auto_fit")
     private val KEY_QUICK_SUBTITLE_COMPACT_CONTROLS = booleanPreferencesKey("quick_subtitle_compact_controls")
+    private val KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW =
+        booleanPreferencesKey("quick_subtitle_keep_input_preview")
+    private val KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE =
+        booleanPreferencesKey("drawing_keep_canvas_orientation_to_device")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
     private val KEY_SPEAKER_VERIFY_THRESHOLD = floatPreferencesKey("speaker_verify_threshold")
     private val KEY_SPEAKER_VERIFY_PROFILE = stringPreferencesKey("speaker_verify_profile")
@@ -136,6 +176,14 @@ object UserPrefs {
         val sileroVadEnabled: Boolean = true,
         val sileroVadThreshold: Float = SILERO_VAD_DEFAULT_THRESHOLD,
         val sileroVadPreRollMs: Int = SILERO_VAD_DEFAULT_PRE_ROLL_MS,
+        val recognitionResourceModelScopeUrl: String = DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
+        val recognitionResourceHuggingFaceUrl: String = DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
+        val recognitionResourcePreferredSource: Int = RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+        val kokoroHfUrl: String = DEFAULT_KOKORO_HF_URL,
+        val kokoroHfMirrorUrl: String = DEFAULT_KOKORO_HFMIRROR_URL,
+        val kokoroModelScopeUrl: String = DEFAULT_KOKORO_MODELSCOPE_URL,
+        val kokoroPreferredSource: Int = KOKORO_SOURCE_MODELSCOPE,
+        val kokoroSpeakerId: Int = KOKORO_DEFAULT_SPEAKER_ID,
         val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
         val piperNoiseScale: Float = 0.667f,
@@ -149,6 +197,7 @@ object UserPrefs {
         val themeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
         val overlayThemeMode: Int = THEME_MODE_FOLLOW_SYSTEM,
         val fontScaleBlockMode: Int = FONT_SCALE_BLOCK_ICONS_ONLY,
+        val hapticFeedbackEnabled: Boolean = true,
         val drawingSaveRelativePath: String = DEFAULT_DRAWING_SAVE_RELATIVE_PATH,
         val quickCardAutoSaveOnExit: Boolean = false,
         val useBuiltinFileManager: Boolean = true,
@@ -158,6 +207,7 @@ object UserPrefs {
         val pushToTalkConfirmInput: Boolean = false,
         val floatingOverlayEnabled: Boolean = false,
         val floatingOverlayAutoDock: Boolean = true,
+        val floatingOverlayShowOnLockScreen: Boolean = false,
         val floatingOverlayHardcodedShortcutSupplement: Boolean = false,
         val volumeHotkeyUpDownEnabled: Boolean = false,
         val volumeHotkeyDownUpEnabled: Boolean = false,
@@ -170,10 +220,13 @@ object UserPrefs {
             VolumeHotkeyActions.defaultFor(VolumeHotkeySequence.DownUp),
         val ttsDisabled: Boolean = false,
         val soundboardKeywordTriggerEnabled: Boolean = false,
+        val soundboardSuppressTtsOnKeyword: Boolean = false,
         val allowQuickTextTriggerSoundboard: Boolean = false,
         val quickSubtitleInterruptQueue: Boolean = true,
         val quickSubtitleAutoFit: Boolean = true,
         val quickSubtitleCompactControls: Boolean = false,
+        val quickSubtitleKeepInputPreview: Boolean = true,
+        val drawingKeepCanvasOrientationToDevice: Boolean = true,
         val speakerVerifyEnabled: Boolean = false,
         val speakerVerifyThreshold: Float = 0.5f,
         val speakerVerifyProfileCsv: String = "",
@@ -247,6 +300,17 @@ object UserPrefs {
         }
     }
 
+    suspend fun getSystemTtsPinned(context: Context): Boolean {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_SYSTEM_TTS_PINNED] ?: false
+    }
+
+    suspend fun setSystemTtsPinned(context: Context, pinned: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SYSTEM_TTS_PINNED] = pinned
+        }
+    }
+
     suspend fun getSettings(context: Context): AppSettings {
         val prefs = context.dataStore.data.first()
         return prefs.toAppSettings()
@@ -292,6 +356,25 @@ object UserPrefs {
                 .coerceIn(SILERO_VAD_MIN_THRESHOLD, SILERO_VAD_MAX_THRESHOLD),
             sileroVadPreRollMs = (this[KEY_SILERO_VAD_PRE_ROLL_MS] ?: SILERO_VAD_DEFAULT_PRE_ROLL_MS)
                 .coerceIn(SILERO_VAD_MIN_PRE_ROLL_MS, SILERO_VAD_MAX_PRE_ROLL_MS),
+            recognitionResourceModelScopeUrl = this[KEY_RECOGNITION_RESOURCE_MODELSCOPE_URL]
+                ?.takeIf { it.isNotBlank() }
+                ?: DEFAULT_RECOGNITION_RESOURCE_MODELSCOPE_URL,
+            recognitionResourceHuggingFaceUrl = this[KEY_RECOGNITION_RESOURCE_HUGGINGFACE_URL]
+                ?.takeIf { it.isNotBlank() }
+                ?: DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL,
+            recognitionResourcePreferredSource = (this[KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE]
+                ?: RECOGNITION_RESOURCE_SOURCE_MODELSCOPE)
+                .coerceIn(RECOGNITION_RESOURCE_SOURCE_MODELSCOPE, RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE),
+            kokoroHfUrl = this[KEY_KOKORO_HF_URL]?.takeIf { it.isNotBlank() && "kokoro-int8" !in it }
+                ?: DEFAULT_KOKORO_HF_URL,
+            kokoroHfMirrorUrl = this[KEY_KOKORO_HFMIRROR_URL]?.takeIf { it.isNotBlank() && "kokoro-int8" !in it }
+                ?: DEFAULT_KOKORO_HFMIRROR_URL,
+            kokoroModelScopeUrl = this[KEY_KOKORO_MODELSCOPE_URL]?.takeIf { it.isNotBlank() }
+                ?: DEFAULT_KOKORO_MODELSCOPE_URL,
+            kokoroPreferredSource = (this[KEY_KOKORO_PREFERRED_SOURCE] ?: KOKORO_SOURCE_MODELSCOPE)
+                .coerceIn(KOKORO_SOURCE_HF, KOKORO_SOURCE_MODELSCOPE),
+            kokoroSpeakerId = (this[KEY_KOKORO_SPEAKER_ID] ?: KOKORO_DEFAULT_SPEAKER_ID)
+                .coerceIn(KOKORO_MIN_SPEAKER_ID, KOKORO_MAX_SPEAKER_ID),
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
@@ -308,6 +391,7 @@ object UserPrefs {
             fontScaleBlockMode = normalizeFontScaleBlockMode(
                 this[KEY_FONT_SCALE_BLOCK_MODE] ?: FONT_SCALE_BLOCK_ICONS_ONLY
             ),
+            hapticFeedbackEnabled = this[KEY_HAPTIC_FEEDBACK_ENABLED] ?: true,
             drawingSaveRelativePath = (this[KEY_DRAWING_SAVE_RELATIVE_PATH]
                 ?: DEFAULT_DRAWING_SAVE_RELATIVE_PATH).ifBlank { DEFAULT_DRAWING_SAVE_RELATIVE_PATH },
             quickCardAutoSaveOnExit = this[KEY_QUICK_CARD_AUTO_SAVE_ON_EXIT] ?: false,
@@ -318,6 +402,7 @@ object UserPrefs {
             pushToTalkConfirmInput = this[KEY_PUSH_TO_TALK_CONFIRM_INPUT] ?: false,
             floatingOverlayEnabled = this[KEY_FLOATING_OVERLAY_ENABLED] ?: false,
             floatingOverlayAutoDock = this[KEY_FLOATING_OVERLAY_AUTO_DOCK] ?: true,
+            floatingOverlayShowOnLockScreen = this[KEY_FLOATING_OVERLAY_SHOW_ON_LOCK_SCREEN] ?: false,
             floatingOverlayHardcodedShortcutSupplement =
                 this[KEY_FLOATING_OVERLAY_HARDCODED_SHORTCUT_SUPPLEMENT] ?: false,
             volumeHotkeyUpDownEnabled = this[KEY_VOLUME_HOTKEY_UP_DOWN_ENABLED] ?: false,
@@ -338,10 +423,13 @@ object UserPrefs {
             ),
             ttsDisabled = this[KEY_TTS_DISABLED] ?: false,
             soundboardKeywordTriggerEnabled = this[KEY_SOUNDBOARD_KEYWORD_TRIGGER_ENABLED] ?: false,
+            soundboardSuppressTtsOnKeyword = this[KEY_SOUNDBOARD_SUPPRESS_TTS_ON_KEYWORD] ?: false,
             allowQuickTextTriggerSoundboard = this[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] ?: false,
             quickSubtitleInterruptQueue = this[KEY_QUICK_SUBTITLE_INTERRUPT_QUEUE] ?: true,
             quickSubtitleAutoFit = this[KEY_QUICK_SUBTITLE_AUTO_FIT] ?: true,
             quickSubtitleCompactControls = this[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] ?: false,
+            quickSubtitleKeepInputPreview = this[KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW] ?: true,
+            drawingKeepCanvasOrientationToDevice = this[KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE] ?: true,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
             speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
             speakerVerifyProfileCsv = this[KEY_SPEAKER_VERIFY_PROFILE] ?: "",
@@ -448,6 +536,68 @@ object UserPrefs {
         }
     }
 
+    suspend fun setRecognitionResourceSources(
+        context: Context,
+        modelScopeUrl: String,
+        huggingFaceUrl: String,
+        preferredSource: Int
+    ) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_RECOGNITION_RESOURCE_MODELSCOPE_URL] = modelScopeUrl.trim()
+            prefs[KEY_RECOGNITION_RESOURCE_HUGGINGFACE_URL] = huggingFaceUrl.trim()
+            prefs[KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE] = preferredSource.coerceIn(
+                RECOGNITION_RESOURCE_SOURCE_MODELSCOPE,
+                RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE
+            )
+        }
+    }
+
+    suspend fun setKokoroSources(
+        context: Context,
+        hfUrl: String,
+        hfMirrorUrl: String,
+        modelScopeUrl: String,
+        preferredSource: Int
+    ) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_KOKORO_HF_URL] = hfUrl.trim()
+            prefs[KEY_KOKORO_HFMIRROR_URL] = hfMirrorUrl.trim()
+            prefs[KEY_KOKORO_MODELSCOPE_URL] = modelScopeUrl.trim()
+            prefs[KEY_KOKORO_PREFERRED_SOURCE] = preferredSource.coerceIn(
+                KOKORO_SOURCE_HF,
+                KOKORO_SOURCE_MODELSCOPE
+            )
+        }
+    }
+
+    suspend fun setKokoroSpeakerId(context: Context, speakerId: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_KOKORO_SPEAKER_ID] = speakerId.coerceIn(KOKORO_MIN_SPEAKER_ID, KOKORO_MAX_SPEAKER_ID)
+        }
+    }
+
+    suspend fun getKokoroVoiceOrder(context: Context): Long? {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_KOKORO_VOICE_ORDER]
+    }
+
+    suspend fun setKokoroVoiceOrder(context: Context, order: Long) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_KOKORO_VOICE_ORDER] = order
+        }
+    }
+
+    suspend fun getKokoroVoicePinned(context: Context): Boolean {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_KOKORO_VOICE_PINNED] ?: false
+    }
+
+    suspend fun setKokoroVoicePinned(context: Context, pinned: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_KOKORO_VOICE_PINNED] = pinned
+        }
+    }
+
     suspend fun setMinVolumePercent(context: Context, percent: Int) {
         context.dataStore.edit { prefs ->
             prefs[KEY_MIN_VOLUME_PERCENT] = percent
@@ -527,6 +677,12 @@ object UserPrefs {
         }
     }
 
+    suspend fun setHapticFeedbackEnabled(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_HAPTIC_FEEDBACK_ENABLED] = enabled
+        }
+    }
+
     suspend fun setDrawingSaveRelativePath(context: Context, path: String) {
         context.dataStore.edit { prefs ->
             prefs[KEY_DRAWING_SAVE_RELATIVE_PATH] =
@@ -579,6 +735,12 @@ object UserPrefs {
     suspend fun setFloatingOverlayAutoDock(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_FLOATING_OVERLAY_AUTO_DOCK] = enabled
+        }
+    }
+
+    suspend fun setFloatingOverlayShowOnLockScreen(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_FLOATING_OVERLAY_SHOW_ON_LOCK_SCREEN] = enabled
         }
     }
 
@@ -648,6 +810,12 @@ object UserPrefs {
         }
     }
 
+    suspend fun setSoundboardSuppressTtsOnKeyword(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SOUNDBOARD_SUPPRESS_TTS_ON_KEYWORD] = enabled
+        }
+    }
+
     suspend fun setAllowQuickTextTriggerSoundboard(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_ALLOW_QUICK_TEXT_TRIGGER_SOUNDBOARD] = enabled
@@ -669,6 +837,18 @@ object UserPrefs {
     suspend fun setQuickSubtitleCompactControls(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] = enabled
+        }
+    }
+
+    suspend fun setQuickSubtitleKeepInputPreview(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW] = enabled
+        }
+    }
+
+    suspend fun setDrawingKeepCanvasOrientationToDevice(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE] = enabled
         }
     }
 

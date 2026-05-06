@@ -32,20 +32,30 @@ function resolveWindowIcon() {
 }
 
 function resolvePython() {
+  if (process.env.KGTTS_BOOTSTRAP_PYTHON) {
+    return process.env.KGTTS_BOOTSTRAP_PYTHON;
+  }
+  const exeName = process.platform === 'win32' ? 'python.exe' : 'bin/python3';
   if (!isDev) {
-    if (process.platform === 'win32') {
-      return path.join(process.resourcesPath, 'piper_env', 'python.exe');
-    }
-    return path.join(process.resourcesPath, 'piper_env', 'bin', 'python3');
+    return path.join(process.resourcesPath, 'python_bootstrap', exeName);
   }
   const repoRoot = path.join(__dirname, '..', '..');
-  if (process.platform === 'win32') {
-    return path.join(repoRoot, 'pc_trainer', 'piper_env', 'python.exe');
+  const devBootstrap = path.join(__dirname, '..', 'build', 'python_bootstrap', exeName);
+  if (fs.existsSync(devBootstrap)) {
+    return devBootstrap;
   }
-  return path.join(repoRoot, 'pc_trainer', 'piper_env', 'bin', 'python3');
+  const devRuntimePython = path.join(repoRoot, 'pc_trainer', 'piper_env', exeName);
+  if (fs.existsSync(devRuntimePython)) {
+    return devRuntimePython;
+  }
+  return process.platform === 'win32' ? 'python.exe' : 'python3';
 }
 
 function resolveResources() {
+  const userResources = path.join(app.getPath('userData'), 'resources', 'resources_pack');
+  if (fs.existsSync(userResources)) {
+    return userResources;
+  }
   if (!isDev) {
     return path.join(process.resourcesPath, 'resources_pack');
   }
@@ -87,18 +97,20 @@ function startBackend() {
   }
   const env = {
     ...process.env,
+    PYTHONDONTWRITEBYTECODE: '1',
     PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
     KGTTS_RESOURCES: resolveResources(),
     KGTTS_BASE_DIR: resolveBaseDir(),
     KGTTS_APP_DIR: isDev ? path.join(__dirname, '..') : process.resourcesPath,
     KGTTS_USER_DATA: app.getPath('userData'),
   };
 
-  if (!fs.existsSync(pythonPath)) {
+  if ((path.isAbsolute(pythonPath) || pythonPath.includes(path.sep)) && !fs.existsSync(pythonPath)) {
     sendBackendEvent({
       type: 'error',
       id: '',
-      message: `Python not found: ${pythonPath}`,
+      message: `启动组件缺失，请重新安装 KIGTTS Trainer。缺失文件：${pythonPath}`,
     });
     return;
   }
@@ -119,7 +131,7 @@ function startBackend() {
         sendBackendEvent({
           type: 'error',
           id: '',
-          message: `Backend parse error: ${err}`,
+          message: `后台服务返回了无法识别的内容，请重启软件后再试。${err}`,
           raw: line,
         });
       }
@@ -143,7 +155,7 @@ function startBackend() {
     sendBackendEvent({
       type: 'error',
       id: '',
-      message: `Backend exited with code ${code}`,
+      message: `后台服务已停止，请重启软件后再试。（代码 ${code}）`,
     });
   });
 }
@@ -308,16 +320,16 @@ app.whenReady().then(() => {
       sendBackendEvent({
         type: 'error',
         id: '',
-        message: `Backend write failed: ${String(err)}`,
+        message: `无法向后台服务发送任务，请重启软件后再试。${String(err)}`,
       });
     }
   });
 
   ipcMain.on('backend:restart', () => {
-    sendBackendEvent({ type: 'log', id: '', message: '[SYS] 后端重启中...' });
+    sendBackendEvent({ type: 'log', id: '', message: '[SYS] 后台服务重启中...' });
     stopBackend().then(() => {
       startBackend();
-      sendBackendEvent({ type: 'log', id: '', message: '[SYS] 后端已重启' });
+      sendBackendEvent({ type: 'log', id: '', message: '[SYS] 后台服务已重启' });
     });
   });
 

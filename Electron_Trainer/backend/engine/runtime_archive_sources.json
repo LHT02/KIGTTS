@@ -1,0 +1,50 @@
+{
+  "piper_runtime": [
+    {
+      "id": "modelscope",
+      "label": "ModelScope piper_env.7z",
+      "url": "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_TRAINER_Runtime/resolve/master/piper_env.7z"
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face piper_env.7z",
+      "url": "https://huggingface.co/LHT02/KIGTTS_TRAINER_Runtime/resolve/main/piper_env.7z"
+    }
+  ],
+  "piper_cuda_runtime": [
+    {
+      "id": "modelscope",
+      "label": "ModelScope piper_env_cuda.7z",
+      "url": "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_TRAINER_Runtime/resolve/master/piper_env_cuda.7z"
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face piper_env_cuda.7z",
+      "url": "https://huggingface.co/LHT02/KIGTTS_TRAINER_Runtime/resolve/main/piper_env_cuda.7z"
+    }
+  ],
+  "voxcpm_runtime": [
+    {
+      "id": "modelscope",
+      "label": "ModelScope voxcpm_env.7z",
+      "url": "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_TRAINER_Runtime/resolve/master/voxcpm_env.7z"
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face voxcpm_env.7z",
+      "url": "https://huggingface.co/LHT02/KIGTTS_TRAINER_Runtime/resolve/main/voxcpm_env.7z"
+    }
+  ],
+  "trainer_resources": [
+    {
+      "id": "modelscope",
+      "label": "ModelScope trainer_resources.7z",
+      "url": "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_TRAINER_Runtime/resolve/master/trainer_resources.7z"
+    },
+    {
+      "id": "huggingface",
+      "label": "Hugging Face trainer_resources.7z",
+      "url": "https://huggingface.co/LHT02/KIGTTS_TRAINER_Runtime/resolve/main/trainer_resources.7z"
+    }
+  ]
+}

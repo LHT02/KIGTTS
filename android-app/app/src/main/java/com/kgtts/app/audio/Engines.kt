@@ -19,6 +19,10 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.k2fsa.sherpa.onnx.DenoisedAudio
 import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OfflineTts
+import com.k2fsa.sherpa.onnx.OfflineTtsConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
+import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig
 import com.k2fsa.sherpa.onnx.OfflineModelConfig
 import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiser
 import com.k2fsa.sherpa.onnx.OfflineSpeechDenoiserConfig
@@ -37,7 +41,9 @@ import com.k2fsa.sherpa.onnx.SpeakerEmbeddingManager
 import com.k2fsa.sherpa.onnx.Vad
 import com.k2fsa.sherpa.onnx.VadModelConfig
 import com.lhtstudio.kigtts.app.data.EspeakData
+import com.lhtstudio.kigtts.app.data.RecognitionResourceRepository
 import com.lhtstudio.kigtts.app.data.UserPrefs
+import com.lhtstudio.kigtts.app.data.isKokoroVoiceDir
 import com.lhtstudio.kigtts.app.data.isSystemTtsVoiceDir
 import com.lhtstudio.kigtts.app.util.AppLogger
 import kotlinx.coroutines.CoroutineScope
@@ -89,6 +95,8 @@ interface TtsModule {
     val sampleRate: Int
     fun synthesize(text: String): FloatArray
     fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray = synthesize(text)
+    fun close() {}
+    fun setKokoroVoice(speakerId: Int) {}
     fun setSynthesisTuning(
         noiseScale: Float,
         lengthScale: Float,
@@ -105,10 +113,10 @@ interface SpeechModuleFactory {
 object DefaultSpeechModuleFactory : SpeechModuleFactory {
     override fun createAsr(context: Context, modelDir: File): AsrModule = AsrEngine(context, modelDir)
     override fun createTts(context: Context, packDir: File): TtsModule {
-        return if (isSystemTtsVoiceDir(packDir)) {
-            SystemTtsEngine(context)
-        } else {
-            PiperTtsEngine(context, packDir)
+        return when {
+            isSystemTtsVoiceDir(packDir) -> SystemTtsEngine(context)
+            isKokoroVoiceDir(packDir) -> SherpaKokoroTtsEngine(context, packDir)
+            else -> PiperTtsEngine(context, packDir)
         }
     }
 }
@@ -433,7 +441,11 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
         }
     }
     private val env = OrtEnvironment.getEnvironment()
-    private val session: OrtSession = env.createSession(voicePack.modelPath.absolutePath, OrtSession.SessionOptions())
+    private val sessionOptions = OrtSession.SessionOptions().apply {
+        setIntraOpNumThreads(1)
+        setInterOpNumThreads(1)
+    }
+    private val session: OrtSession = env.createSession(voicePack.modelPath.absolutePath, sessionOptions)
     override val sampleRate: Int = voicePack.sampleRate
     @Volatile private var noiseScale: Float = 0.667f
     @Volatile private var lengthScale: Float = 1.0f
@@ -511,6 +523,153 @@ class PiperTtsEngine(context: Context, packDir: File) : TtsModule {
         System.arraycopy(samples, 0, out, 0, samples.size)
         return out
     }
+
+    override fun close() {
+        runCatching { session.close() }
+        runCatching { sessionOptions.close() }
+    }
+}
+
+class SherpaKokoroTtsEngine(@Suppress("UNUSED_PARAMETER") context: Context, packDir: File) : TtsModule {
+    private val baseDir = resolveKokoroBaseDir(packDir)
+    private val tts: OfflineTts
+    @Volatile private var speakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID
+    @Volatile private var speed: Float = 1.0f
+    @Volatile private var silenceScale: Float = 0.2f
+
+    init {
+        val modelFile = File(baseDir, "model.onnx").takeIf { it.isFile }
+            ?: throw IllegalStateException("Kokoro 模型文件缺失：需要 model.onnx")
+        val voicesFile = File(baseDir, "voices.bin").takeIf { it.isFile }
+            ?: throw IllegalStateException("Kokoro voices.bin 缺失")
+        val tokensFile = File(baseDir, "tokens.txt").takeIf { it.isFile }
+            ?: throw IllegalStateException("Kokoro tokens.txt 缺失")
+        val dataDir = File(baseDir, "espeak-ng-data").takeIf { it.isDirectory }
+            ?: throw IllegalStateException("Kokoro espeak-ng-data 缺失")
+        val lexicons = listOf("lexicon-us-en.txt", "lexicon-zh.txt")
+            .map { File(baseDir, it) }
+            .filter { it.isFile }
+        if (lexicons.size < 2) throw IllegalStateException("Kokoro 中英文词典缺失")
+        val config = OfflineTtsConfig(
+            model = OfflineTtsModelConfig(
+                kokoro = OfflineTtsKokoroModelConfig(
+                    model = modelFile.absolutePath,
+                    voices = voicesFile.absolutePath,
+                    tokens = tokensFile.absolutePath,
+                    dataDir = dataDir.absolutePath,
+                    lexicon = lexicons.joinToString(",") { it.absolutePath },
+                    dictDir = "",
+                    lang = "",
+                    lengthScale = 1.0f
+                ),
+                numThreads = 1,
+                debug = false,
+                provider = "cpu"
+            ),
+            ruleFsts = "",
+            maxNumSentences = 1,
+            silenceScale = silenceScale
+        )
+        // Kokoro resources are installed into app-private files, so sherpa-onnx must read absolute paths directly.
+        tts = OfflineTts(null, config)
+        AppLogger.i("Kokoro TTS loaded dir=${baseDir.absolutePath} sampleRate=${tts.sampleRate()} speakers=${tts.numSpeakers()}")
+    }
+
+    override val sampleRate: Int
+        get() = tts.sampleRate()
+
+    override fun setKokoroVoice(speakerId: Int) {
+        val maxSpeaker = (tts.numSpeakers() - 1).coerceAtLeast(UserPrefs.KOKORO_MIN_SPEAKER_ID)
+        this.speakerId = speakerId.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, maxSpeaker)
+    }
+
+    override fun setSynthesisTuning(
+        noiseScale: Float,
+        lengthScale: Float,
+        noiseW: Float,
+        sentenceSilenceSec: Float
+    ) {
+        speed = (1f / lengthScale.coerceIn(0.1f, 5f)).coerceIn(0.2f, 4f)
+        silenceScale = sentenceSilenceSec.coerceIn(0f, 2f)
+    }
+
+    override fun synthesize(text: String): FloatArray = synthesizeInternal(text, null)
+
+    override fun synthesize(text: String, sentenceSilenceSec: Float): FloatArray {
+        return synthesizeInternal(text, sentenceSilenceSec.coerceAtLeast(0f))
+    }
+
+    private fun synthesizeInternal(text: String, sentenceSilenceOverride: Float?): FloatArray {
+        val content = text.trim()
+        if (content.isEmpty()) return FloatArray(0)
+        val selectedSpeaker = speakerId
+        val effectiveSpeed = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val generated = generateFiniteSamples(content, selectedSpeaker, effectiveSpeed)
+        val valid = generated.isNotEmpty() && generated.maxAbs > 0.0001f
+        val output = if (valid || selectedSpeaker == UserPrefs.KOKORO_DEFAULT_SPEAKER_ID) {
+            generated.samples
+        } else {
+            AppLogger.e("Kokoro TTS invalid output speaker=$selectedSpeaker, retry speaker=${UserPrefs.KOKORO_DEFAULT_SPEAKER_ID}")
+            generateFiniteSamples(content, UserPrefs.KOKORO_DEFAULT_SPEAKER_ID, 1.0f).samples
+        }
+        return appendSentenceSilence(output, sentenceSilenceOverride ?: silenceScale)
+    }
+
+    override fun close() {
+        runCatching { tts.release() }
+    }
+
+    private fun resolveKokoroBaseDir(root: File): File {
+        return root.walkTopDown()
+            .filter { it.isDirectory }
+            .firstOrNull { dir ->
+                File(dir, "model.onnx").isFile &&
+                    File(dir, "voices.bin").isFile &&
+                    File(dir, "tokens.txt").isFile
+            }
+            ?: throw IllegalStateException("Kokoro 语音包未安装或文件不完整")
+    }
+
+    private fun generateFiniteSamples(content: String, sid: Int, effectiveSpeed: Float): KokoroGeneratedAudio {
+        val raw = tts.generate(content, sid, effectiveSpeed).samples
+        if (raw.isEmpty()) {
+            AppLogger.i("Kokoro TTS generated samples=0 sr=$sampleRate speaker=$sid maxAbs=0.0 nonFinite=0")
+            return KokoroGeneratedAudio(raw, 0f)
+        }
+        var maxAbs = 0f
+        var nonFinite = 0
+        val cleaned = FloatArray(raw.size)
+        for (i in raw.indices) {
+            val sample = raw[i]
+            if (sample.isNaN() || sample.isInfinite()) {
+                nonFinite += 1
+                cleaned[i] = 0f
+            } else {
+                val clipped = sample.coerceIn(-1f, 1f)
+                val abs = if (clipped < 0f) -clipped else clipped
+                if (abs > maxAbs) maxAbs = abs
+                cleaned[i] = clipped
+            }
+        }
+        AppLogger.i("Kokoro TTS generated samples=${cleaned.size} sr=$sampleRate speaker=$sid speed=$effectiveSpeed maxAbs=$maxAbs nonFinite=$nonFinite")
+        return KokoroGeneratedAudio(cleaned, maxAbs)
+    }
+
+    private fun appendSentenceSilence(samples: FloatArray, silenceSec: Float): FloatArray {
+        if (samples.isEmpty()) return samples
+        val silenceSamples = (sampleRate * silenceSec.coerceAtLeast(0f)).roundToInt()
+        if (silenceSamples <= 0) return samples
+        val out = FloatArray(samples.size + silenceSamples)
+        System.arraycopy(samples, 0, out, 0, samples.size)
+        return out
+    }
+
+    private data class KokoroGeneratedAudio(
+        val samples: FloatArray,
+        val maxAbs: Float
+    ) {
+        fun isNotEmpty(): Boolean = samples.isNotEmpty()
+    }
 }
 
 private data class PendingSystemUtterance(
@@ -532,6 +691,7 @@ class SystemTtsEngine(context: Context) : TtsModule {
     private val pendingUtterances = ConcurrentHashMap<String, PendingSystemUtterance>()
     private val initStatus = AtomicInteger(INIT_STATUS_PENDING)
     private val initFinalized = AtomicBoolean(false)
+    private val closed = AtomicBoolean(false)
     @Volatile private var initSuccess = false
     @Volatile private var sentenceSilenceSec: Float = 0.0f
     @Volatile private var speechRate: Float = 1.0f
@@ -604,13 +764,18 @@ class SystemTtsEngine(context: Context) : TtsModule {
     }
 
     private fun waitForInit() {
-        if (!initLatch.await(5, TimeUnit.SECONDS) || !initSuccess) {
+        if (!initLatch.await(5, TimeUnit.SECONDS) || !initSuccess || closed.get()) {
+            close()
             throw IllegalStateException("系统 TTS 初始化失败")
         }
     }
 
     private fun initializeOnMainThread() {
         if (!initFinalized.compareAndSet(false, true)) return
+        if (closed.get()) {
+            finishInit(false)
+            return
+        }
         try {
             val candidates = buildEngineCandidates()
             AppLogger.i(
@@ -648,11 +813,15 @@ class SystemTtsEngine(context: Context) : TtsModule {
 
     private fun finishInit(success: Boolean) {
         if (initLatch.count == 0L) return
-        initSuccess = success
+        initSuccess = success && !closed.get()
         initLatch.countDown()
     }
 
     private fun tryCreateEngineAsync(candidates: List<String?>, index: Int) {
+        if (closed.get()) {
+            finishInit(false)
+            return
+        }
         if (index >= candidates.size) {
             finishInit(false)
             return
@@ -663,13 +832,22 @@ class SystemTtsEngine(context: Context) : TtsModule {
         lateinit var timeoutRunnable: Runnable
 
         fun tryNextOrFinish() {
-            tryCreateEngineAsync(candidates, index + 1)
+            if (closed.get()) {
+                finishInit(false)
+            } else {
+                tryCreateEngineAsync(candidates, index + 1)
+            }
         }
 
         fun handleResult(status: Int) {
             if (!finished.compareAndSet(false, true)) return
             mainHandler.removeCallbacks(timeoutRunnable)
             val currentInstance = instance
+            if (closed.get()) {
+                currentInstance?.shutdown()
+                finishInit(false)
+                return
+            }
             if (status != TextToSpeech.SUCCESS || currentInstance == null) {
                 AppLogger.e("SystemTtsEngine init status=$status engine=${enginePackage ?: "<default>"}")
                 currentInstance?.shutdown()
@@ -720,6 +898,11 @@ class SystemTtsEngine(context: Context) : TtsModule {
                 }, enginePackage)
             }
             mainHandler.postDelayed(timeoutRunnable, INIT_TIMEOUT_MS)
+            if (closed.get() && finished.compareAndSet(false, true)) {
+                mainHandler.removeCallbacks(timeoutRunnable)
+                instance.shutdown()
+                finishInit(false)
+            }
         } catch (e: Throwable) {
             AppLogger.e(
                 "SystemTtsEngine create failed engine=${enginePackage ?: "<default>"}",
@@ -764,6 +947,20 @@ class SystemTtsEngine(context: Context) : TtsModule {
         } catch (e: Throwable) {
             AppLogger.e("SystemTtsEngine init failed", e)
             false
+        }
+    }
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        pendingUtterances.values.forEach { it.doneLatch.countDown() }
+        pendingUtterances.clear()
+        val current = tts
+        tts = null
+        finishInit(false)
+        if (current != null) {
+            mainHandler.post {
+                runCatching { current.shutdown() }
+            }
         }
     }
 
@@ -982,6 +1179,9 @@ class AudioPlayer(private val context: Context) {
                     onProgress?.invoke(progress)
                 }
             }
+            if (written > 0 && !stopRequested) {
+                waitForAudioTrackDrain(track, written, sampleRate)
+            }
         } finally {
             try {
                 track.stop()
@@ -999,6 +1199,25 @@ class AudioPlayer(private val context: Context) {
             stopRequested = false
             isPlaying = false
             onProgress?.invoke(1f)
+        }
+    }
+
+    private fun waitForAudioTrackDrain(track: AudioTrack, writtenFrames: Int, sampleRate: Int) {
+        val expectedMs = (writtenFrames * 1000L / sampleRate.coerceAtLeast(1)).coerceAtLeast(0L)
+        val deadline = SystemClock.uptimeMillis() + expectedMs + 750L
+        var lastHead = -1
+        var stableCount = 0
+        while (!stopRequested && SystemClock.uptimeMillis() < deadline) {
+            val head = runCatching { track.playbackHeadPosition }.getOrDefault(writtenFrames)
+            if (head >= writtenFrames) return
+            if (head == lastHead) {
+                stableCount += 1
+                if (stableCount >= 20) return
+            } else {
+                stableCount = 0
+                lastHead = head
+            }
+            Thread.sleep(20L)
         }
     }
 }
@@ -1263,11 +1482,8 @@ private object SpeakerVerifier {
 }
 
 internal object SherpaSpeechEnhancer {
-    private const val GTCRN_ASSET_PATH = "speech_enhancement/gtcrn_simple.onnx"
     private const val GTCRN_FILE_NAME = "gtcrn_simple.onnx"
-    private const val DPDFNET2_ASSET_PATH = "speech_enhancement/dpdfnet2.onnx"
     private const val DPDFNET2_FILE_NAME = "dpdfnet2.onnx"
-    private const val DPDFNET4_ASSET_PATH = "speech_enhancement/dpdfnet4.onnx"
     private const val DPDFNET4_FILE_NAME = "dpdfnet4.onnx"
 
     private val lock = Any()
@@ -1449,20 +1665,20 @@ internal object SherpaSpeechEnhancer {
                 SpeechEnhancementMode.GTCRN_OFFLINE,
                 SpeechEnhancementMode.GTCRN_STREAMING -> {
                     gtcrn = OfflineSpeechDenoiserGtcrnModelConfig(
-                        ensureModelFileLocked(context, GTCRN_ASSET_PATH, GTCRN_FILE_NAME).absolutePath
+                        ensureModelFileLocked(context, GTCRN_FILE_NAME).absolutePath
                     )
                     dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig()
                 }
                 SpeechEnhancementMode.DPDFNET2_STREAMING -> {
                     gtcrn = OfflineSpeechDenoiserGtcrnModelConfig()
                     dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
-                        ensureModelFileLocked(context, DPDFNET2_ASSET_PATH, DPDFNET2_FILE_NAME).absolutePath
+                        ensureModelFileLocked(context, DPDFNET2_FILE_NAME).absolutePath
                     )
                 }
                 SpeechEnhancementMode.DPDFNET4_STREAMING -> {
                     gtcrn = OfflineSpeechDenoiserGtcrnModelConfig()
                     dpdfnet = OfflineSpeechDenoiserDpdfNetModelConfig(
-                        ensureModelFileLocked(context, DPDFNET4_ASSET_PATH, DPDFNET4_FILE_NAME).absolutePath
+                        ensureModelFileLocked(context, DPDFNET4_FILE_NAME).absolutePath
                     )
                 }
                 else -> {
@@ -1473,22 +1689,16 @@ internal object SherpaSpeechEnhancer {
         }
     }
 
-    private fun ensureModelFileLocked(context: Context, assetPath: String, fileName: String): File {
+    private fun ensureModelFileLocked(context: Context, fileName: String): File {
         val cached = cachedModelFiles[fileName]
         if (cached != null && cached.exists() && cached.length() > 0L) {
             return cached
         }
-        val outDir = File(context.filesDir, "models/speech_enhancement").apply { mkdirs() }
-        val outFile = File(outDir, fileName)
-        if (!outFile.exists() || outFile.length() <= 0L) {
-            context.assets.open(assetPath).use { input ->
-                outFile.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
+        RecognitionResourceRepository.resolveSpeechEnhancementModel(context, fileName)?.let { installed ->
+            cachedModelFiles[fileName] = installed
+            return installed
         }
-        cachedModelFiles[fileName] = outFile
-        return outFile
+        throw IllegalStateException("缺少语音增强模型 $fileName，请先安装语音识别资源包")
     }
 
     private fun concatFloatArrays(first: FloatArray, second: FloatArray): FloatArray {
@@ -1547,6 +1757,7 @@ class RealtimeController(
     initialPiperLengthScale: Float,
     initialPiperNoiseW: Float,
     initialPiperSentenceSilenceSec: Float,
+    initialKokoroSpeakerId: Int,
     initialSuppressDelaySec: Float,
     initialPreferredInputType: Int,
     initialPreferredOutputType: Int,
@@ -1560,6 +1771,7 @@ class RealtimeController(
     initialSpeakerVerifyEnabled: Boolean,
     initialSpeakerVerifyThreshold: Float,
     initialSpeakerProfiles: List<FloatArray>,
+    private val shouldSuppressAutoSpeakForText: suspend (String) -> Boolean = { false },
     private val moduleFactory: SpeechModuleFactory = DefaultSpeechModuleFactory
 ) {
     private var recorder: AudioRecord? = null
@@ -1584,6 +1796,10 @@ class RealtimeController(
     @Volatile private var piperLengthScale = initialPiperLengthScale.coerceIn(0.1f, 5f)
     @Volatile private var piperNoiseW = initialPiperNoiseW.coerceIn(0f, 2f)
     @Volatile private var piperSentenceSilenceSec = initialPiperSentenceSilenceSec.coerceIn(0f, 2f)
+    @Volatile private var kokoroSpeakerId = initialKokoroSpeakerId.coerceIn(
+        UserPrefs.KOKORO_MIN_SPEAKER_ID,
+        UserPrefs.KOKORO_MAX_SPEAKER_ID
+    )
     @Volatile private var suppressUntilMs: Long = 0L
     @Volatile private var preferredInputType = initialPreferredInputType
     @Volatile private var preferredOutputType = initialPreferredOutputType
@@ -1638,6 +1854,38 @@ class RealtimeController(
     @Volatile private var suppressAsrAutoSpeak: Boolean = false
     @Volatile private var lastStreamingDecodeAtMs: Long = 0L
     private val streamingDecodeBusy = AtomicBoolean(false)
+    private val segmentProcessMutex = Mutex()
+    private val speakerVerifySessionLock = Any()
+    private val speakerVerifyPendingSegments = mutableListOf<RecognitionSegment>()
+    private var speakerVerifyPendingSamples = 0
+    private var speakerVerifyPendingSampleRate = sampleRate
+    private var speakerVerifyLastSegmentAtMs = 0L
+    private var speakerVerifySessionPassed = false
+    private var speakerVerifyLastAttemptSamples = 0
+
+    private data class RecognitionSegment(
+        val audio: FloatArray,
+        val sampleRate: Int,
+        val rms: Double
+    )
+
+    private data class SpeakerVerifyAttempt(
+        val segment: RecognitionSegment,
+        val samples: Int,
+        val finalDecision: Boolean
+    )
+
+    private sealed class SpeakerGateResult {
+        data class Ready(val segments: List<RecognitionSegment>) : SpeakerGateResult()
+        object Pending : SpeakerGateResult()
+    }
+
+    private companion object {
+        private const val SPEAKER_VERIFY_MIN_WINDOW_MS = 1200
+        private const val SPEAKER_VERIFY_FINAL_WINDOW_MS = 2600
+        private const val SPEAKER_VERIFY_MAX_PENDING_MS = 5000
+        private const val SPEAKER_VERIFY_SESSION_RESET_MS = 1600L
+    }
 
     private data class QueuedTts(
         val id: Long,
@@ -1780,6 +2028,19 @@ class RealtimeController(
             offset += arr.size
         }
         return out
+    }
+
+    private inline fun <T> withAndroidThreadPriority(priority: Int, block: () -> T): T {
+        val tid = android.os.Process.myTid()
+        val previous = runCatching { android.os.Process.getThreadPriority(tid) }.getOrNull()
+        runCatching { android.os.Process.setThreadPriority(tid, priority) }
+        return try {
+            block()
+        } finally {
+            if (previous != null) {
+                runCatching { android.os.Process.setThreadPriority(tid, previous) }
+            }
+        }
     }
 
     private fun synthesizeByPunctuation(ttsEngine: TtsModule, text: String): FloatArray {
@@ -1926,13 +2187,19 @@ class RealtimeController(
         SherpaSpeechEnhancer.release()
     }
 
-    private fun applyTtsSynthesisTuning() {
-        tts?.setSynthesisTuning(
+    private fun applyTtsSynthesisTuning(target: TtsModule? = tts) {
+        target?.setSynthesisTuning(
             noiseScale = piperNoiseScale,
             lengthScale = piperLengthScale,
             noiseW = piperNoiseW,
             sentenceSilenceSec = piperSentenceSilenceSec
         )
+        target?.setKokoroVoice(kokoroSpeakerId)
+    }
+
+    fun setKokoroSpeakerId(value: Int) {
+        kokoroSpeakerId = value.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, UserPrefs.KOKORO_MAX_SPEAKER_ID)
+        tts?.setKokoroVoice(kokoroSpeakerId)
     }
 
     fun setPiperNoiseScale(value: Float) {
@@ -2083,14 +2350,17 @@ class RealtimeController(
 
     fun setSpeakerVerifyEnabled(enabled: Boolean) {
         speakerVerifyEnabled = enabled
+        resetSpeakerVerifyGateState()
     }
 
     fun setSpeakerVerifyThreshold(threshold: Float) {
         speakerVerifyThreshold = threshold.coerceIn(0.05f, 0.95f)
+        resetSpeakerVerifyGateState()
     }
 
     fun setSpeakerProfiles(profiles: List<FloatArray>) {
         rebuildSpeakerVerifyState(profiles)
+        resetSpeakerVerifyGateState()
     }
 
     fun clearSpeakerProfiles() {
@@ -2154,6 +2424,151 @@ class RealtimeController(
         }
     }
 
+    private fun resetSpeakerVerifyGateState() {
+        synchronized(speakerVerifySessionLock) {
+            speakerVerifyPendingSegments.clear()
+            speakerVerifyPendingSamples = 0
+            speakerVerifyPendingSampleRate = sampleRate
+            speakerVerifyLastSegmentAtMs = 0L
+            speakerVerifySessionPassed = false
+            speakerVerifyLastAttemptSamples = 0
+        }
+    }
+
+    private fun clearSpeakerVerifyPendingLocked() {
+        speakerVerifyPendingSegments.clear()
+        speakerVerifyPendingSamples = 0
+        speakerVerifyPendingSampleRate = sampleRate
+        speakerVerifyLastAttemptSamples = 0
+    }
+
+    private fun appendSpeakerVerifyPendingLocked(segment: RecognitionSegment) {
+        if (speakerVerifyPendingSegments.isNotEmpty() && speakerVerifyPendingSampleRate != segment.sampleRate) {
+            clearSpeakerVerifyPendingLocked()
+        }
+        speakerVerifyPendingSampleRate = segment.sampleRate
+        speakerVerifyPendingSegments.add(segment)
+        speakerVerifyPendingSamples += segment.audio.size
+        val maxSamples = segment.sampleRate * SPEAKER_VERIFY_MAX_PENDING_MS / 1000
+        while (speakerVerifyPendingSamples > maxSamples && speakerVerifyPendingSegments.isNotEmpty()) {
+            val removed = speakerVerifyPendingSegments.removeAt(0)
+            speakerVerifyPendingSamples -= removed.audio.size
+        }
+    }
+
+    private fun combineRecognitionSegments(segments: List<RecognitionSegment>): RecognitionSegment {
+        if (segments.size == 1) return segments.first()
+        val sampleRate = segments.firstOrNull()?.sampleRate ?: this.sampleRate
+        val totalSamples = segments.sumOf { it.audio.size }
+        val out = FloatArray(totalSamples)
+        var offset = 0
+        var rms = 0.0
+        segments.forEach { segment ->
+            System.arraycopy(segment.audio, 0, out, offset, segment.audio.size)
+            offset += segment.audio.size
+            rms = max(rms, segment.rms)
+        }
+        return RecognitionSegment(out, sampleRate, rms)
+    }
+
+    private fun prepareSpeakerVerifyAttempt(segment: RecognitionSegment, nowMs: Long): SpeakerVerifyAttempt? {
+        return synchronized(speakerVerifySessionLock) {
+            if (speakerVerifySessionPassed && nowMs - speakerVerifyLastSegmentAtMs <= SPEAKER_VERIFY_SESSION_RESET_MS) {
+                speakerVerifyLastSegmentAtMs = nowMs
+                return@synchronized null
+            }
+            if (nowMs - speakerVerifyLastSegmentAtMs > SPEAKER_VERIFY_SESSION_RESET_MS) {
+                speakerVerifySessionPassed = false
+                clearSpeakerVerifyPendingLocked()
+            }
+            speakerVerifyLastSegmentAtMs = nowMs
+            appendSpeakerVerifyPendingLocked(segment)
+            val minSamples = segment.sampleRate * SPEAKER_VERIFY_MIN_WINDOW_MS / 1000
+            val finalSamples = segment.sampleRate * SPEAKER_VERIFY_FINAL_WINDOW_MS / 1000
+            if (speakerVerifyPendingSamples < minSamples) {
+                // The speaker embedding model is unreliable on very short clips; fail open to avoid swallowing short words.
+                AppLogger.i("Skip speaker verify for short segment samples=${speakerVerifyPendingSamples} sr=${segment.sampleRate}")
+                clearSpeakerVerifyPendingLocked()
+                return@synchronized null
+            }
+            if (speakerVerifyPendingSamples <= speakerVerifyLastAttemptSamples) {
+                return@synchronized SpeakerVerifyAttempt(
+                    segment = combineRecognitionSegments(speakerVerifyPendingSegments),
+                    samples = speakerVerifyPendingSamples,
+                    finalDecision = speakerVerifyPendingSamples >= finalSamples
+                )
+            }
+            speakerVerifyLastAttemptSamples = speakerVerifyPendingSamples
+            SpeakerVerifyAttempt(
+                segment = combineRecognitionSegments(speakerVerifyPendingSegments),
+                samples = speakerVerifyPendingSamples,
+                finalDecision = speakerVerifyPendingSamples >= finalSamples
+            )
+        }
+    }
+
+    private fun markSpeakerVerifyPassed(): List<RecognitionSegment> {
+        return synchronized(speakerVerifySessionLock) {
+            val released = combineRecognitionSegments(speakerVerifyPendingSegments)
+            clearSpeakerVerifyPendingLocked()
+            speakerVerifySessionPassed = true
+            listOf(released)
+        }
+    }
+
+    private fun markSpeakerVerifyFailed() {
+        synchronized(speakerVerifySessionLock) {
+            clearSpeakerVerifyPendingLocked()
+            speakerVerifySessionPassed = false
+        }
+    }
+
+    private fun isSpeakerVerifySessionReadyForPreview(): Boolean {
+        if (!speakerVerifyEnabled || speakerProfiles.isEmpty()) return true
+        return synchronized(speakerVerifySessionLock) {
+            speakerVerifySessionPassed
+        }
+    }
+
+    private fun resolveSpeakerGate(segment: RecognitionSegment): SpeakerGateResult {
+        val profileSnapshot = speakerProfiles
+        if (!speakerVerifyEnabled || profileSnapshot.isEmpty()) {
+            resetSpeakerVerifyGateState()
+            return SpeakerGateResult.Ready(listOf(segment))
+        }
+        val now = SystemClock.uptimeMillis()
+        val attempt = prepareSpeakerVerifyAttempt(segment, now)
+            ?: return SpeakerGateResult.Ready(listOf(segment))
+        val segEmbedding = SpeakerVerifier.computeEmbedding(context, attempt.segment.audio, attempt.segment.sampleRate)
+        if (segEmbedding == null) {
+            if (!attempt.finalDecision) return SpeakerGateResult.Pending
+            AppLogger.i("Speaker verify dropped pending audio: embedding not ready samples=${attempt.samples}")
+            markSpeakerVerifyFailed()
+            return SpeakerGateResult.Pending
+        }
+        val verification = verifySpeakerEmbedding(segEmbedding)
+        if (verification == null) {
+            AppLogger.i("Speaker verify unavailable, drop pending audio")
+            markSpeakerVerifyFailed()
+            return SpeakerGateResult.Pending
+        }
+        val similarity = verification.first
+        val passed = verification.second
+        if (passed) {
+            speakerLastSimilarity = similarity
+            notifySpeakerVerify(similarity, true)
+            return SpeakerGateResult.Ready(markSpeakerVerifyPassed())
+        }
+        if (!attempt.finalDecision) {
+            AppLogger.i("Speaker verify waiting for more audio similarity=$similarity samples=${attempt.samples}")
+            return SpeakerGateResult.Pending
+        }
+        speakerLastSimilarity = similarity
+        notifySpeakerVerify(similarity, false)
+        markSpeakerVerifyFailed()
+        return SpeakerGateResult.Pending
+    }
+
     private fun enqueueTts(text: String): Long {
         val id = nextUtteranceId++
         synchronized(queueLock) {
@@ -2193,7 +2608,13 @@ class RealtimeController(
                     notifyProgress(next.id, 0f)
                     val ttsEngine = tts
                     val pcm = if (ttsEngine != null) {
-                        synthesizeByPunctuation(ttsEngine, next.text)
+                        if (ttsEngine is PiperTtsEngine) {
+                            withAndroidThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) {
+                                synthesizeByPunctuation(ttsEngine, next.text)
+                            }
+                        } else {
+                            synthesizeByPunctuation(ttsEngine, next.text)
+                        }
                     } else {
                         FloatArray(0)
                     }
@@ -2248,6 +2669,7 @@ class RealtimeController(
                 if (asr == null || currentAsrDir?.absolutePath != asrDir.absolutePath) {
                     releaseSileroVadProcessor()
                     currentSileroVadModelFile = resolveSileroVadModel(asrDir)
+                        ?: RecognitionResourceRepository.resolveSileroVadModel(context)
                     asr = moduleFactory.createAsr(context, asrDir)
                     currentAsrDir = asrDir
                     AppLogger.i("ASR loaded dir=${asrDir.absolutePath}")
@@ -2266,9 +2688,12 @@ class RealtimeController(
             try {
                 if (tts == null || currentVoiceDir?.absolutePath != voiceDir.absolutePath) {
                     stopTtsPlaybackLocked(clearQueue = true)
-                    tts = moduleFactory.createTts(context, voiceDir)
-                    applyTtsSynthesisTuning()
+                    val previousTts = tts
+                    val nextTts = moduleFactory.createTts(context, voiceDir)
+                    applyTtsSynthesisTuning(nextTts)
+                    tts = nextTts
                     currentVoiceDir = voiceDir
+                    previousTts?.close()
                     AppLogger.i("TTS loaded dir=${voiceDir.absolutePath}")
                     if (useAec3) {
                         aec3?.release()
@@ -2411,6 +2836,7 @@ class RealtimeController(
             }
             lastStreamingDecodeAtMs = 0L
             streamingDecodeBusy.set(false)
+            resetSpeakerVerifyGateState()
             stopRecorderOnlyLocked()
             SherpaSpeechEnhancer.resetStreaming()
             ensureAec3()
@@ -2502,6 +2928,7 @@ class RealtimeController(
         }
         streamingDecodeBusy.set(false)
         lastStreamingDecodeAtMs = 0L
+        resetSpeakerVerifyGateState()
         try {
             rec?.release()
         } catch (_: Exception) {
@@ -2606,7 +3033,17 @@ class RealtimeController(
 
     private fun ensureSileroVadProcessorLocked(): SileroVadProcessor? {
         sileroVadProcessor?.let { return it }
-        val modelFile = currentSileroVadModelFile ?: return null
+        val modelFile = currentSileroVadModelFile
+            ?: RecognitionResourceRepository.resolveSileroVadModel(context)?.also {
+                currentSileroVadModelFile = it
+            }
+            ?: run {
+                AppLogger.e("Silero VAD model missing")
+                notifyError("Silero VAD 模型缺失，已回退阈值式 VAD")
+                sileroVadEnabled = false
+                classicVadEnabled = true
+                return null
+            }
         return runCatching {
             SileroVadProcessor(
                 modelFile = modelFile,
@@ -2897,47 +3334,58 @@ class RealtimeController(
         return voicedMs >= minVoicedMs && voicedRatio >= minVoicedRatio
     }
 
+    private suspend fun processAsrReadySegment(segment: RecognitionSegment) {
+        val rawText = try {
+            asr?.transcribe(segment.audio, segment.sampleRate) ?: ""
+        } catch (e: Exception) {
+            AppLogger.e("ASR failed", e)
+            notifyError("ASR 失败: ${e.message}")
+            ""
+        }
+        val text = filterAsrText(rawText, segment.rms)
+        if (text.isNotBlank()) {
+            val suppressForSoundboard = runCatching {
+                shouldSuppressAutoSpeakForText(text)
+            }.onFailure {
+                AppLogger.e("Auto speak suppress check failed", it)
+            }.getOrDefault(false)
+            if (suppressAsrAutoSpeak || suppressForSoundboard) {
+                val id = nextResultId()
+                notifyResult(id, text)
+                notifyProgress(id, 1f)
+                return
+            }
+            if (shouldSkipDuplicateTts(text)) {
+                AppLogger.i("Skip duplicate tts text=$text")
+                return
+            }
+            val id = enqueueTts(text)
+            notifyResult(id, text)
+            ensureTtsLoop()
+        }
+    }
+
     private fun processRecognizedSegment(audio: FloatArray) {
         val rms = rmsEnergy(audio)
         val minSegmentEnergy = minSegmentRms
         if (rms < minSegmentEnergy) return
-        scope.launch(Dispatchers.IO) asrTask@{
-            val (effectiveAudio, effectiveSampleRate) = prepareSpeechEnhancedAudio(audio, sampleRate)
-            if (effectiveAudio.isEmpty()) return@asrTask
-            val effectiveRms = max(rms, rmsEnergy(effectiveAudio))
-            val profileSnapshot = speakerProfiles
-            if (speakerVerifyEnabled && profileSnapshot.isNotEmpty()) {
-                val segEmbedding = SpeakerVerifier.computeEmbedding(context, effectiveAudio, effectiveSampleRate)
-                    ?: return@asrTask
-                val verification = verifySpeakerEmbedding(segEmbedding) ?: return@asrTask
-                val similarity = verification.first
-                val passed = verification.second
-                speakerLastSimilarity = similarity
-                notifySpeakerVerify(similarity, passed)
-                if (!passed) return@asrTask
-            }
-            val rawText = try {
-                asr?.transcribe(effectiveAudio, effectiveSampleRate) ?: ""
-            } catch (e: Exception) {
-                AppLogger.e("ASR failed", e)
-                notifyError("ASR 失败: ${e.message}")
-                ""
-            }
-            val text = filterAsrText(rawText, effectiveRms)
-            if (text.isNotBlank()) {
-                if (suppressAsrAutoSpeak) {
-                    val id = nextResultId()
-                    notifyResult(id, text)
-                    notifyProgress(id, 1f)
-                    return@asrTask
+        scope.launch(Dispatchers.IO) {
+            segmentProcessMutex.withLock {
+                val (effectiveAudio, effectiveSampleRate) = prepareSpeechEnhancedAudio(audio, sampleRate)
+                if (effectiveAudio.isEmpty()) return@withLock
+                val segment = RecognitionSegment(
+                    audio = effectiveAudio,
+                    sampleRate = effectiveSampleRate,
+                    rms = max(rms, rmsEnergy(effectiveAudio))
+                )
+                when (val gate = resolveSpeakerGate(segment)) {
+                    SpeakerGateResult.Pending -> return@withLock
+                    is SpeakerGateResult.Ready -> {
+                        gate.segments.forEach { readySegment ->
+                            processAsrReadySegment(readySegment)
+                        }
+                    }
                 }
-                if (shouldSkipDuplicateTts(text)) {
-                    AppLogger.i("Skip duplicate tts text=$text")
-                    return@asrTask
-                }
-                val id = enqueueTts(text)
-                notifyResult(id, text)
-                ensureTtsLoop()
             }
         }
     }
@@ -2946,6 +3394,7 @@ class RealtimeController(
         if (!pttStreamingEnabled) return
         if (asr == null) return
         if (!classicVadEnabled && !sileroVadEnabled) return
+        if (!isSpeakerVerifySessionReadyForPreview()) return
         val minSamples = sampleRate / 2
         if (window.size < minSamples) return
         val decodeIntervalMs = 260L
@@ -3055,115 +3504,117 @@ class RealtimeController(
         val buffer = ShortArray(2048)
         val window = mutableListOf<Float>()
         loopJob = scope.launch(Dispatchers.Default) {
-            try {
-                rec.startRecording()
-                reportInputDevice(rec)
-                updateOutputDeviceFromSystem()
-                var silenceMs = 0
-                var voicedMs = 0
-                val minVoicedMs = 200
-                val minVoicedRatio = 0.2
-                val silenceThreshold = 0.015
-                val speechThreshold = 0.03
-                while (isActive) {
-                    val read = rec.read(buffer, 0, buffer.size)
-                    if (read <= 0) continue
-                    val floatBuf = FloatArray(read)
-                    for (i in 0 until read) {
-                        floatBuf[i] = buffer[i] / 32768f
-                    }
-                    if (useAec3) {
-                        aec3?.processCapture(floatBuf, 0, read)
-                        captureFrames.incrementAndGet()
-                        lastCaptureMs.set(SystemClock.uptimeMillis())
-                    }
-                    applyNoiseSuppression(floatBuf, read)
-                    var sumSq = 0.0
-                    for (i in 0 until read) {
-                        val v = floatBuf[i]
-                        sumSq += v * v
-                    }
-                    val bufRms = if (read > 0) sqrt(sumSq / read) else 0.0
-                    val now = SystemClock.uptimeMillis()
-                    if (now - lastLevelReportMs >= 60L) {
-                        lastLevelReportMs = now
-                        notifyLevel(bufRms.toFloat())
+            withAndroidThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO) {
+                try {
+                    rec.startRecording()
+                    reportInputDevice(rec)
+                    updateOutputDeviceFromSystem()
+                    var silenceMs = 0
+                    var voicedMs = 0
+                    val minVoicedMs = 200
+                    val minVoicedRatio = 0.2
+                    val silenceThreshold = 0.015
+                    val speechThreshold = 0.03
+                    while (isActive) {
+                        val read = rec.read(buffer, 0, buffer.size)
+                        if (read <= 0) continue
+                        val floatBuf = FloatArray(read)
+                        for (i in 0 until read) {
+                            floatBuf[i] = buffer[i] / 32768f
+                        }
                         if (useAec3) {
-                            notifyAec3Diag(buildAec3Diag(now))
+                            aec3?.processCapture(floatBuf, 0, read)
+                            captureFrames.incrementAndGet()
+                            lastCaptureMs.set(SystemClock.uptimeMillis())
                         }
-                    }
-                    if (suppressWhilePlaying && (player.isPlaying || now < suppressUntilMs)) {
-                        window.clear()
-                        resetSileroPreRollState()
-                        silenceMs = 0
-                        voicedMs = 0
-                        continue
-                    }
-                    val recognitionBuf = processRealtimeSpeechEnhancement(floatBuf, sampleRate)
-                    if (recognitionBuf.isEmpty()) {
-                        continue
-                    }
-                    for (sample in recognitionBuf) {
-                        window.add(sample)
-                    }
-                    if (sileroVadEnabled) {
-                        acceptSileroVadWaveform(recognitionBuf)
-                        val segments = drainSileroVadSegments(flush = false)
-                        updateSileroPreRollState(recognitionBuf, isSileroSpeechDetected())
-                        segments.forEach { segment ->
-                            val audio = prependPendingSileroPreRoll(segment)
-                            if (classicVadEnabled && !passesClassicVadGate(audio)) return@forEach
-                            processRecognizedSegment(audio)
+                        applyNoiseSuppression(floatBuf, read)
+                        var sumSq = 0.0
+                        for (i in 0 until read) {
+                            val v = floatBuf[i]
+                            sumSq += v * v
                         }
-                        val maxStreamingWindowSamples = sampleRate * 3
-                        if (window.size > maxStreamingWindowSamples) {
-                            val overflow = window.size - maxStreamingWindowSamples
-                            if (overflow > 0) {
-                                window.subList(0, overflow).clear()
+                        val bufRms = if (read > 0) sqrt(sumSq / read) else 0.0
+                        val now = SystemClock.uptimeMillis()
+                        if (now - lastLevelReportMs >= 60L) {
+                            lastLevelReportMs = now
+                            notifyLevel(bufRms.toFloat())
+                            if (useAec3) {
+                                notifyAec3Diag(buildAec3Diag(now))
                             }
                         }
-                    } else {
-                        resetSileroPreRollState()
-                    }
-                    maybeDecodeStreamingSenseVoice(window, now)
-                    if (classicVadEnabled && !sileroVadEnabled) {
-                        val energy = sqrt(window.takeLast(min(400, window.size)).map { it * it }.average())
-                        val stepMs = recognitionBuf.size * 1000 / sampleRate
-                        if (energy < silenceThreshold) {
-                            silenceMs += stepMs
-                        } else {
+                        if (suppressWhilePlaying && (player.isPlaying || now < suppressUntilMs)) {
+                            window.clear()
+                            resetSileroPreRollState()
                             silenceMs = 0
+                            voicedMs = 0
+                            continue
                         }
-                        if (energy > speechThreshold) {
-                            voicedMs += stepMs
+                        val recognitionBuf = processRealtimeSpeechEnhancement(floatBuf, sampleRate)
+                        if (recognitionBuf.isEmpty()) {
+                            continue
                         }
-                        val minSpeechMs = 600
-                        val maxSpeechMs = 12000
-                        val durMs = window.size * 1000 / sampleRate
-                        if (silenceMs > 400 && durMs in minSpeechMs..maxSpeechMs && !player.isPlaying) {
-                            val voicedRatio = if (durMs > 0) voicedMs.toDouble() / durMs else 0.0
-                            if (voicedMs < minVoicedMs || voicedRatio < minVoicedRatio) {
+                        for (sample in recognitionBuf) {
+                            window.add(sample)
+                        }
+                        if (sileroVadEnabled) {
+                            acceptSileroVadWaveform(recognitionBuf)
+                            val segments = drainSileroVadSegments(flush = false)
+                            updateSileroPreRollState(recognitionBuf, isSileroSpeechDetected())
+                            segments.forEach { segment ->
+                                val audio = prependPendingSileroPreRoll(segment)
+                                if (classicVadEnabled && !passesClassicVadGate(audio)) return@forEach
+                                processRecognizedSegment(audio)
+                            }
+                            val maxStreamingWindowSamples = sampleRate * 3
+                            if (window.size > maxStreamingWindowSamples) {
+                                val overflow = window.size - maxStreamingWindowSamples
+                                if (overflow > 0) {
+                                    window.subList(0, overflow).clear()
+                                }
+                            }
+                        } else {
+                            resetSileroPreRollState()
+                        }
+                        maybeDecodeStreamingSenseVoice(window, now)
+                        if (classicVadEnabled && !sileroVadEnabled) {
+                            val energy = sqrt(window.takeLast(min(400, window.size)).map { it * it }.average())
+                            val stepMs = recognitionBuf.size * 1000 / sampleRate
+                            if (energy < silenceThreshold) {
+                                silenceMs += stepMs
+                            } else {
+                                silenceMs = 0
+                            }
+                            if (energy > speechThreshold) {
+                                voicedMs += stepMs
+                            }
+                            val minSpeechMs = 600
+                            val maxSpeechMs = 12000
+                            val durMs = window.size * 1000 / sampleRate
+                            if (silenceMs > 400 && durMs in minSpeechMs..maxSpeechMs && !player.isPlaying) {
+                                val voicedRatio = if (durMs > 0) voicedMs.toDouble() / durMs else 0.0
+                                if (voicedMs < minVoicedMs || voicedRatio < minVoicedRatio) {
+                                    window.clear()
+                                    silenceMs = 0
+                                    voicedMs = 0
+                                    continue
+                                }
+                                val audio = window.toFloatArray()
                                 window.clear()
                                 silenceMs = 0
                                 voicedMs = 0
-                                continue
+                                processRecognizedSegment(audio)
                             }
-                            val audio = window.toFloatArray()
-                            window.clear()
-                            silenceMs = 0
-                            voicedMs = 0
-                            processRecognizedSegment(audio)
-                        }
-                        if (durMs > maxSpeechMs) {
-                            window.clear()
-                            silenceMs = 0
-                            voicedMs = 0
+                            if (durMs > maxSpeechMs) {
+                                window.clear()
+                                silenceMs = 0
+                                voicedMs = 0
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    AppLogger.e("Realtime loop failed", e)
+                    notifyError("实时转换异常: ${e.message}")
                 }
-            } catch (e: Exception) {
-                AppLogger.e("Realtime loop failed", e)
-                notifyError("实时转换异常: ${e.message}")
             }
         }
     }

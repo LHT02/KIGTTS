@@ -27,6 +27,10 @@ if (-not $iscc) {
 }
 
 if (-not $SkipBuild) {
+    Write-Host "== prepare python bootstrap =="
+    npm run prepare:bootstrap
+    if ($LASTEXITCODE -ne 0) { throw "prepare python bootstrap failed" }
+
     Write-Host "== npm run build =="
     npm run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
@@ -37,16 +41,19 @@ if (-not $SkipBuild) {
 }
 
 $sourceDir = Resolve-Path "$ProjectRoot\\dist\\win-unpacked"
-$piperPython = Join-Path $sourceDir "resources\\piper_env\\python.exe"
-if (-not (Test-Path $piperPython)) {
-    throw "Packaged piper_env python.exe not found: $piperPython"
+$bootstrapPython = Join-Path $sourceDir "resources\\python_bootstrap\\python.exe"
+if (Test-Path $bootstrapPython) {
+    Write-Host "== validate packaged python_bootstrap =="
+    & $bootstrapPython -c "import encodings, json, pathlib, subprocess, sys, threading, urllib.request, zipfile; print(sys.executable)"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Packaged python_bootstrap is incomplete or invalid"
+    }
+} else {
+    throw "Packaged python_bootstrap not found"
 }
 
-Write-Host "== validate packaged piper_env =="
-& $piperPython -c "import encodings, site, sys; print(sys.executable)"
-if ($LASTEXITCODE -ne 0) {
-    throw "Packaged piper_env is incomplete or invalid"
-}
+Get-ChildItem (Join-Path $sourceDir "resources\\app.asar.unpacked\\backend") -Recurse -Force -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
 
 $outputDir = "$ProjectRoot\\dist\\inno"
 if (-not (Test-Path $outputDir)) {
