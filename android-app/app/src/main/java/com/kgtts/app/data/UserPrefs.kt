@@ -32,6 +32,10 @@ object UserPrefs {
     const val FONT_SCALE_BLOCK_NONE = 0
     const val FONT_SCALE_BLOCK_ICONS_ONLY = 1
     const val FONT_SCALE_BLOCK_ALL = 2
+    const val AUDIO_FOCUS_AVOID_DUCK = 0
+    const val AUDIO_FOCUS_AVOID_MUTE = 1
+    const val AUDIO_FOCUS_AVOID_PAUSE = 2
+    const val AUDIO_FOCUS_AVOID_NONE = 3
     const val DEFAULT_DRAWING_SAVE_RELATIVE_PATH = "Pictures/KGTTS/Drawings"
     const val SILERO_VAD_MIN_THRESHOLD = 0.05f
     const val SILERO_VAD_MAX_THRESHOLD = 0.95f
@@ -96,6 +100,7 @@ object UserPrefs {
     private val KEY_KOKORO_VOICE_PINNED = booleanPreferencesKey("kokoro_voice_pinned")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
+    private val KEY_AUDIO_FOCUS_AVOIDANCE_MODE = intPreferencesKey("audio_focus_avoidance_mode")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
     private val KEY_PIPER_LENGTH_SCALE = floatPreferencesKey("piper_length_scale")
     private val KEY_PIPER_NOISE_W = floatPreferencesKey("piper_noise_w")
@@ -188,6 +193,7 @@ object UserPrefs {
         val kokoroSpeakerId: Int = KOKORO_DEFAULT_SPEAKER_ID,
         val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
+        val audioFocusAvoidanceMode: Int = AUDIO_FOCUS_AVOID_NONE,
         val piperNoiseScale: Float = 0.667f,
         val piperLengthScale: Float = 1.0f,
         val piperNoiseW: Float = 0.8f,
@@ -242,6 +248,9 @@ object UserPrefs {
 
     fun normalizeFontScaleBlockMode(mode: Int): Int =
         mode.coerceIn(FONT_SCALE_BLOCK_NONE, FONT_SCALE_BLOCK_ALL)
+
+    fun normalizeAudioFocusAvoidanceMode(mode: Int): Int =
+        mode.coerceIn(AUDIO_FOCUS_AVOID_DUCK, AUDIO_FOCUS_AVOID_NONE)
 
     fun resolveThemeMode(mode: Int, followSystemDark: Boolean): Boolean =
         when (normalizeThemeMode(mode)) {
@@ -380,6 +389,9 @@ object UserPrefs {
                 .coerceIn(KOKORO_MIN_SPEAKER_ID, KOKORO_MAX_SPEAKER_ID),
             minVolumePercent = this[KEY_MIN_VOLUME_PERCENT] ?: 2,
             playbackGainPercent = (this[KEY_PLAYBACK_GAIN_PERCENT] ?: 100).coerceIn(0, 1000),
+            audioFocusAvoidanceMode = normalizeAudioFocusAvoidanceMode(
+                this[KEY_AUDIO_FOCUS_AVOIDANCE_MODE] ?: AUDIO_FOCUS_AVOID_NONE
+            ),
             piperNoiseScale = (this[KEY_PIPER_NOISE_SCALE] ?: 0.667f).coerceIn(0f, 2f),
             piperLengthScale = (this[KEY_PIPER_LENGTH_SCALE] ?: 1.0f).coerceIn(0.1f, 5f),
             piperNoiseW = (this[KEY_PIPER_NOISE_W] ?: 0.8f).coerceIn(0f, 2f),
@@ -605,6 +617,12 @@ object UserPrefs {
     suspend fun setMinVolumePercent(context: Context, percent: Int) {
         context.dataStore.edit { prefs ->
             prefs[KEY_MIN_VOLUME_PERCENT] = percent
+        }
+    }
+
+    suspend fun setAudioFocusAvoidanceMode(context: Context, mode: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_AUDIO_FOCUS_AVOIDANCE_MODE] = normalizeAudioFocusAvoidanceMode(mode)
         }
     }
 

@@ -223,6 +223,11 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         SoundboardManager.setPlaybackGainPercent(percent)
     }
 
+    fun setAudioFocusAvoidanceMode(mode: Int) {
+        controller?.setAudioFocusAvoidanceMode(mode)
+        SoundboardManager.setAudioFocusAvoidanceMode(applicationContext, mode)
+    }
+
     fun setPiperNoiseScale(value: Float) {
         controller?.setPiperNoiseScale(value)
     }
@@ -542,6 +547,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
                 val previous = currentSettings
                 currentSettings = next
                 SoundboardManager.setPlaybackGainPercent(next.playbackGainPercent)
+                SoundboardManager.setAudioFocusAvoidanceMode(applicationContext, next.audioFocusAvoidanceMode)
                 BluetoothMediaTitleBridge.setEnabled(applicationContext, next.bluetoothMediaTitleSubtitle)
                 if (next.bluetoothMediaTitleSubtitle) {
                     currentState().recognized.firstOrNull()?.text?.let { latest ->
@@ -694,6 +700,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             initialCommunicationMode = currentSettings.communicationMode,
             initialMinVolumePercent = currentSettings.minVolumePercent,
             initialPlaybackGainPercent = currentSettings.playbackGainPercent,
+            initialAudioFocusAvoidanceMode = currentSettings.audioFocusAvoidanceMode,
             initialPiperNoiseScale = currentSettings.piperNoiseScale,
             initialPiperLengthScale = currentSettings.piperLengthScale,
             initialPiperNoiseW = currentSettings.piperNoiseW,
@@ -809,6 +816,8 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         controller?.setMinVolumePercent(settings.minVolumePercent)
         controller?.setPlaybackGainPercent(settings.playbackGainPercent)
         SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
+        controller?.setAudioFocusAvoidanceMode(settings.audioFocusAvoidanceMode)
+        SoundboardManager.setAudioFocusAvoidanceMode(applicationContext, settings.audioFocusAvoidanceMode)
         controller?.setPiperNoiseScale(settings.piperNoiseScale)
         controller?.setPiperLengthScale(settings.piperLengthScale)
         controller?.setPiperNoiseW(settings.piperNoiseW)

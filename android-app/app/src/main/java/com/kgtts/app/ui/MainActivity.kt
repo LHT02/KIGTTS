@@ -604,6 +604,7 @@ data class UiState(
     val kokoroSpeakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
+    val audioFocusAvoidanceMode: Int = UserPrefs.AUDIO_FOCUS_AVOID_NONE,
     val piperNoiseScale: Float = 0.667f,
     val piperLengthScale: Float = 1.0f,
     val piperNoiseW: Float = 0.8f,
@@ -1288,6 +1289,7 @@ class MainViewModel(
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
         FontScaleBlockRuntime.mode = settings.fontScaleBlockMode
         SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
+        SoundboardManager.setAudioFocusAvoidanceMode(appContext, settings.audioFocusAvoidanceMode)
         BluetoothMediaTitleBridge.setEnabled(appContext, settings.bluetoothMediaTitleSubtitle)
         if (settings.bluetoothMediaTitleSubtitle) {
             BluetoothMediaTitleBridge.updateSubtitle(appContext, quickSubtitleCurrentText)
@@ -1345,6 +1347,7 @@ class MainViewModel(
             kokoroSpeakerId = settings.kokoroSpeakerId,
             minVolumePercent = settings.minVolumePercent,
             playbackGainPercent = settings.playbackGainPercent,
+            audioFocusAvoidanceMode = settings.audioFocusAvoidanceMode,
             piperNoiseScale = settings.piperNoiseScale,
             piperLengthScale = settings.piperLengthScale,
             piperNoiseW = 0.8f,
@@ -3592,6 +3595,16 @@ class MainViewModel(
         }
     }
 
+    fun setAudioFocusAvoidanceMode(mode: Int) {
+        val normalized = UserPrefs.normalizeAudioFocusAvoidanceMode(mode)
+        uiState = uiState.copy(audioFocusAvoidanceMode = normalized)
+        SoundboardManager.setAudioFocusAvoidanceMode(appContext, normalized)
+        realtimeHost?.setAudioFocusAvoidanceMode(normalized)
+        viewModelScope.launch {
+            UserPrefs.setAudioFocusAvoidanceMode(appContext, normalized)
+        }
+    }
+
     fun setPiperNoiseScale(value: Float) {
         val clamped = value.coerceIn(0f, 2f)
         uiState = uiState.copy(piperNoiseScale = clamped)
@@ -4584,6 +4597,7 @@ class MainViewModel(
             host.setSuppressDelaySec(settings.muteWhilePlayingDelaySec)
             host.setMinVolumePercent(settings.minVolumePercent)
             host.setPlaybackGainPercent(settings.playbackGainPercent)
+            host.setAudioFocusAvoidanceMode(settings.audioFocusAvoidanceMode)
             host.setPiperNoiseScale(settings.piperNoiseScale)
             host.setPiperLengthScale(settings.piperLengthScale)
             host.setPiperNoiseW(0.8f)
@@ -19863,6 +19877,12 @@ fun SettingsScreen(
         UserPrefs.FONT_SCALE_BLOCK_ICONS_ONLY to "仅禁用图标大小缩放",
         UserPrefs.FONT_SCALE_BLOCK_ALL to "禁用图标和字体大小缩放"
     )
+    val audioFocusAvoidanceOptions = listOf(
+        UserPrefs.AUDIO_FOCUS_AVOID_DUCK to "压低音量",
+        UserPrefs.AUDIO_FOCUS_AVOID_MUTE to "静音音乐播放器",
+        UserPrefs.AUDIO_FOCUS_AVOID_PAUSE to "暂停播放",
+        UserPrefs.AUDIO_FOCUS_AVOID_NONE to "无"
+    )
     var drawerModeExpanded by remember { mutableStateOf(false) }
     var themeModeExpanded by remember { mutableStateOf(false) }
     var overlayThemeModeExpanded by remember { mutableStateOf(false) }
@@ -19870,6 +19890,7 @@ fun SettingsScreen(
     var inputTypeExpanded by remember { mutableStateOf(false) }
     var outputTypeExpanded by remember { mutableStateOf(false) }
     var denoiserModeExpanded by remember { mutableStateOf(false) }
+    var audioFocusAvoidanceExpanded by remember { mutableStateOf(false) }
     var speechEnhancementExpanded by remember { mutableStateOf(false) }
     var vadModeExpanded by remember { mutableStateOf(false) }
     var showSpeakerEnrollDialog by remember { mutableStateOf(false) }
@@ -20597,6 +20618,25 @@ fun SettingsScreen(
                         valueRange = 0f..1000f
                     )
                     Text("100% 为原始音量，拖动接近 100% 时会自动吸附。", style = MaterialTheme.typography.bodySmall)
+                    Md2SettingDropdownRow(
+                        title = "后台音乐播放器音频避让行为",
+                        value = audioFocusAvoidanceOptions
+                            .firstOrNull { it.first == state.audioFocusAvoidanceMode }
+                            ?.second
+                            ?: "无",
+                        expanded = audioFocusAvoidanceExpanded,
+                        onExpandedChange = { audioFocusAvoidanceExpanded = it },
+                        supportingText = "朗读或音效播放时向系统请求音频焦点；实际效果取决于后台播放器是否遵守系统音频焦点。"
+                    ) {
+                        audioFocusAvoidanceOptions.forEach { (value, label) ->
+                            M2DropdownMenuItem(
+                                onClick = {
+                                    audioFocusAvoidanceExpanded = false
+                                    viewModel.setAudioFocusAvoidanceMode(value)
+                                }
+                            ) { Text(label) }
+                        }
+                    }
                     if (isSystemTtsSelected) {
                         Text(
                             "系统 TTS 使用设备已安装的语音引擎与音色。音色随机度等 Piper 专属参数在系统 TTS 下不生效。",

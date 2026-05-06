@@ -42,11 +42,14 @@ object SoundboardManager {
     private var hasLoadedConfig = false
     @Volatile
     private var playbackGainPercent = 100
+    @Volatile
+    private var audioFocusController: PlaybackAudioFocusController? = null
 
     private data class ActivePlayback(
         val itemId: Long,
         val player: MediaPlayer,
         val enhancer: LoudnessEnhancer?,
+        val audioFocusLease: PlaybackAudioFocusController.Lease?,
         val pollJob: Job,
         val stopJob: Job?
     )
@@ -80,6 +83,15 @@ object SoundboardManager {
                 }
             }
         }
+    }
+
+    fun setAudioFocusAvoidanceMode(context: Context, mode: Int) {
+        val controller = audioFocusController
+            ?: PlaybackAudioFocusController(
+                context,
+                AudioAttributes.CONTENT_TYPE_MUSIC
+            ).also { audioFocusController = it }
+        controller.setMode(mode)
     }
 
     fun cachedOrDefaultConfig(): SoundboardConfig = cachedConfig
@@ -156,11 +168,18 @@ object SoundboardManager {
                 scope.launch { stop(item.id) }
                 true
             }
-            mediaPlayer.start()
+            val audioFocusLease = audioFocusController?.acquire()
+            try {
+                mediaPlayer.start()
+            } catch (t: Throwable) {
+                audioFocusLease?.release()
+                throw t
+            }
             players[item.id] = ActivePlayback(
                 itemId = item.id,
                 player = mediaPlayer,
                 enhancer = enhancer,
+                audioFocusLease = audioFocusLease,
                 pollJob = pollJob,
                 stopJob = stopJob
             )
@@ -251,6 +270,7 @@ object SoundboardManager {
         runCatching {
             existing.enhancer?.enabled = false
         }
+        existing.audioFocusLease?.release()
         runCatching {
             existing.enhancer?.release()
         }
