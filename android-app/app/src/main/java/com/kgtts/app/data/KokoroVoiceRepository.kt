@@ -56,7 +56,7 @@ class KokoroVoiceRepository(private val context: Context) {
         return KokoroVoiceStatus(
             installed = true,
             name = manifest?.optString("name")?.takeIf { it.isNotBlank() } ?: "Kokoro",
-            version = manifest?.optString("version")?.takeIf { it.isNotBlank() } ?: "multi-lang v1.1 int8",
+            version = manifest?.optString("version")?.takeIf { it.isNotBlank() } ?: "multi-lang v1.1",
             installedAtMs = manifest?.optLong("installedAtMs", installDir.lastModified()) ?: installDir.lastModified(),
             rootDir = installDir
         )
@@ -142,7 +142,7 @@ class KokoroVoiceRepository(private val context: Context) {
     ): KokoroVoiceStatus {
         onProgress(RecognitionResourceProgress("验证 Kokoro 语音包", -1f))
         val base = findKokoroBaseDir(importDir)
-            ?: throw IOException("无效 Kokoro 语音包：缺少 model/model.int8、voices.bin、tokens.txt 或 espeak-ng-data")
+            ?: throw IOException("无效 Kokoro 语音包：缺少 model.onnx、voices.bin、tokens.txt 或 espeak-ng-data")
         writeManifest(base)
         val tmpTarget = File(root, ".kokoro-install-${System.currentTimeMillis()}")
         if (tmpTarget.exists()) tmpTarget.deleteRecursively()
@@ -192,6 +192,7 @@ class KokoroVoiceRepository(private val context: Context) {
             val lower = path.lowercase(Locale.US)
             if (
                 lower == ".gitattributes" ||
+                lower == "model.int8.onnx" ||
                 lower == "readme.md" ||
                 lower == "license" ||
                 lower.endsWith(".md")
@@ -385,7 +386,7 @@ class KokoroVoiceRepository(private val context: Context) {
             .toList()
             .sortedBy { it.absolutePath.length }
         return candidates.firstOrNull { dir ->
-            (File(dir, "model.int8.onnx").isFile || File(dir, "model.onnx").isFile) &&
+            File(dir, "model.onnx").isFile &&
                 File(dir, "voices.bin").isFile &&
                 File(dir, "tokens.txt").isFile &&
                 File(dir, "espeak-ng-data").isDirectory &&
@@ -398,11 +399,11 @@ class KokoroVoiceRepository(private val context: Context) {
         val manifest = JSONObject().apply {
             put("type", "kigtts-kokoro-voice")
             put("name", "Kokoro")
-            put("version", "multi-lang v1.1 int8")
+            put("version", "multi-lang v1.1")
             put("installedAtMs", System.currentTimeMillis())
             put("sampleRate", 24000)
             put("speakers", 103)
-            put("model", if (File(baseDir, "model.int8.onnx").isFile) "model.int8.onnx" else "model.onnx")
+            put("model", "model.onnx")
         }
         File(baseDir, MANIFEST_FILE_NAME).writeText(manifest.toString(2), Charsets.UTF_8)
     }
@@ -413,7 +414,7 @@ class KokoroVoiceRepository(private val context: Context) {
     }
 
     private fun parseRepoSource(rawUrl: String): RepoSource {
-        val normalized = rawUrl.trim().ifBlank { UserPrefs.DEFAULT_KOKORO_HFMIRROR_URL }
+        val normalized = rawUrl.trim().ifBlank { UserPrefs.DEFAULT_KOKORO_MODELSCOPE_URL }
         val url = URL(normalized)
         val segments = url.path.trim('/').split('/').filter { it.isNotBlank() }
         val isModelScope = url.host.endsWith("modelscope.cn", ignoreCase = true)

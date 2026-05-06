@@ -19,7 +19,6 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.k2fsa.sherpa.onnx.DenoisedAudio
 import com.k2fsa.sherpa.onnx.FeatureConfig
-import com.k2fsa.sherpa.onnx.GenerationConfig
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKokoroModelConfig
@@ -539,25 +538,18 @@ class SherpaKokoroTtsEngine(@Suppress("UNUSED_PARAMETER") context: Context, pack
     @Volatile private var silenceScale: Float = 0.2f
 
     init {
-        val modelFile = listOf("model.int8.onnx", "model.onnx")
-            .map { File(baseDir, it) }
-            .firstOrNull { it.isFile }
-            ?: throw IllegalStateException("Kokoro 模型文件缺失")
+        val modelFile = File(baseDir, "model.onnx").takeIf { it.isFile }
+            ?: throw IllegalStateException("Kokoro 模型文件缺失：需要 model.onnx")
         val voicesFile = File(baseDir, "voices.bin").takeIf { it.isFile }
             ?: throw IllegalStateException("Kokoro voices.bin 缺失")
         val tokensFile = File(baseDir, "tokens.txt").takeIf { it.isFile }
             ?: throw IllegalStateException("Kokoro tokens.txt 缺失")
         val dataDir = File(baseDir, "espeak-ng-data").takeIf { it.isDirectory }
             ?: throw IllegalStateException("Kokoro espeak-ng-data 缺失")
-        val dictDir = File(baseDir, "dict").takeIf { it.isDirectory }
         val lexicons = listOf("lexicon-us-en.txt", "lexicon-zh.txt")
             .map { File(baseDir, it) }
             .filter { it.isFile }
         if (lexicons.size < 2) throw IllegalStateException("Kokoro 中英文词典缺失")
-        val ruleFsts = listOf("date-zh.fst", "number-zh.fst")
-            .map { File(baseDir, it) }
-            .filter { it.isFile }
-            .joinToString(",") { it.absolutePath }
         val config = OfflineTtsConfig(
             model = OfflineTtsModelConfig(
                 kokoro = OfflineTtsKokoroModelConfig(
@@ -566,15 +558,15 @@ class SherpaKokoroTtsEngine(@Suppress("UNUSED_PARAMETER") context: Context, pack
                     tokens = tokensFile.absolutePath,
                     dataDir = dataDir.absolutePath,
                     lexicon = lexicons.joinToString(",") { it.absolutePath },
-                    dictDir = dictDir?.absolutePath.orEmpty(),
-                    lang = "zh",
+                    dictDir = "",
+                    lang = "",
                     lengthScale = 1.0f
                 ),
                 numThreads = 1,
                 debug = false,
                 provider = "cpu"
             ),
-            ruleFsts = ruleFsts,
+            ruleFsts = "",
             maxNumSentences = 1,
             silenceScale = silenceScale
         )
@@ -610,12 +602,17 @@ class SherpaKokoroTtsEngine(@Suppress("UNUSED_PARAMETER") context: Context, pack
     private fun synthesizeInternal(text: String, sentenceSilenceOverride: Float?): FloatArray {
         val content = text.trim()
         if (content.isEmpty()) return FloatArray(0)
-        val config = GenerationConfig(
-            sid = speakerId,
-            speed = speed,
-            silenceScale = sentenceSilenceOverride ?: silenceScale
-        )
-        return tts.generateWithConfig(content, config).samples
+        val selectedSpeaker = speakerId
+        val effectiveSpeed = speed.takeIf { it.isFinite() }?.coerceIn(0.5f, 2.0f) ?: 1.0f
+        val generated = generateFiniteSamples(content, selectedSpeaker, effectiveSpeed)
+        val valid = generated.isNotEmpty() && generated.maxAbs > 0.0001f
+        val output = if (valid || selectedSpeaker == UserPrefs.KOKORO_DEFAULT_SPEAKER_ID) {
+            generated.samples
+        } else {
+            AppLogger.e("Kokoro TTS invalid output speaker=$selectedSpeaker, retry speaker=${UserPrefs.KOKORO_DEFAULT_SPEAKER_ID}")
+            generateFiniteSamples(content, UserPrefs.KOKORO_DEFAULT_SPEAKER_ID, 1.0f).samples
+        }
+        return appendSentenceSilence(output, sentenceSilenceOverride ?: silenceScale)
     }
 
     override fun close() {
@@ -626,11 +623,52 @@ class SherpaKokoroTtsEngine(@Suppress("UNUSED_PARAMETER") context: Context, pack
         return root.walkTopDown()
             .filter { it.isDirectory }
             .firstOrNull { dir ->
-                (File(dir, "model.int8.onnx").isFile || File(dir, "model.onnx").isFile) &&
+                File(dir, "model.onnx").isFile &&
                     File(dir, "voices.bin").isFile &&
                     File(dir, "tokens.txt").isFile
             }
             ?: throw IllegalStateException("Kokoro 语音包未安装或文件不完整")
+    }
+
+    private fun generateFiniteSamples(content: String, sid: Int, effectiveSpeed: Float): KokoroGeneratedAudio {
+        val raw = tts.generate(content, sid, effectiveSpeed).samples
+        if (raw.isEmpty()) {
+            AppLogger.i("Kokoro TTS generated samples=0 sr=$sampleRate speaker=$sid maxAbs=0.0 nonFinite=0")
+            return KokoroGeneratedAudio(raw, 0f)
+        }
+        var maxAbs = 0f
+        var nonFinite = 0
+        val cleaned = FloatArray(raw.size)
+        for (i in raw.indices) {
+            val sample = raw[i]
+            if (sample.isNaN() || sample.isInfinite()) {
+                nonFinite += 1
+                cleaned[i] = 0f
+            } else {
+                val clipped = sample.coerceIn(-1f, 1f)
+                val abs = if (clipped < 0f) -clipped else clipped
+                if (abs > maxAbs) maxAbs = abs
+                cleaned[i] = clipped
+            }
+        }
+        AppLogger.i("Kokoro TTS generated samples=${cleaned.size} sr=$sampleRate speaker=$sid speed=$effectiveSpeed maxAbs=$maxAbs nonFinite=$nonFinite")
+        return KokoroGeneratedAudio(cleaned, maxAbs)
+    }
+
+    private fun appendSentenceSilence(samples: FloatArray, silenceSec: Float): FloatArray {
+        if (samples.isEmpty()) return samples
+        val silenceSamples = (sampleRate * silenceSec.coerceAtLeast(0f)).roundToInt()
+        if (silenceSamples <= 0) return samples
+        val out = FloatArray(samples.size + silenceSamples)
+        System.arraycopy(samples, 0, out, 0, samples.size)
+        return out
+    }
+
+    private data class KokoroGeneratedAudio(
+        val samples: FloatArray,
+        val maxAbs: Float
+    ) {
+        fun isNotEmpty(): Boolean = samples.isNotEmpty()
     }
 }
 
@@ -1141,6 +1179,9 @@ class AudioPlayer(private val context: Context) {
                     onProgress?.invoke(progress)
                 }
             }
+            if (written > 0 && !stopRequested) {
+                waitForAudioTrackDrain(track, written, sampleRate)
+            }
         } finally {
             try {
                 track.stop()
@@ -1158,6 +1199,25 @@ class AudioPlayer(private val context: Context) {
             stopRequested = false
             isPlaying = false
             onProgress?.invoke(1f)
+        }
+    }
+
+    private fun waitForAudioTrackDrain(track: AudioTrack, writtenFrames: Int, sampleRate: Int) {
+        val expectedMs = (writtenFrames * 1000L / sampleRate.coerceAtLeast(1)).coerceAtLeast(0L)
+        val deadline = SystemClock.uptimeMillis() + expectedMs + 750L
+        var lastHead = -1
+        var stableCount = 0
+        while (!stopRequested && SystemClock.uptimeMillis() < deadline) {
+            val head = runCatching { track.playbackHeadPosition }.getOrDefault(writtenFrames)
+            if (head >= writtenFrames) return
+            if (head == lastHead) {
+                stableCount += 1
+                if (stableCount >= 20) return
+            } else {
+                stableCount = 0
+                lastHead = head
+            }
+            Thread.sleep(20L)
         }
     }
 }

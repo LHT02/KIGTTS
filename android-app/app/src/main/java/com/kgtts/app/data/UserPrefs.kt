@@ -55,15 +55,16 @@ object UserPrefs {
     const val DEFAULT_RECOGNITION_RESOURCE_HUGGINGFACE_URL =
         "https://huggingface.co/LHT02/KIGTTS_ASR_Resource/resolve/main/kigtts-recognition-resources-20260505.7z"
     const val DEFAULT_KOKORO_HF_URL =
-        "https://huggingface.co/csukuangfj/kokoro-int8-multi-lang-v1_1"
+        "https://huggingface.co/csukuangfj/kokoro-multi-lang-v1_1"
     const val DEFAULT_KOKORO_HFMIRROR_URL =
-        "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1"
+        "https://hf-mirror.com/csukuangfj/kokoro-multi-lang-v1_1"
     const val DEFAULT_KOKORO_MODELSCOPE_URL =
         "https://modelscope.cn/models/LHTSTUDIO/KIGTTS_KOKORO_Resource"
 
     private val KEY_LAST_ASR = stringPreferencesKey("last_asr_name")
     private val KEY_LAST_VOICE = stringPreferencesKey("last_voice_name")
     private val KEY_SYSTEM_TTS_ORDER = longPreferencesKey("system_tts_order")
+    private val KEY_SYSTEM_TTS_PINNED = booleanPreferencesKey("system_tts_pinned")
     private val KEY_MUTE_WHILE_PLAYING = booleanPreferencesKey("mute_while_playing")
     private val KEY_MUTE_DELAY_SEC = floatPreferencesKey("mute_delay_sec")
     private val KEY_ECHO_SUPPRESSION = booleanPreferencesKey("echo_suppression")
@@ -92,6 +93,7 @@ object UserPrefs {
     private val KEY_KOKORO_PREFERRED_SOURCE = intPreferencesKey("kokoro_preferred_source")
     private val KEY_KOKORO_SPEAKER_ID = intPreferencesKey("kokoro_speaker_id")
     private val KEY_KOKORO_VOICE_ORDER = longPreferencesKey("kokoro_voice_order")
+    private val KEY_KOKORO_VOICE_PINNED = booleanPreferencesKey("kokoro_voice_pinned")
     private val KEY_MIN_VOLUME_PERCENT = intPreferencesKey("min_volume_percent")
     private val KEY_PLAYBACK_GAIN_PERCENT = intPreferencesKey("playback_gain_percent")
     private val KEY_PIPER_NOISE_SCALE = floatPreferencesKey("piper_noise_scale")
@@ -180,7 +182,7 @@ object UserPrefs {
         val kokoroHfUrl: String = DEFAULT_KOKORO_HF_URL,
         val kokoroHfMirrorUrl: String = DEFAULT_KOKORO_HFMIRROR_URL,
         val kokoroModelScopeUrl: String = DEFAULT_KOKORO_MODELSCOPE_URL,
-        val kokoroPreferredSource: Int = KOKORO_SOURCE_HFMIRROR,
+        val kokoroPreferredSource: Int = KOKORO_SOURCE_MODELSCOPE,
         val kokoroSpeakerId: Int = KOKORO_DEFAULT_SPEAKER_ID,
         val minVolumePercent: Int = 2,
         val playbackGainPercent: Int = 100,
@@ -298,6 +300,17 @@ object UserPrefs {
         }
     }
 
+    suspend fun getSystemTtsPinned(context: Context): Boolean {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_SYSTEM_TTS_PINNED] ?: false
+    }
+
+    suspend fun setSystemTtsPinned(context: Context, pinned: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_SYSTEM_TTS_PINNED] = pinned
+        }
+    }
+
     suspend fun getSettings(context: Context): AppSettings {
         val prefs = context.dataStore.data.first()
         return prefs.toAppSettings()
@@ -352,11 +365,13 @@ object UserPrefs {
             recognitionResourcePreferredSource = (this[KEY_RECOGNITION_RESOURCE_PREFERRED_SOURCE]
                 ?: RECOGNITION_RESOURCE_SOURCE_MODELSCOPE)
                 .coerceIn(RECOGNITION_RESOURCE_SOURCE_MODELSCOPE, RECOGNITION_RESOURCE_SOURCE_HUGGINGFACE),
-            kokoroHfUrl = this[KEY_KOKORO_HF_URL]?.takeIf { it.isNotBlank() } ?: DEFAULT_KOKORO_HF_URL,
-            kokoroHfMirrorUrl = this[KEY_KOKORO_HFMIRROR_URL]?.takeIf { it.isNotBlank() } ?: DEFAULT_KOKORO_HFMIRROR_URL,
+            kokoroHfUrl = this[KEY_KOKORO_HF_URL]?.takeIf { it.isNotBlank() && "kokoro-int8" !in it }
+                ?: DEFAULT_KOKORO_HF_URL,
+            kokoroHfMirrorUrl = this[KEY_KOKORO_HFMIRROR_URL]?.takeIf { it.isNotBlank() && "kokoro-int8" !in it }
+                ?: DEFAULT_KOKORO_HFMIRROR_URL,
             kokoroModelScopeUrl = this[KEY_KOKORO_MODELSCOPE_URL]?.takeIf { it.isNotBlank() }
                 ?: DEFAULT_KOKORO_MODELSCOPE_URL,
-            kokoroPreferredSource = (this[KEY_KOKORO_PREFERRED_SOURCE] ?: KOKORO_SOURCE_HFMIRROR)
+            kokoroPreferredSource = (this[KEY_KOKORO_PREFERRED_SOURCE] ?: KOKORO_SOURCE_MODELSCOPE)
                 .coerceIn(KOKORO_SOURCE_HF, KOKORO_SOURCE_MODELSCOPE),
             kokoroSpeakerId = (this[KEY_KOKORO_SPEAKER_ID] ?: KOKORO_DEFAULT_SPEAKER_ID)
                 .coerceIn(KOKORO_MIN_SPEAKER_ID, KOKORO_MAX_SPEAKER_ID),
@@ -569,6 +584,17 @@ object UserPrefs {
     suspend fun setKokoroVoiceOrder(context: Context, order: Long) {
         context.dataStore.edit { prefs ->
             prefs[KEY_KOKORO_VOICE_ORDER] = order
+        }
+    }
+
+    suspend fun getKokoroVoicePinned(context: Context): Boolean {
+        val prefs = context.dataStore.data.first()
+        return prefs[KEY_KOKORO_VOICE_PINNED] ?: false
+    }
+
+    suspend fun setKokoroVoicePinned(context: Context, pinned: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_KOKORO_VOICE_PINNED] = pinned
         }
     }
 

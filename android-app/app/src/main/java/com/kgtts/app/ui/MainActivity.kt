@@ -596,7 +596,7 @@ data class UiState(
     val kokoroHfUrl: String = UserPrefs.DEFAULT_KOKORO_HF_URL,
     val kokoroHfMirrorUrl: String = UserPrefs.DEFAULT_KOKORO_HFMIRROR_URL,
     val kokoroModelScopeUrl: String = UserPrefs.DEFAULT_KOKORO_MODELSCOPE_URL,
-    val kokoroPreferredSource: Int = UserPrefs.KOKORO_SOURCE_HFMIRROR,
+    val kokoroPreferredSource: Int = UserPrefs.KOKORO_SOURCE_MODELSCOPE,
     val kokoroSpeakerId: Int = UserPrefs.KOKORO_DEFAULT_SPEAKER_ID,
     val minVolumePercent: Int = 2,
     val playbackGainPercent: Int = 100,
@@ -2709,7 +2709,7 @@ class MainViewModel(
                 name = SYSTEM_TTS_DEFAULT_LABEL,
                 remark = SYSTEM_TTS_DEFAULT_REMARK,
                 avatar = "avatar.png",
-                pinned = false,
+                pinned = UserPrefs.getSystemTtsPinned(appContext),
                 order = order
             )
         )
@@ -2730,7 +2730,7 @@ class MainViewModel(
                         name = "Kokoro",
                         remark = "离线朗读声音，可切换多个声音编号",
                         avatar = "avatar.png",
-                        pinned = false,
+                        pinned = UserPrefs.getKokoroVoicePinned(appContext),
                         order = order
                     )
                 )
@@ -3276,10 +3276,13 @@ class MainViewModel(
     }
 
     fun toggleVoicePin(pack: VoicePackInfo) {
-        if (isSystemTtsVoicePack(pack) || isKokoroVoicePack(pack)) return
         viewModelScope.launch {
-            repo.updateVoiceMeta(pack.dir) { meta ->
-                meta.copy(pinned = !meta.pinned)
+            when {
+                isSystemTtsVoicePack(pack) -> UserPrefs.setSystemTtsPinned(appContext, !pack.meta.pinned)
+                isKokoroVoicePack(pack) -> UserPrefs.setKokoroVoicePinned(appContext, !pack.meta.pinned)
+                else -> repo.updateVoiceMeta(pack.dir) { meta ->
+                    meta.copy(pinned = !meta.pinned)
+                }
             }
             refreshVoicePacks()
         }
@@ -8992,15 +8995,15 @@ private fun KokoroSourceDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Md2OutlinedField(
-                    value = hfMirror,
-                    onValueChange = { hfMirror = it },
-                    label = "HF-Mirror 下载源",
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Md2OutlinedField(
                     value = modelScope,
                     onValueChange = { modelScope = it },
                     label = "ModelScope 下载源",
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Md2OutlinedField(
+                    value = hfMirror,
+                    onValueChange = { hfMirror = it },
+                    label = "HF-Mirror 下载源",
                     modifier = Modifier.fillMaxWidth()
                 )
                 Md2OutlinedField(
@@ -9014,20 +9017,6 @@ private fun KokoroSourceDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(UiTokens.Radius))
-                        .clickable { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = preferred == UserPrefs.KOKORO_SOURCE_HFMIRROR,
-                        onClick = { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
-                    )
-                    Text("HF-Mirror（推荐）")
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(UiTokens.Radius))
                         .clickable { preferred = UserPrefs.KOKORO_SOURCE_MODELSCOPE }
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -9036,7 +9025,21 @@ private fun KokoroSourceDialog(
                         selected = preferred == UserPrefs.KOKORO_SOURCE_MODELSCOPE,
                         onClick = { preferred = UserPrefs.KOKORO_SOURCE_MODELSCOPE }
                     )
-                    Text("ModelScope")
+                    Text("ModelScope（默认）")
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(UiTokens.Radius))
+                        .clickable { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = preferred == UserPrefs.KOKORO_SOURCE_HFMIRROR,
+                        onClick = { preferred = UserPrefs.KOKORO_SOURCE_HFMIRROR }
+                    )
+                    Text("HF-Mirror")
                 }
                 Row(
                     modifier = Modifier
@@ -11761,6 +11764,7 @@ private fun rememberAvatarBitmap(file: File): android.graphics.Bitmap? {
 private fun VoicePackAvatarPlaceholder(
     modifier: Modifier,
     isSystemPack: Boolean,
+    isKokoroPack: Boolean = false,
     logoSize: Dp = 50.dp
 ) {
     Box(
@@ -11769,15 +11773,34 @@ private fun VoicePackAvatarPlaceholder(
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
-        if (isSystemPack) {
-            Image(
-                painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_monochrome),
-                contentDescription = null,
-                modifier = Modifier.size(logoSize),
-                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(LocalContentColor.current)
-            )
-        } else {
-            Text("无头像", style = MaterialTheme.typography.bodySmall)
+        when {
+            isSystemPack -> {
+                Image(
+                    painter = androidx.compose.ui.res.painterResource(id = R.drawable.ic_launcher_monochrome),
+                    contentDescription = null,
+                    modifier = Modifier.size(logoSize),
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(LocalContentColor.current)
+                )
+            }
+            isKokoroPack -> {
+                val kokoroIconSize = logoSize * 0.72f
+                val iconTextSize = with(LocalDensity.current) { kokoroIconSize.toSp() }
+                Text(
+                    text = "groups",
+                    color = LocalContentColor.current,
+                    style = TextStyle(
+                        fontFamily = MaterialSymbolsSharp,
+                        fontWeight = FontWeight.W400,
+                        fontSize = iconTextSize,
+                        lineHeight = iconTextSize,
+                        letterSpacing = 0.sp,
+                        fontFeatureSettings = "'liga' 1"
+                    )
+                )
+            }
+            else -> {
+                Text("无头像", style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
@@ -11932,6 +11955,7 @@ fun VoicePackScreen(viewModel: MainViewModel, state: UiState) {
                             VoicePackAvatarPlaceholder(
                                 modifier = Modifier.size(64.dp),
                                 isSystemPack = isSystemTtsVoiceDir(detailPack.dir),
+                                isKokoroPack = isKokoroVoiceDir(detailPack.dir),
                                 logoSize = 50.dp
                             )
                         }
@@ -12490,6 +12514,7 @@ private fun VoicePackCardContent(
                         VoicePackAvatarPlaceholder(
                             modifier = Modifier.size(72.dp),
                             isSystemPack = isSystemPack,
+                            isKokoroPack = isKokoroPack,
                             logoSize = 58.dp
                         )
                     }
@@ -12553,8 +12578,7 @@ private fun VoicePackCardContent(
                     Md2IconButton(
                         icon = if (pack.meta.pinned) "keep_off" else "push_pin",
                         contentDescription = if (pack.meta.pinned) "取消置顶" else "置顶",
-                        onClick = onTogglePin,
-                        enabled = !isSystemPack && !isKokoroPack
+                        onClick = onTogglePin
                     )
                     Md2IconButton(
                         icon = if (isKokoroPack) "settings" else "info",
