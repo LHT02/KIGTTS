@@ -73,19 +73,31 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.ColorUtils
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.lhtstudio.kigtts.app.service.RealtimeHostService
 import com.lhtstudio.kigtts.app.service.RealtimeHostState
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.lhtstudio.kigtts.app.R
+import com.lhtstudio.kigtts.app.audio.SoundboardManager
+import com.lhtstudio.kigtts.app.audio.SoundboardPlaybackState
+import com.lhtstudio.kigtts.app.data.SoundboardConfig
+import com.lhtstudio.kigtts.app.data.SoundboardGroup
+import com.lhtstudio.kigtts.app.data.SoundboardItem
+import com.lhtstudio.kigtts.app.data.SoundboardLayoutMode
 import com.lhtstudio.kigtts.app.data.UserPrefs
+import com.lhtstudio.kigtts.app.data.defaultSoundboardConfig
+import com.lhtstudio.kigtts.app.data.defaultSoundboardGroups
+import com.lhtstudio.kigtts.app.data.parseSoundboardConfig
+import com.lhtstudio.kigtts.app.data.serializeSoundboardConfig
 import com.lhtstudio.kigtts.app.overlay.RealtimeRuntimeBridge
 import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityService
 import com.lhtstudio.kigtts.app.ui.QuickCard
 import com.lhtstudio.kigtts.app.ui.QuickCardType
 import com.lhtstudio.kigtts.app.util.AlipayScannerSupport
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.BluetoothMediaTitleBridge
 import com.lhtstudio.kigtts.app.util.QqScannerSupport
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import kotlinx.coroutines.CoroutineScope
@@ -239,6 +251,14 @@ class FloatingOverlayService : Service() {
     private var miniQuickCardItemsContainer: LinearLayout? = null
     private var miniQuickCardPager: ViewPager2? = null
     private var miniQuickCardPagerAdapter: MiniQuickCardPagerAdapter? = null
+    private var miniSoundboardBody: LinearLayout? = null
+    private var miniSoundboardContentCardView: FrameLayout? = null
+    private var miniSoundboardRecyclerView: RecyclerView? = null
+    private var miniSoundboardAdapter: MiniSoundboardAdapter? = null
+    private var miniSoundboardEmptyTextView: TextView? = null
+    private var miniSoundboardTabsCardView: LinearLayout? = null
+    private var miniSoundboardTabsContainer: LinearLayout? = null
+    private var miniSoundboardLayoutButtonView: TextView? = null
     private var miniActionFab: FrameLayout? = null
     private var miniActionFabIconView: TextView? = null
     private var miniBackButtonView: TextView? = null
@@ -364,6 +384,13 @@ class FloatingOverlayService : Service() {
     private var miniPreviewQuickCardId: Long? = null
     private var quickCards: List<QuickCard> = emptyList()
     private var quickCardSelectedIndex = 0
+    private var soundboardConfig: SoundboardConfig = defaultSoundboardConfig()
+    private var miniSoundboardSelectedGroupId: Long = soundboardConfig.selectedGroupId
+    private var miniSoundboardPortraitLayout: SoundboardLayoutMode = SoundboardLayoutMode.List
+    private var miniSoundboardLandscapeLayout: SoundboardLayoutMode = SoundboardLayoutMode.List
+    private var soundboardConfigRawCache = ""
+    private var soundboardPlaybackStates: Map<Long, SoundboardPlaybackState> = emptyMap()
+    private var soundboardPlaybackJob: Job? = null
     private val miniQuickCardPageHeights = mutableMapOf<Long, Int>()
     private var miniQuickCardMeasureWidth = 0
     private var quickCardConfigRawCache = ""
@@ -398,7 +425,8 @@ class FloatingOverlayService : Service() {
 
     private enum class MiniOverlayMode {
         Subtitle,
-        QuickCard
+        QuickCard,
+        Soundboard
     }
 
     private enum class MiniPreviewMode {
@@ -704,6 +732,227 @@ class FloatingOverlayService : Service() {
         fun submitItems(newItems: List<String>) {
             items = newItems.toList()
             notifyDataSetChanged()
+        }
+    }
+
+    private inner class MiniSoundboardAdapter :
+        RecyclerView.Adapter<MiniSoundboardAdapter.SoundViewHolder>() {
+        private val playbackPayload = Any()
+        private var items: List<SoundboardItem> = emptyList()
+        private var playbackStates: Map<Long, SoundboardPlaybackState> = emptyMap()
+        private var layoutMode: SoundboardLayoutMode = SoundboardLayoutMode.List
+
+        init {
+            setHasStableIds(true)
+        }
+
+        inner class SoundViewHolder(
+            val root: LinearLayout,
+            val titleView: TextView,
+            val wakeView: TextView,
+            val actionView: TextView,
+            val progressView: ProgressBar
+        ) : RecyclerView.ViewHolder(root)
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SoundViewHolder {
+            val titleView = TextView(parent.context).apply {
+                setTextColor(overlayOnSurfaceColor())
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                typeface = Typeface.DEFAULT_BOLD
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                includeFontPadding = false
+            }
+            val wakeView = TextView(parent.context).apply {
+                setTextColor(overlayOnSurfaceVariantColor())
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                includeFontPadding = false
+            }
+            val actionView = symbolTextView("play_arrow", 22f, overlayOnSurfaceColor()).apply {
+                gravity = Gravity.CENTER
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    foreground = selectableDrawable()
+                }
+            }
+            val progressView =
+                ProgressBar(parent.context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                    max = 1000
+                    progress = 0
+                    progressTintList = ColorStateList.valueOf(overlayPrimaryColor())
+                    progressBackgroundTintList = ColorStateList.valueOf(overlaySliderTrackColor())
+                }
+            val textColumn = LinearLayout(parent.context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    titleView,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                )
+                addView(spaceView(1, dp(4)))
+                addView(
+                    wakeView,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    )
+                )
+            }
+            val row = LinearLayout(parent.context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    textColumn,
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                )
+                addView(
+                    actionView,
+                    LinearLayout.LayoutParams(dp(38), dp(38)).apply {
+                        leftMargin = dp(8)
+                    }
+                )
+            }
+            val root = LinearLayout(parent.context).apply {
+                orientation = LinearLayout.VERTICAL
+                background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+                elevation = dp(4).toFloat()
+                clipChildren = true
+                clipToPadding = true
+                isClickable = true
+                isFocusable = true
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    foreground = selectableDrawable()
+                }
+                addView(
+                    row,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        0,
+                        1f
+                    )
+                )
+                addView(
+                    progressView,
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        dp(4)
+                    )
+                )
+            }
+            return SoundViewHolder(root, titleView, wakeView, actionView, progressView)
+        }
+
+        override fun onBindViewHolder(
+            holder: SoundViewHolder,
+            position: Int,
+            payloads: MutableList<Any>
+        ) {
+            if (payloads.isNotEmpty()) {
+                val item = items.getOrNull(position) ?: return
+                bindPlaybackState(holder, item)
+                return
+            }
+            onBindViewHolder(holder, position)
+        }
+
+        override fun onBindViewHolder(holder: SoundViewHolder, position: Int) {
+            val item = items.getOrNull(position) ?: return
+            val grid = layoutMode != SoundboardLayoutMode.List
+            holder.root.layoutParams = recyclerItemLayoutParams(grid)
+            holder.root.setPadding(
+                if (grid) dp(10) else dp(12),
+                if (grid) dp(10) else dp(9),
+                if (grid) dp(10) else dp(12),
+                if (grid) dp(9) else dp(8)
+            )
+            holder.titleView.maxLines = 1
+            holder.titleView.text = item.title.ifBlank { "未命名音效" }
+            val wakeWord = item.wakeWord.trim()
+            holder.wakeView.visibility = if (wakeWord.isBlank()) View.GONE else View.VISIBLE
+            holder.wakeView.text = wakeWord
+            bindPlaybackState(holder, item)
+            holder.root.setOnClickListener {
+                performOverlayKeyHaptic(holder.root)
+                playSoundboardItem(item)
+            }
+            holder.actionView.setOnClickListener {
+                performOverlayKeyHaptic(holder.actionView)
+                if (playbackStates[item.id]?.playing == true) {
+                    scope.launch {
+                        SoundboardManager.stop(item.id)
+                    }
+                } else {
+                    playSoundboardItem(item)
+                }
+            }
+        }
+
+        override fun getItemCount(): Int = items.size
+
+        override fun getItemId(position: Int): Long =
+            items.getOrNull(position)?.id ?: RecyclerView.NO_ID
+
+        fun submit(
+            newItems: List<SoundboardItem>,
+            states: Map<Long, SoundboardPlaybackState>,
+            mode: SoundboardLayoutMode
+        ) {
+            items = newItems.toList()
+            playbackStates = states.toMap()
+            layoutMode = mode
+            notifyDataSetChanged()
+        }
+
+        fun updatePlaybackStates(states: Map<Long, SoundboardPlaybackState>) {
+            val previous = playbackStates
+            playbackStates = states.toMap()
+            items.forEachIndexed { index, item ->
+                if (previous[item.id] != playbackStates[item.id]) {
+                    notifyItemChanged(index, playbackPayload)
+                }
+            }
+        }
+
+        private fun bindPlaybackState(holder: SoundViewHolder, item: SoundboardItem) {
+            val state = playbackStates[item.id]
+            holder.actionView.text = if (state?.playing == true) "stop" else "play_arrow"
+            holder.progressView.progress =
+                ((state?.progress?.coerceIn(0f, 1f) ?: 0f) * 1000f).roundToInt().coerceIn(0, 1000)
+        }
+
+        private fun playSoundboardItem(item: SoundboardItem) {
+            scope.launch {
+                val played = SoundboardManager.play(item)
+                if (!played) {
+                    Toast.makeText(
+                        this@FloatingOverlayService,
+                        "音效播放失败，请检查音频文件",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+
+        private fun recyclerItemLayoutParams(grid: Boolean): RecyclerView.LayoutParams {
+            val height = dp(68)
+            val params =
+                if (grid) {
+                    GridLayoutManager.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        height
+                    )
+                } else {
+                    RecyclerView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        height
+                    )
+                }
+            params.setMargins(dp(6), dp(6), dp(6), dp(6))
+            return params
         }
     }
 
@@ -1481,6 +1730,7 @@ class FloatingOverlayService : Service() {
         ensureWindows()
         RealtimeRuntimeBridge.addListener(runtimeBridgeListener)
         observeSettings()
+        observeSoundboardPlayback()
         scope.launch {
             settings = UserPrefs.getSettings(this@FloatingOverlayService)
             applyOverlayWindowFlags()
@@ -1509,6 +1759,9 @@ class FloatingOverlayService : Service() {
             ACTION_OPEN_MINI_QUICK_CARD -> {
                 showMiniPanel(MiniOverlayMode.QuickCard)
             }
+            ACTION_OPEN_MINI_SOUNDBOARD -> {
+                showMiniPanel(MiniOverlayMode.Soundboard)
+            }
             ACTION_REFRESH -> {
                 scope.launch {
                     settings = UserPrefs.getSettings(this@FloatingOverlayService)
@@ -1516,6 +1769,11 @@ class FloatingOverlayService : Service() {
                     loadQuickSubtitleConfig()
                     loadOverlayShortcuts()
                     loadOverlayLauncherLayout()
+                    if (miniVisible && miniMode == MiniOverlayMode.Soundboard) {
+                        loadMiniSoundboardConfig()
+                        loadMiniSoundboardLayout()
+                        refreshMiniSoundboardUi()
+                    }
                     restoreFabPositionForCurrentOrientation(allowOppositeConversion = true)
                     refreshPanelUi()
                     refreshQuickSubtitleUi()
@@ -1529,6 +1787,8 @@ class FloatingOverlayService : Service() {
     override fun onDestroy() {
         settingsJob?.cancel()
         settingsJob = null
+        soundboardPlaybackJob?.cancel()
+        soundboardPlaybackJob = null
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
         stopFabStateWatchdog()
@@ -1578,6 +1838,7 @@ class FloatingOverlayService : Service() {
         refreshPanelUi()
         refreshQuickSubtitleUi()
         refreshQuickCardUi()
+        refreshMiniSoundboardUi()
         updatePanelPosition()
         updateMiniPanelPosition()
         updatePickerLayout()
@@ -1592,6 +1853,7 @@ class FloatingOverlayService : Service() {
                 val previousDarkTheme = overlayDarkTheme
                 val previousFontScaleBlockMode = settings.fontScaleBlockMode
                 val previousShowOnLockScreen = settings.floatingOverlayShowOnLockScreen
+                val previousBluetoothTitleSubtitle = settings.bluetoothMediaTitleSubtitle
                 settings = next
                 if (!next.floatingOverlayEnabled) {
                     stopSelf()
@@ -1611,10 +1873,25 @@ class FloatingOverlayService : Service() {
                     rebuildWindowsPreservingState()
                     return@collectLatest
                 }
+                if (next.bluetoothMediaTitleSubtitle && !previousBluetoothTitleSubtitle) {
+                    syncBluetoothMediaTitleToCommittedQuickSubtitle()
+                }
                 refreshQuickSubtitleUi()
                 refreshStatusDetailUi()
                 updateFabUi()
                 refreshFabIdleDockState()
+            }
+        }
+    }
+
+    private fun observeSoundboardPlayback() {
+        soundboardPlaybackJob?.cancel()
+        soundboardPlaybackJob = scope.launch {
+            SoundboardManager.playbackState().collectLatest { next ->
+                soundboardPlaybackStates = next
+                if (miniVisible && miniMode == MiniOverlayMode.Soundboard) {
+                    refreshMiniSoundboardPlaybackUi()
+                }
             }
         }
     }
@@ -2890,6 +3167,125 @@ class FloatingOverlayService : Service() {
                 }
             )
         }
+        miniSoundboardAdapter = MiniSoundboardAdapter()
+        miniSoundboardRecyclerView = RecyclerView(this).apply {
+            adapter = miniSoundboardAdapter
+            overScrollMode = View.OVER_SCROLL_NEVER
+            clipChildren = true
+            clipToPadding = true
+            itemAnimator = null
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+        }
+        miniSoundboardEmptyTextView = TextView(this).apply {
+            text = "当前分组暂无音效\n长按音效板入口可进入主界面添加"
+            setTextColor(overlayOnSurfaceVariantColor())
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            includeFontPadding = false
+        }
+        miniSoundboardContentCardView = FrameLayout(this).apply {
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            elevation = dp(6).toFloat()
+            clipChildren = true
+            clipToPadding = true
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            addView(
+                miniSoundboardRecyclerView,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+            addView(
+                miniSoundboardEmptyTextView,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+        miniSoundboardTabsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        miniSoundboardLayoutButtonView =
+            symbolTextView("view_list", 24f, overlayOnSurfaceColor()).apply {
+                gravity = Gravity.CENTER
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    foreground = selectableDrawable()
+                }
+                setOnClickListener {
+                    performOverlayKeyHaptic(this)
+                    cycleMiniSoundboardLayout()
+                }
+            }
+        miniSoundboardTabsCardView = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedRectDrawable(overlayRadiusDp, overlayCardColor())
+            elevation = dp(6).toFloat()
+            clipChildren = true
+            clipToPadding = true
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            addView(
+                HorizontalScrollView(this@FloatingOverlayService).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                    clipChildren = true
+                    clipToPadding = true
+                    addView(
+                        miniSoundboardTabsContainer,
+                        ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+            )
+            addView(
+                View(this@FloatingOverlayService).apply {
+                    setBackgroundColor(
+                        ColorUtils.setAlphaComponent(
+                            overlayOutlineColor(),
+                            if (overlayDarkTheme) 112 else 92
+                        )
+                    )
+                },
+                LinearLayout.LayoutParams(dp(1), dp(34)).apply {
+                    leftMargin = dp(4)
+                    rightMargin = dp(4)
+                }
+            )
+            addView(
+                miniSoundboardLayoutButtonView,
+                LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT)
+            )
+        }
+        miniSoundboardBody = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            clipChildren = false
+            clipToPadding = false
+            addView(
+                miniSoundboardContentCardView,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(260)
+                )
+            )
+            addView(
+                miniSoundboardTabsCardView,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(52)
+                ).apply {
+                    topMargin = dp(10)
+                }
+            )
+        }
         val miniBodyHost = FrameLayout(this).apply {
             clipChildren = false
             clipToPadding = false
@@ -2902,6 +3298,13 @@ class FloatingOverlayService : Service() {
             )
             addView(
                 miniQuickCardBody,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            )
+            addView(
+                miniSoundboardBody,
                 FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT
@@ -2945,10 +3348,10 @@ class FloatingOverlayService : Service() {
                 symbolTextView("open_in_new", 26f, overlayOnSurfaceColor()).apply {
                     miniOpenButtonView = this
                     setOnClickListener {
-                        if (miniMode == MiniOverlayMode.QuickCard) {
-                            launchQuickCardPage()
-                        } else {
-                            launchQuickSubtitlePage()
+                        when (miniMode) {
+                            MiniOverlayMode.QuickCard -> launchQuickCardPage()
+                            MiniOverlayMode.Soundboard -> launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
+                            MiniOverlayMode.Subtitle -> launchQuickSubtitlePage()
                         }
                     }
                 },
@@ -3246,6 +3649,14 @@ class FloatingOverlayService : Service() {
         miniQuickCardItemsContainer = null
         miniQuickCardPager = null
         miniQuickCardPagerAdapter = null
+        miniSoundboardBody = null
+        miniSoundboardContentCardView = null
+        miniSoundboardRecyclerView = null
+        miniSoundboardAdapter = null
+        miniSoundboardEmptyTextView = null
+        miniSoundboardTabsCardView = null
+        miniSoundboardTabsContainer = null
+        miniSoundboardLayoutButtonView = null
         miniPreviewOverlay = null
         miniPreviewHost = null
         miniActionFab = null
@@ -3284,8 +3695,16 @@ class FloatingOverlayService : Service() {
         if (wasMiniVisible) updateMiniPanelPosition()
         if (wasPickerVisible) showShortcutPicker()
         refreshPanelUi()
+        refreshMiniModeUi()
         refreshQuickSubtitleUi()
         refreshQuickCardUi()
+        if (wasMiniVisible && miniMode == MiniOverlayMode.Soundboard) {
+            scope.launch {
+                loadMiniSoundboardConfig()
+                loadMiniSoundboardLayout()
+                refreshMiniSoundboardUi()
+            }
+        }
         refreshMiniPreviewUi()
         updateFabUi()
         refreshFabIdleDockState()
@@ -3604,6 +4023,7 @@ class FloatingOverlayService : Service() {
         saveMiniQuickItemsScrollState()
         overlayHintText = ""
         quickSubtitleCurrentText = normalized
+        syncBluetoothMediaTitleToCommittedQuickSubtitle(normalized)
         saveQuickSubtitleConfig()
         refreshQuickSubtitleUi()
         updateFabUi()
@@ -3901,6 +4321,11 @@ class FloatingOverlayService : Service() {
                     loadQuickCardConfig()
                     refreshQuickCardUi()
                 }
+                MiniOverlayMode.Soundboard -> {
+                    loadMiniSoundboardConfig()
+                    loadMiniSoundboardLayout()
+                    refreshMiniSoundboardUi()
+                }
             }
             refreshMiniModeUi()
             applyMiniExpandedLayout()
@@ -3978,6 +4403,13 @@ class FloatingOverlayService : Service() {
     private fun refreshMiniModeUi() {
         miniSubtitleBody?.visibility = if (miniMode == MiniOverlayMode.Subtitle) View.VISIBLE else View.GONE
         miniQuickCardBody?.visibility = if (miniMode == MiniOverlayMode.QuickCard) View.VISIBLE else View.GONE
+        miniSoundboardBody?.visibility = if (miniMode == MiniOverlayMode.Soundboard) View.VISIBLE else View.GONE
+        miniOpenButtonView?.contentDescription =
+            when (miniMode) {
+                MiniOverlayMode.Subtitle -> "打开快捷字幕"
+                MiniOverlayMode.QuickCard -> "打开快捷名片"
+                MiniOverlayMode.Soundboard -> "打开音效板"
+            }
     }
 
     private fun animateOverlayIn(view: View?, fromBottom: Boolean) {
@@ -4767,13 +5199,23 @@ class FloatingOverlayService : Service() {
             quickSubtitleCentered = false
             quickSubtitleNextGroupId = 4L
             reconcileMiniQuickSubtitleState()
+            syncBluetoothMediaTitleToCommittedQuickSubtitle()
             quickSubtitleConfigLoaded = true
             return
         }
         runCatching { parseQuickSubtitleConfig(raw) }
             .onFailure { AppLogger.e("FloatingOverlayService.parseQuickSubtitleConfig failed", it) }
         quickSubtitleFontSizeSp = overlayFontSize ?: sharedFontFallback
+        syncBluetoothMediaTitleToCommittedQuickSubtitle()
         quickSubtitleConfigLoaded = true
+    }
+
+    private fun syncBluetoothMediaTitleToCommittedQuickSubtitle(
+        text: String = quickSubtitleCurrentText
+    ) {
+        val normalized = text.trim()
+        if (normalized.isEmpty() || !settings.bluetoothMediaTitleSubtitle) return
+        BluetoothMediaTitleBridge.updateSubtitle(applicationContext, normalized)
     }
 
     private fun parseQuickSubtitleConfig(raw: String) {
@@ -5421,6 +5863,338 @@ class FloatingOverlayService : Service() {
         }
         refreshMiniQuickCardLayoutMetrics()
         refreshMiniPreviewUi()
+    }
+
+    private suspend fun loadMiniSoundboardConfig() {
+        val raw = UserPrefs.getSoundboardConfig(this)
+        if (raw == soundboardConfigRawCache && soundboardConfig.groups.isNotEmpty()) {
+            ensureMiniSoundboardSelectedGroup()
+            return
+        }
+        val parsed = parseSoundboardConfig(raw)
+        soundboardConfig = parsed
+        soundboardConfigRawCache = raw.orEmpty()
+        SoundboardManager.updateCachedConfig(parsed)
+        miniSoundboardSelectedGroupId =
+            parsed.groups.firstOrNull { it.id == miniSoundboardSelectedGroupId }?.id
+                ?: parsed.groups.firstOrNull { it.id == parsed.selectedGroupId }?.id
+                ?: parsed.groups.firstOrNull()?.id
+                ?: defaultSoundboardGroups().first().id
+    }
+
+    private suspend fun loadMiniSoundboardLayout() {
+        val raw = UserPrefs.getFloatingOverlayMiniSoundboardLayout(this)
+        if (raw.isNullOrBlank()) {
+            miniSoundboardPortraitLayout = SoundboardLayoutMode.List
+            miniSoundboardLandscapeLayout = SoundboardLayoutMode.List
+            return
+        }
+        runCatching {
+            val root = JSONObject(raw)
+            miniSoundboardPortraitLayout = normalizeMiniSoundboardLayout(
+                SoundboardLayoutMode.fromWire(root.optString("portrait")),
+                landscape = false
+            )
+            miniSoundboardLandscapeLayout = normalizeMiniSoundboardLayout(
+                SoundboardLayoutMode.fromWire(root.optString("landscape")),
+                landscape = true
+            )
+        }.onFailure {
+            miniSoundboardPortraitLayout = SoundboardLayoutMode.List
+            miniSoundboardLandscapeLayout = SoundboardLayoutMode.List
+        }
+    }
+
+    private fun saveMiniSoundboardLayout() {
+        val payload = JSONObject().apply {
+            put("portrait", normalizeMiniSoundboardLayout(miniSoundboardPortraitLayout, false).wireValue)
+            put("landscape", normalizeMiniSoundboardLayout(miniSoundboardLandscapeLayout, true).wireValue)
+        }.toString()
+        scope.launch(Dispatchers.IO) {
+            UserPrefs.setFloatingOverlayMiniSoundboardLayout(this@FloatingOverlayService, payload)
+        }
+    }
+
+    private fun normalizeMiniSoundboardLayout(
+        mode: SoundboardLayoutMode,
+        landscape: Boolean
+    ): SoundboardLayoutMode {
+        val allowed =
+            if (landscape) {
+                setOf(SoundboardLayoutMode.List, SoundboardLayoutMode.Grid2)
+            } else {
+                setOf(SoundboardLayoutMode.List, SoundboardLayoutMode.Grid2)
+            }
+        return if (mode in allowed) mode else SoundboardLayoutMode.List
+    }
+
+    private fun currentMiniSoundboardLayout(): SoundboardLayoutMode {
+        return if (isLandscapeUi()) {
+            normalizeMiniSoundboardLayout(miniSoundboardLandscapeLayout, landscape = true)
+        } else {
+            normalizeMiniSoundboardLayout(miniSoundboardPortraitLayout, landscape = false)
+        }
+    }
+
+    private fun cycleMiniSoundboardLayout() {
+        val landscape = isLandscapeUi()
+        val options =
+            if (landscape) {
+                listOf(SoundboardLayoutMode.List, SoundboardLayoutMode.Grid2)
+            } else {
+                listOf(SoundboardLayoutMode.List, SoundboardLayoutMode.Grid2)
+            }
+        val current = currentMiniSoundboardLayout()
+        val next = options[(options.indexOf(current).takeIf { it >= 0 } ?: 0).let { (it + 1) % options.size }]
+        if (landscape) {
+            miniSoundboardLandscapeLayout = next
+        } else {
+            miniSoundboardPortraitLayout = next
+        }
+        saveMiniSoundboardLayout()
+        refreshMiniSoundboardUi()
+        updateMiniPanelPosition()
+    }
+
+    private fun ensureMiniSoundboardSelectedGroup(): SoundboardGroup? {
+        val groups = soundboardConfig.groups.ifEmpty { defaultSoundboardGroups() }
+        val selected =
+            groups.firstOrNull { it.id == miniSoundboardSelectedGroupId }
+                ?: groups.firstOrNull { it.id == soundboardConfig.selectedGroupId }
+                ?: groups.firstOrNull()
+        if (selected != null) miniSoundboardSelectedGroupId = selected.id
+        return selected
+    }
+
+    private fun selectMiniSoundboardGroup(groupId: Long) {
+        if (soundboardConfig.groups.none { it.id == groupId }) return
+        miniSoundboardSelectedGroupId = groupId
+        soundboardConfig = soundboardConfig.copy(selectedGroupId = groupId)
+        SoundboardManager.updateCachedConfig(soundboardConfig)
+        val payload = serializeSoundboardConfig(soundboardConfig)
+        soundboardConfigRawCache = payload
+        scope.launch(Dispatchers.IO) {
+            UserPrefs.setSoundboardConfig(this@FloatingOverlayService, payload)
+        }
+        refreshMiniSoundboardUi()
+    }
+
+    private fun refreshMiniSoundboardUi() {
+        val body = miniSoundboardBody ?: return
+        val recycler = miniSoundboardRecyclerView ?: return
+        val adapter = miniSoundboardAdapter ?: return
+        val selected = ensureMiniSoundboardSelectedGroup()
+        val items = selected?.items.orEmpty()
+        val layout = currentMiniSoundboardLayout()
+        recycler.layoutManager =
+            if (layout == SoundboardLayoutMode.List) {
+                LinearLayoutManager(this, RecyclerView.VERTICAL, false)
+            } else {
+                GridLayoutManager(this, layout.columns.coerceIn(2, 2))
+            }
+        adapter.submit(items, soundboardPlaybackStates, layout)
+        miniSoundboardEmptyTextView?.visibility = if (items.isEmpty()) View.VISIBLE else View.GONE
+        miniSoundboardLayoutButtonView?.apply {
+            text = when (layout) {
+                SoundboardLayoutMode.List -> "view_list"
+                SoundboardLayoutMode.Grid2 -> "grid_view"
+                else -> "view_module"
+            }
+            contentDescription = "切换排列方式：${layout.label}"
+        }
+        refreshMiniSoundboardLayoutMetrics()
+        refreshMiniSoundboardTabs()
+        body.requestLayout()
+    }
+
+    private fun refreshMiniSoundboardPlaybackUi() {
+        miniSoundboardAdapter?.updatePlaybackStates(soundboardPlaybackStates)
+    }
+
+    private fun refreshMiniSoundboardTabs() {
+        val container = miniSoundboardTabsContainer ?: return
+        container.removeAllViews()
+        val groups = soundboardConfig.groups.ifEmpty { defaultSoundboardGroups() }
+        val verticalTabs = isPhoneLandscapeUi()
+        groups.forEach { group ->
+            val selected = group.id == miniSoundboardSelectedGroupId
+            val tab = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                clipChildren = true
+                clipToPadding = true
+                background =
+                    if (selected) {
+                        roundedRectDrawable(
+                            overlayRadiusDp,
+                            ColorUtils.setAlphaComponent(overlayPrimaryColor(), if (overlayDarkTheme) 64 else 42)
+                        )
+                    } else {
+                        roundedRectDrawable(overlayRadiusDp, Color.TRANSPARENT)
+                    }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    foreground = selectableDrawable()
+                }
+                setPadding(if (verticalTabs) dp(6) else dp(10), 0, if (verticalTabs) dp(6) else dp(10), 0)
+                setOnClickListener {
+                    performOverlayKeyHaptic(this)
+                    selectMiniSoundboardGroup(group.id)
+                }
+                addView(symbolTextView(group.icon, 20f, overlayOnSurfaceColor()))
+                if (!verticalTabs) {
+                    addView(spaceView(dp(6), 1))
+                    addView(
+                        TextView(this@FloatingOverlayService).apply {
+                            text = group.title.ifBlank { "未命名分组" }
+                            setTextColor(overlayOnSurfaceColor())
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                            maxLines = 1
+                            ellipsize = TextUtils.TruncateAt.END
+                            includeFontPadding = false
+                        },
+                        LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    )
+                }
+            }
+            container.addView(
+                tab,
+                if (verticalTabs) {
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)).apply {
+                        bottomMargin = dp(2)
+                    }
+                } else {
+                    LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+                        rightMargin = dp(2)
+                    }
+                }
+            )
+        }
+    }
+
+    private fun refreshMiniSoundboardLayoutMetrics() {
+        val body = miniSoundboardBody ?: return
+        val contentCard = miniSoundboardContentCardView ?: return
+        val tabsCard = miniSoundboardTabsCardView ?: return
+        val landscapePhone = isPhoneLandscapeUi()
+        configureMiniSoundboardTabsCard(landscapePhone)
+        val contentHeight = if (landscapePhone) landscapeOverlayContentHeight() else dp(260)
+        body.removeAllViews()
+        body.orientation = if (landscapePhone) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        body.gravity = Gravity.NO_GRAVITY
+        if (landscapePhone) {
+            reparentView(
+                contentCard,
+                body,
+                LinearLayout.LayoutParams(0, contentHeight, 1f)
+            )
+            reparentView(
+                tabsCard,
+                body,
+                LinearLayout.LayoutParams(dp(58), contentHeight).apply {
+                    leftMargin = dp(10)
+                }
+            )
+        } else {
+            reparentView(
+                contentCard,
+                body,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, contentHeight)
+            )
+            reparentView(
+                tabsCard,
+                body,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    dp(52)
+                ).apply {
+                    topMargin = dp(10)
+                }
+            )
+        }
+    }
+
+    private fun configureMiniSoundboardTabsCard(vertical: Boolean) {
+        val tabsCard = miniSoundboardTabsCardView ?: return
+        val tabsContainer = miniSoundboardTabsContainer ?: return
+        val layoutButton = miniSoundboardLayoutButtonView ?: return
+        tabsCard.removeAllViews()
+        (tabsContainer.parent as? ViewGroup)?.removeView(tabsContainer)
+        (layoutButton.parent as? ViewGroup)?.removeView(layoutButton)
+        tabsCard.orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        tabsCard.gravity = Gravity.CENTER
+        tabsContainer.orientation = if (vertical) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        tabsContainer.gravity = if (vertical) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
+        if (vertical) {
+            tabsCard.addView(
+                ScrollView(this).apply {
+                    isVerticalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                    clipChildren = true
+                    clipToPadding = true
+                    addView(
+                        tabsContainer,
+                        ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        )
+                    )
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            )
+            tabsCard.addView(
+                View(this).apply {
+                    setBackgroundColor(
+                        ColorUtils.setAlphaComponent(
+                            overlayOutlineColor(),
+                            if (overlayDarkTheme) 112 else 92
+                        )
+                    )
+                },
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                    topMargin = dp(4)
+                    bottomMargin = dp(4)
+                }
+            )
+            tabsCard.addView(
+                layoutButton,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44))
+            )
+        } else {
+            tabsCard.addView(
+                HorizontalScrollView(this).apply {
+                    isHorizontalScrollBarEnabled = false
+                    overScrollMode = View.OVER_SCROLL_NEVER
+                    clipChildren = true
+                    clipToPadding = true
+                    addView(
+                        tabsContainer,
+                        ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+            )
+            tabsCard.addView(
+                View(this).apply {
+                    setBackgroundColor(
+                        ColorUtils.setAlphaComponent(
+                            overlayOutlineColor(),
+                            if (overlayDarkTheme) 112 else 92
+                        )
+                    )
+                },
+                LinearLayout.LayoutParams(dp(1), dp(34)).apply {
+                    leftMargin = dp(4)
+                    rightMargin = dp(4)
+                }
+            )
+            tabsCard.addView(
+                layoutButton,
+                LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.MATCH_PARENT)
+            )
+        }
     }
 
     private fun miniQuickCardHeightKey(card: QuickCard?): Long = card?.id ?: Long.MIN_VALUE
@@ -7744,8 +8518,7 @@ class FloatingOverlayService : Service() {
                 launchAppPage(OverlayBridge.TARGET_OPEN_DRAWING)
             }
             tile.key == "builtin_soundboard" -> {
-                hidePanel()
-                launchAppPage(OverlayBridge.TARGET_OPEN_SOUNDBOARD)
+                showMiniPanel(MiniOverlayMode.Soundboard)
             }
             tile.key == "builtin_scanner" -> {
                 hidePanel()
@@ -9641,6 +10414,7 @@ class FloatingOverlayService : Service() {
         private const val ACTION_OPEN_PANEL = "com.lhtstudio.kigtts.app.action.OVERLAY_OPEN_PANEL"
         private const val ACTION_OPEN_MINI_SUBTITLE = "com.lhtstudio.kigtts.app.action.OVERLAY_OPEN_MINI_SUBTITLE"
         private const val ACTION_OPEN_MINI_QUICK_CARD = "com.lhtstudio.kigtts.app.action.OVERLAY_OPEN_MINI_QUICK_CARD"
+        private const val ACTION_OPEN_MINI_SOUNDBOARD = "com.lhtstudio.kigtts.app.action.OVERLAY_OPEN_MINI_SOUNDBOARD"
 
         fun canDrawOverlays(context: Context): Boolean {
             return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -9679,6 +10453,13 @@ class FloatingOverlayService : Service() {
         fun openMiniQuickCard(context: Context) {
             val intent = Intent(context, FloatingOverlayService::class.java).apply {
                 action = ACTION_OPEN_MINI_QUICK_CARD
+            }
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun openMiniSoundboard(context: Context) {
+            val intent = Intent(context, FloatingOverlayService::class.java).apply {
+                action = ACTION_OPEN_MINI_SOUNDBOARD
             }
             ContextCompat.startForegroundService(context, intent)
         }

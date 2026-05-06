@@ -5,6 +5,8 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import com.lhtstudio.kigtts.app.data.UserPrefs
 import com.lhtstudio.kigtts.app.util.AppLogger
 
@@ -70,12 +72,27 @@ class PlaybackAudioFocusController(
     class Lease internal constructor(
         private val releaseAction: () -> Unit
     ) {
+        private val handler = Handler(Looper.getMainLooper())
         private var released = false
+        private val delayedRelease = Runnable { release() }
 
+        @Synchronized
         fun release() {
             if (released) return
             released = true
+            handler.removeCallbacks(delayedRelease)
             releaseAction()
+        }
+
+        @Synchronized
+        fun releaseDelayed(delayMs: Long) {
+            if (released) return
+            if (delayMs <= 0L) {
+                release()
+                return
+            }
+            handler.removeCallbacks(delayedRelease)
+            handler.postDelayed(delayedRelease, delayMs)
         }
     }
 }

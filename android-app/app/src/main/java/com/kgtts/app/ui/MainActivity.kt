@@ -1025,7 +1025,6 @@ class MainViewModel(
         val item = RecognizedItem(id = historyId, text = normalized)
         val next = (listOf(item) + realtimeRecognized).take(MAX_RECOGNIZED_ITEMS)
         realtimeRecognized = next
-        BluetoothMediaTitleBridge.updateSubtitle(appContext, normalized)
         val validIds = next.asSequence().map { it.id }.toSet()
         lastProgressUpdateAtMs.keys.retainAll(validIds)
         maybeTriggerSoundboardFromText(normalized, fromQuickText = fromQuickText)
@@ -1474,9 +1473,7 @@ class MainViewModel(
         quickSubtitleRotated180 = textRotated180
         quickSubtitleShowActionButtons = showActionButtons
         quickSubtitleNextGroupId = maxOf(maxId + 1L, (finalGroups.maxOfOrNull { it.id } ?: 0L) + 1L)
-        if (uiState.bluetoothMediaTitleSubtitle) {
-            BluetoothMediaTitleBridge.updateSubtitle(appContext, currentText)
-        }
+        syncBluetoothMediaTitleToCommittedQuickSubtitle(currentText)
     }
 
     private fun saveQuickSubtitleConfig() {
@@ -1521,6 +1518,19 @@ class MainViewModel(
         quickSubtitleContentRevision++
     }
 
+    private fun commitQuickSubtitleCurrentText(text: String) {
+        quickSubtitleCurrentText = text
+        syncBluetoothMediaTitleToCommittedQuickSubtitle(text)
+    }
+
+    private fun syncBluetoothMediaTitleToCommittedQuickSubtitle(
+        text: String = quickSubtitleCurrentText
+    ) {
+        if (uiState.bluetoothMediaTitleSubtitle) {
+            BluetoothMediaTitleBridge.updateSubtitle(appContext, text)
+        }
+    }
+
     fun currentQuickSubtitleGroupIndex(): Int {
         val idx = quickSubtitleGroups.indexOfFirst { it.id == quickSubtitleSelectedGroupId }
         return if (idx >= 0) idx else 0
@@ -1536,8 +1546,7 @@ class MainViewModel(
     fun applyQuickSubtitleText(text: String, enqueueSpeak: Boolean = true) {
         val message = text.trim()
         if (message.isEmpty()) return
-        quickSubtitleCurrentText = message
-        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
+        commitQuickSubtitleCurrentText(message)
         markQuickSubtitleContentSubmitted()
         if (enqueueSpeak) {
             speakText(
@@ -1558,8 +1567,7 @@ class MainViewModel(
     ) {
         val message = text.trim()
         if (message.isEmpty()) return
-        quickSubtitleCurrentText = message
-        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
+        commitQuickSubtitleCurrentText(message)
         markQuickSubtitleContentSubmitted()
         if (quickSubtitlePlayOnSend && hasVoice) {
             speakText(
@@ -1581,8 +1589,7 @@ class MainViewModel(
     fun submitQuickSubtitleInput(playVoice: Boolean = quickSubtitlePlayOnSend) {
         val message = quickSubtitleInputText.trim()
         if (message.isEmpty()) return
-        quickSubtitleCurrentText = message
-        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
+        commitQuickSubtitleCurrentText(message)
         markQuickSubtitleContentSubmitted()
         quickSubtitleInputText = ""
         if (playVoice) {
@@ -1757,8 +1764,7 @@ class MainViewModel(
             }
             else -> {
                 if (normalized.isEmpty()) return
-                quickSubtitleCurrentText = normalized
-                BluetoothMediaTitleBridge.updateSubtitle(appContext, normalized)
+                commitQuickSubtitleCurrentText(normalized)
                 markQuickSubtitleContentSubmitted()
                 saveQuickSubtitleConfig()
             }
@@ -1813,8 +1819,7 @@ class MainViewModel(
     }
 
     fun clearQuickSubtitleText() {
-        quickSubtitleCurrentText = QUICK_SUBTITLE_CLEARED_HINT
-        BluetoothMediaTitleBridge.updateSubtitle(appContext, QUICK_SUBTITLE_CLEARED_HINT)
+        commitQuickSubtitleCurrentText(QUICK_SUBTITLE_CLEARED_HINT)
         saveQuickSubtitleConfig()
     }
 
@@ -3844,7 +3849,7 @@ class MainViewModel(
         uiState = uiState.copy(bluetoothMediaTitleSubtitle = enabled)
         BluetoothMediaTitleBridge.setEnabled(appContext, enabled)
         if (enabled) {
-            BluetoothMediaTitleBridge.updateSubtitle(appContext, quickSubtitleCurrentText)
+            syncBluetoothMediaTitleToCommittedQuickSubtitle()
         }
         viewModelScope.launch {
             UserPrefs.setBluetoothMediaTitleSubtitle(appContext, enabled)

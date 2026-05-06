@@ -419,6 +419,9 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             navigateToPage = navigateToPage
         )
         _quickSubtitleRequests.value = request
+        if (target == OverlayBridge.TARGET_SUBTITLE) {
+            syncBluetoothMediaTitleToCommittedQuickSubtitle(text)
+        }
     }
 
     override fun beginPushToTalkSession() {
@@ -492,6 +495,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
             val settings = UserPrefs.getSettings(applicationContext)
             currentSettings = settings
             BluetoothMediaTitleBridge.setEnabled(applicationContext, settings.bluetoothMediaTitleSubtitle)
+            syncBluetoothMediaTitleToCommittedQuickSubtitleConfig()
             val resetBackend = ensureSpeakerBackend(settings)
             speakerProfiles = if (resetBackend) {
                 mutableListOf()
@@ -540,6 +544,31 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         }.getOrDefault(true)
     }
 
+    private suspend fun loadCommittedQuickSubtitleText(): String {
+        return runCatching {
+            val raw = UserPrefs.getQuickSubtitleConfig(applicationContext)
+            if (raw.isNullOrBlank()) {
+                ""
+            } else {
+                JSONObject(raw).optString("currentText", "").trim()
+            }
+        }.getOrDefault("")
+    }
+
+    private suspend fun syncBluetoothMediaTitleToCommittedQuickSubtitleConfig() {
+        if (!currentSettings.bluetoothMediaTitleSubtitle) return
+        val text = loadCommittedQuickSubtitleText()
+        if (text.isNotEmpty()) {
+            BluetoothMediaTitleBridge.updateSubtitle(applicationContext, text)
+        }
+    }
+
+    private fun syncBluetoothMediaTitleToCommittedQuickSubtitle(text: String) {
+        val normalized = text.trim()
+        if (normalized.isEmpty() || !currentSettings.bluetoothMediaTitleSubtitle) return
+        BluetoothMediaTitleBridge.updateSubtitle(applicationContext, normalized)
+    }
+
     private fun observeSettings() {
         settingsJob?.cancel()
         settingsJob = serviceScope.launch {
@@ -550,9 +579,7 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
                 SoundboardManager.setAudioFocusAvoidanceMode(applicationContext, next.audioFocusAvoidanceMode)
                 BluetoothMediaTitleBridge.setEnabled(applicationContext, next.bluetoothMediaTitleSubtitle)
                 if (next.bluetoothMediaTitleSubtitle) {
-                    currentState().recognized.firstOrNull()?.text?.let { latest ->
-                        BluetoothMediaTitleBridge.updateSubtitle(applicationContext, latest)
-                    }
+                    syncBluetoothMediaTitleToCommittedQuickSubtitleConfig()
                 }
                 val resetBackend = ensureSpeakerBackend(next)
                 speakerProfiles = if (resetBackend) {
@@ -619,6 +646,9 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
                 }
             },
             onProgress = { id, progress ->
+                if (progress >= 0.99f) {
+                    BluetoothMediaTitleBridge.extendAfterPlaybackEnd(applicationContext)
+                }
                 val items = currentState().recognized
                 val idx = items.indexOfFirst { it.id == id }
                 if (idx >= 0) {
@@ -877,7 +907,6 @@ class RealtimeHostService : Service(), RealtimeRuntimeBridge.AppDelegate {
         val item = RecognizedItem(id = historyId, text = normalized)
         val next = (listOf(item) + currentState().recognized).take(MAX_RECOGNIZED_ITEMS)
         lastProgressUpdateAtMs.keys.retainAll(next.asSequence().map { it.id }.toSet())
-        BluetoothMediaTitleBridge.updateSubtitle(applicationContext, normalized)
         updateState { it.copy(recognized = next) }
         if (currentSettings.soundboardKeywordTriggerEnabled &&
             (!fromQuickText || currentSettings.allowQuickTextTriggerSoundboard)
