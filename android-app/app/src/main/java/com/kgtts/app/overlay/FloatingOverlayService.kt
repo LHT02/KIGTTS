@@ -86,6 +86,7 @@ import com.lhtstudio.kigtts.app.ui.QuickCard
 import com.lhtstudio.kigtts.app.ui.QuickCardType
 import com.lhtstudio.kigtts.app.util.AlipayScannerSupport
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.BluetoothMediaTitleBridge
 import com.lhtstudio.kigtts.app.util.QqScannerSupport
 import com.lhtstudio.kigtts.app.util.QuickCardRenderCache
 import kotlinx.coroutines.CoroutineScope
@@ -1592,6 +1593,7 @@ class FloatingOverlayService : Service() {
                 val previousDarkTheme = overlayDarkTheme
                 val previousFontScaleBlockMode = settings.fontScaleBlockMode
                 val previousShowOnLockScreen = settings.floatingOverlayShowOnLockScreen
+                val previousBluetoothTitleSubtitle = settings.bluetoothMediaTitleSubtitle
                 settings = next
                 if (!next.floatingOverlayEnabled) {
                     stopSelf()
@@ -1610,6 +1612,9 @@ class FloatingOverlayService : Service() {
                 if (next.floatingOverlayShowOnLockScreen != previousShowOnLockScreen) {
                     rebuildWindowsPreservingState()
                     return@collectLatest
+                }
+                if (next.bluetoothMediaTitleSubtitle && !previousBluetoothTitleSubtitle) {
+                    syncBluetoothMediaTitleToCommittedQuickSubtitle()
                 }
                 refreshQuickSubtitleUi()
                 refreshStatusDetailUi()
@@ -3604,6 +3609,7 @@ class FloatingOverlayService : Service() {
         saveMiniQuickItemsScrollState()
         overlayHintText = ""
         quickSubtitleCurrentText = normalized
+        syncBluetoothMediaTitleToCommittedQuickSubtitle(normalized)
         saveQuickSubtitleConfig()
         refreshQuickSubtitleUi()
         updateFabUi()
@@ -4767,13 +4773,23 @@ class FloatingOverlayService : Service() {
             quickSubtitleCentered = false
             quickSubtitleNextGroupId = 4L
             reconcileMiniQuickSubtitleState()
+            syncBluetoothMediaTitleToCommittedQuickSubtitle()
             quickSubtitleConfigLoaded = true
             return
         }
         runCatching { parseQuickSubtitleConfig(raw) }
             .onFailure { AppLogger.e("FloatingOverlayService.parseQuickSubtitleConfig failed", it) }
         quickSubtitleFontSizeSp = overlayFontSize ?: sharedFontFallback
+        syncBluetoothMediaTitleToCommittedQuickSubtitle()
         quickSubtitleConfigLoaded = true
+    }
+
+    private fun syncBluetoothMediaTitleToCommittedQuickSubtitle(
+        text: String = quickSubtitleCurrentText
+    ) {
+        val normalized = text.trim()
+        if (normalized.isEmpty() || !settings.bluetoothMediaTitleSubtitle) return
+        BluetoothMediaTitleBridge.updateSubtitle(applicationContext, normalized)
     }
 
     private fun parseQuickSubtitleConfig(raw: String) {

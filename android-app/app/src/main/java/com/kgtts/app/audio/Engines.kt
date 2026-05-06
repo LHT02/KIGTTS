@@ -1041,6 +1041,10 @@ class SystemTtsEngine(context: Context) : TtsModule {
 }
 
 class AudioPlayer(private val context: Context) {
+    private companion object {
+        private const val PLAYBACK_END_AUDIO_FOCUS_DWELL_MS = 5_000L
+    }
+
     @Volatile var isPlaying: Boolean = false
         private set
     @Volatile private var useCommunicationAttributes: Boolean = false
@@ -1170,6 +1174,7 @@ class AudioPlayer(private val context: Context) {
 
         isPlaying = true
         val audioFocusLease = audioFocusController.acquire()
+        var normalPlaybackEnded = false
         try {
             track.play()
             onProgress?.invoke(0f)
@@ -1191,7 +1196,9 @@ class AudioPlayer(private val context: Context) {
             if (written > 0 && !stopRequested) {
                 waitForAudioTrackDrain(track, written, sampleRate)
             }
+            normalPlaybackEnded = written >= total && !stopRequested
         } finally {
+            val dwellAudioFocus = normalPlaybackEnded && !stopRequested
             try {
                 track.stop()
             } catch (_: Exception) {
@@ -1207,7 +1214,9 @@ class AudioPlayer(private val context: Context) {
             }
             stopRequested = false
             isPlaying = false
-            audioFocusLease?.release()
+            audioFocusLease?.releaseDelayed(
+                if (dwellAudioFocus) PLAYBACK_END_AUDIO_FOCUS_DWELL_MS else 0L
+            )
             onProgress?.invoke(1f)
         }
     }
