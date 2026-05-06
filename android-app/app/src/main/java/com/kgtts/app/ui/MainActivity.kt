@@ -82,6 +82,7 @@ import androidx.compose.foundation.indication
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
@@ -5204,8 +5205,18 @@ private fun QuickCardMainScreen(
             }
         )
     }
-    LaunchedEffect(topActions) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, topActions) {
         onTopBarActionsChange(topActions)
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                onTopBarActionsChange(topActions)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     val pageCount = (cards.size + 1).coerceAtLeast(1) // always keep a trailing "new card" page
@@ -5523,32 +5534,17 @@ private fun QuickCardSortScreen(
         maxWidth = UiTokens.WideListMaxWidth,
         contentSpacing = 0.dp
     ) {
-            Spacer(Modifier.height(topBlank))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(UiTokens.Radius),
-                backgroundColor = md2CardContainerColor(),
-                elevation = UiTokens.CardElevation
-            ) {
-                Text(
-                    text = "拖动右侧排序按钮调整名片顺序",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                )
-            }
-            Spacer(Modifier.height(8.dp))
             QuickCardSortRecyclerList(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
                 cards = cards,
-                topBlankHeight = 2.dp,
-                bottomBlankHeight = 2.dp,
+                topBlankHeight = topBlank,
+                bottomBlankHeight = bottomBlank,
                 onReorder = { ids ->
                     viewModel.reorderQuickCardsByIds(ids)
                 }
             )
-            Spacer(Modifier.height(bottomBlank))
     }
 }
 
@@ -5589,6 +5585,7 @@ private fun QuickCardSortRecyclerList(
 
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var moved = false
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -5597,6 +5594,9 @@ private fun QuickCardSortRecyclerList(
                     recyclerView: RecyclerView,
                     viewHolder: RecyclerView.ViewHolder
                 ): Int {
+                    if (viewHolder.bindingAdapterPosition == 0) {
+                        return makeMovementFlags(0, 0)
+                    }
                     val dragFlags = ItemTouchHelper.UP or ItemTouchHelper.DOWN
                     return makeMovementFlags(dragFlags, 0)
                 }
@@ -5615,17 +5615,36 @@ private fun QuickCardSortRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                     super.onSelectedChanged(viewHolder, actionState)
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
                         adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         adapter.clearDraggingItem()
                     }
                     adapter.isDragging = actionState == ItemTouchHelper.ACTION_STATE_DRAG
                 }
 
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     adapter.isDragging = false
                     adapter.clearDraggingItem()
@@ -5658,11 +5677,18 @@ private class QuickCardSortRecyclerAdapter(
     var onStartDrag: ((RecyclerView.ViewHolder) -> Unit)? = null
     private var draggingItemId: Long? = null
 
+    private companion object {
+        const val HEADER_ID = Long.MIN_VALUE + 4601L
+        const val HEADER_POSITION = 0
+    }
+
     init {
         setHasStableIds(true)
     }
 
-    override fun getItemId(position: Int): Long = items[position].id
+    override fun getItemId(position: Int): Long {
+        return if (position == HEADER_POSITION) HEADER_ID else items[position - 1].id
+    }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ItemViewHolder {
         val composeView = ComposeView(parent.context).apply {
@@ -5676,10 +5702,14 @@ private class QuickCardSortRecyclerAdapter(
         return ItemViewHolder(composeView)
     }
 
-    override fun getItemCount(): Int = items.size
+    override fun getItemCount(): Int = items.size + 1
 
     override fun onBindViewHolder(holder: ItemViewHolder, position: Int) {
-        val card = items[position]
+        if (position == HEADER_POSITION) {
+            holder.bindHeader()
+            return
+        }
+        val card = items[position - 1]
         holder.bind(
             card = card,
             isDragged = draggingItemId == card.id,
@@ -5694,26 +5724,17 @@ private class QuickCardSortRecyclerAdapter(
     fun submitFromState(newItems: List<QuickCard>) {
         if (isDragging) return
         if (items == newItems) return
-        val oldItems = items.toList()
-        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
-            override fun getOldListSize(): Int = oldItems.size
-            override fun getNewListSize(): Int = newItems.size
-            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
-                return oldItems[oldItemPosition].id == newItems[newItemPosition].id
-            }
-            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
-                return oldItems[oldItemPosition] == newItems[newItemPosition]
-            }
-        })
         items.clear()
         items.addAll(newItems)
-        diff.dispatchUpdatesTo(this)
+        notifyDataSetChanged()
     }
 
     fun move(from: Int, to: Int): Boolean {
-        if (from == to || from !in items.indices || to !in items.indices) return false
-        val moved = items.removeAt(from)
-        items.add(to, moved)
+        val fromIndex = from - 1
+        val toIndex = to - 1
+        if (fromIndex == toIndex || fromIndex !in items.indices || toIndex !in items.indices) return false
+        val moved = items.removeAt(fromIndex)
+        items.add(toIndex, moved)
         notifyItemMoved(from, to)
         return true
     }
@@ -5721,17 +5742,17 @@ private class QuickCardSortRecyclerAdapter(
     fun snapshotIds(): List<Long> = items.map { it.id }
 
     fun setDraggingPosition(position: Int) {
-        val targetId = items.getOrNull(position)?.id
+        val targetId = items.getOrNull(position - 1)?.id
         if (draggingItemId == targetId) return
         val oldId = draggingItemId
         draggingItemId = targetId
         oldId?.let { id ->
             val idx = items.indexOfFirst { it.id == id }
-            if (idx >= 0) notifyItemChanged(idx)
+            if (idx >= 0) notifyItemChanged(idx + 1)
         }
         targetId?.let { id ->
             val idx = items.indexOfFirst { it.id == id }
-            if (idx >= 0) notifyItemChanged(idx)
+            if (idx >= 0) notifyItemChanged(idx + 1)
         }
     }
 
@@ -5739,10 +5760,18 @@ private class QuickCardSortRecyclerAdapter(
         val oldId = draggingItemId ?: return
         draggingItemId = null
         val idx = items.indexOfFirst { it.id == oldId }
-        if (idx >= 0) notifyItemChanged(idx)
+        if (idx >= 0) notifyItemChanged(idx + 1)
     }
 
     class ItemViewHolder(private val composeView: ComposeView) : RecyclerView.ViewHolder(composeView) {
+        fun bindHeader() {
+            composeView.setContent {
+                KigttsFontScaleProvider {
+                    QuickCardSortHeaderRow()
+                }
+            }
+        }
+
         fun bind(
             card: QuickCard,
             isDragged: Boolean,
@@ -5759,6 +5788,25 @@ private class QuickCardSortRecyclerAdapter(
             }
         }
     }
+}
+
+@Composable
+private fun QuickCardSortHeaderRow() {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 2.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(UiTokens.Radius),
+        backgroundColor = md2CardContainerColor(),
+        elevation = UiTokens.CardElevation
+    ) {
+        Text(
+            text = "拖动右侧排序按钮调整名片顺序",
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+        )
+    }
+    Spacer(Modifier.height(4.dp))
 }
 
 @Composable
@@ -12171,6 +12219,7 @@ private fun VoicePackRecyclerList(
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var moved = false
                 private var activeViewHolder: RecyclerView.ViewHolder? = null
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -12200,6 +12249,23 @@ private fun VoicePackRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                     super.onSelectedChanged(viewHolder, actionState)
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
@@ -12211,6 +12277,7 @@ private fun VoicePackRecyclerList(
                         (viewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(true)
                         animateDragElevation(viewHolder.itemView, elevated = true)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         activeViewHolder?.let { animateDragElevation(it.itemView, elevated = false) }
                         (activeViewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
                         activeViewHolder = null
@@ -12222,6 +12289,7 @@ private fun VoicePackRecyclerList(
                 }
 
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     animateDragElevation(viewHolder.itemView, elevated = false)
                     (viewHolder as? VoicePackRecyclerAdapter.VoicePackViewHolder)?.setDragged(false)
@@ -12564,10 +12632,6 @@ private fun VoicePackCardContent(
                                 Spacer(Modifier.width(6.dp))
                                 Text("系统", style = MaterialTheme.typography.bodySmall)
                             }
-                            if (isKokoroPack) {
-                                Spacer(Modifier.width(6.dp))
-                                Text("Kokoro", style = MaterialTheme.typography.bodySmall)
-                            }
                             if (pack.meta.pinned) {
                                 Spacer(Modifier.width(6.dp))
                                 Text("置顶", style = MaterialTheme.typography.bodySmall)
@@ -12656,6 +12720,108 @@ private fun stablePathId64(path: String): Long {
         h *= 1099511628211L
     }
     return h
+}
+
+private class DragEdgeAutoScroller {
+    private var recyclerView: RecyclerView? = null
+    private var externalScrollBy: ((Int) -> Boolean)? = null
+    private var direction: Int = 0
+    private var stepPx: Int = 0
+    private var isPosted: Boolean = false
+
+    private val scrollTick = object : Runnable {
+        override fun run() {
+            val rv = recyclerView
+            val dir = direction
+            if (rv == null || dir == 0 || !rv.isAttachedToWindow) {
+                direction = 0
+                stepPx = 0
+                recyclerView = null
+                externalScrollBy = null
+                isPosted = false
+                return
+            }
+            val delta = dir * stepPx.coerceAtLeast(1)
+            val consumed = if (rv.canScrollVertically(dir)) {
+                rv.scrollBy(0, delta)
+                true
+            } else {
+                externalScrollBy?.invoke(delta) == true
+            }
+            if (!consumed) {
+                direction = 0
+                stepPx = 0
+                recyclerView = null
+                externalScrollBy = null
+                isPosted = false
+                return
+            }
+            rv.postOnAnimation(this)
+        }
+    }
+
+    fun update(
+        recyclerView: RecyclerView,
+        draggedView: View,
+        dY: Float,
+        externalScrollBy: ((Int) -> Boolean)? = null
+    ) {
+        val density = recyclerView.resources.displayMetrics.density
+        val edgePx = (72f * density).roundToInt().coerceAtLeast(1)
+        val minStepPx = (2f * density).roundToInt().coerceAtLeast(1)
+        val maxStepPx = (8f * density).roundToInt().coerceAtLeast(minStepPx)
+        val (draggedTop, draggedBottom, topEdge, bottomEdge) = if (externalScrollBy != null) {
+            val visibleFrame = android.graphics.Rect()
+            val location = IntArray(2)
+            recyclerView.getWindowVisibleDisplayFrame(visibleFrame)
+            draggedView.getLocationOnScreen(location)
+            val itemTop = location[1] + dY
+            val itemBottom = location[1] + draggedView.height + dY
+            Quad(itemTop, itemBottom, visibleFrame.top + edgePx.toFloat(), visibleFrame.bottom - edgePx.toFloat())
+        } else {
+            Quad(
+                draggedView.top + dY,
+                draggedView.bottom + dY,
+                recyclerView.paddingTop + edgePx.toFloat(),
+                recyclerView.height - recyclerView.paddingBottom - edgePx.toFloat()
+            )
+        }
+        val topOverlap = topEdge - draggedTop
+        val bottomOverlap = draggedBottom - bottomEdge
+        val nextDirection = when {
+            topOverlap > 0f -> -1
+            bottomOverlap > 0f -> 1
+            else -> 0
+        }
+        if (nextDirection == 0 || (!recyclerView.canScrollVertically(nextDirection) && externalScrollBy == null)) {
+            stop()
+            return
+        }
+        val overlap = if (nextDirection < 0) topOverlap else bottomOverlap
+        val factor = (overlap / edgePx).coerceIn(0f, 1f)
+        stepPx = (minStepPx + ((maxStepPx - minStepPx) * factor)).roundToInt().coerceAtLeast(minStepPx)
+        this.recyclerView = recyclerView
+        this.externalScrollBy = externalScrollBy
+        direction = nextDirection
+        if (!isPosted) {
+            isPosted = true
+            recyclerView.postOnAnimation(scrollTick)
+        }
+    }
+
+    fun stop() {
+        direction = 0
+        stepPx = 0
+        recyclerView = null
+        externalScrollBy = null
+    }
+
+    private data class Quad(
+        val draggedTop: Float,
+        val draggedBottom: Float,
+        val topEdge: Float,
+        val bottomEdge: Float
+    )
 }
 
 private fun animateDragElevation(view: View, elevated: Boolean) {
@@ -13437,6 +13603,7 @@ private fun SoundboardEditorScreen(
     val listState = rememberLazyListState()
     val groupTabsScrollState = rememberScrollState()
     val groupTabsScrollScope = rememberCoroutineScope()
+    val pageEdgeScrollScope = rememberCoroutineScope()
     var pendingScrollToNewGroup by remember { mutableIntStateOf(0) }
 
     suspend fun scrollGroupTabsToEndWhenReady(request: Int) {
@@ -13714,6 +13881,15 @@ private fun SoundboardEditorScreen(
                                 state = viewModel.uiState,
                                 groupIndex = targetIndex,
                                 items = targetGroup.items,
+                                parentEdgeScrollBy = { delta ->
+                                    val canScroll = if (delta < 0) listState.canScrollBackward else listState.canScrollForward
+                                    if (canScroll) {
+                                        pageEdgeScrollScope.launch {
+                                            listState.scrollBy(delta.toFloat())
+                                        }
+                                    }
+                                    canScroll
+                                },
                                 onAdd = {
                                     viewModel.addSoundboardItem(targetIndex)
                                     toast(context, "已新增音效条目")
@@ -13737,6 +13913,7 @@ private fun SoundboardItemsRecyclerCard(
     state: UiState,
     groupIndex: Int,
     items: List<SoundboardItem>,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null,
     onAdd: () -> Unit,
     onItemsChanged: (List<SoundboardItem>) -> Unit,
     onItemChanged: (Int, SoundboardItem) -> Unit
@@ -13815,7 +13992,8 @@ private fun SoundboardItemsRecyclerCard(
                     } else {
                         audioPicker.launch("audio/*")
                     }
-                }
+                },
+                parentEdgeScrollBy = parentEdgeScrollBy
             )
         }
     }
@@ -14069,7 +14247,8 @@ private fun SoundboardItemsRecyclerList(
     items: List<SoundboardItem>,
     onItemsChanged: (List<SoundboardItem>) -> Unit,
     onEditRequested: (Int, SoundboardItem) -> Unit,
-    onAudioRequested: (Int) -> Unit
+    onAudioRequested: (Int) -> Unit,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null
 ) {
     val parentComposition = rememberCompositionContext()
     val onItemsChangedState = rememberUpdatedState(onItemsChanged)
@@ -14102,6 +14281,7 @@ private fun SoundboardItemsRecyclerList(
             recycler.adapter = adapter
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var moved = false
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -14122,7 +14302,25 @@ private fun SoundboardItemsRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY, parentEdgeScrollBy)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     adapter.isDragging = false
                     adapter.clearDraggingItem()
@@ -14138,6 +14336,7 @@ private fun SoundboardItemsRecyclerList(
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
                         adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         adapter.clearDraggingItem()
                     }
                 }
@@ -16887,6 +17086,7 @@ private fun QuickSubtitleEditorScreen(
     val listState = rememberLazyListState()
     val groupTabsScrollState = rememberScrollState()
     val groupTabsScrollScope = rememberCoroutineScope()
+    val pageEdgeScrollScope = rememberCoroutineScope()
     var pendingScrollToNewGroup by remember { mutableIntStateOf(0) }
 
     suspend fun scrollGroupTabsToEndWhenReady(request: Int) {
@@ -17111,6 +17311,15 @@ private fun QuickSubtitleEditorScreen(
             item(key = "items_card") {
                 QuickSubtitleItemsRecyclerCard(
                     items = selectedGroup.items,
+                    parentEdgeScrollBy = { delta ->
+                        val canScroll = if (delta < 0) listState.canScrollBackward else listState.canScrollForward
+                        if (canScroll) {
+                            pageEdgeScrollScope.launch {
+                                listState.scrollBy(delta.toFloat())
+                            }
+                        }
+                        canScroll
+                    },
                     onAdd = {
                         viewModel.addQuickSubtitleItem(selectedGroupIndex)
                         toast(context, "已新增快捷文本")
@@ -17131,6 +17340,7 @@ private fun QuickSubtitleEditorScreen(
 @Composable
 private fun QuickSubtitleItemsRecyclerCard(
     items: List<String>,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null,
     onAdd: () -> Unit,
     onItemsChanged: (List<String>) -> Unit,
     onItemTextChanged: (Int, String) -> Unit
@@ -17168,7 +17378,8 @@ private fun QuickSubtitleItemsRecyclerCard(
                 onEditRequested = { index, value ->
                     editTargetIndex = index
                     editText = value
-                }
+                },
+                parentEdgeScrollBy = parentEdgeScrollBy
             )
         }
     }
@@ -17219,7 +17430,8 @@ private fun QuickSubtitleItemsRecyclerList(
     modifier: Modifier = Modifier,
     items: List<String>,
     onItemsChanged: (List<String>) -> Unit,
-    onEditRequested: (Int, String) -> Unit
+    onEditRequested: (Int, String) -> Unit,
+    parentEdgeScrollBy: ((Int) -> Boolean)? = null
 ) {
     val parentComposition = rememberCompositionContext()
     val onItemsChangedState = rememberUpdatedState(onItemsChanged)
@@ -17253,6 +17465,7 @@ private fun QuickSubtitleItemsRecyclerList(
             val touchCallback = object : ItemTouchHelper.Callback() {
                 private var activeViewHolder: RecyclerView.ViewHolder? = null
                 private var moved = false
+                private val edgeAutoScroller = DragEdgeAutoScroller()
 
                 override fun isLongPressDragEnabled(): Boolean = false
                 override fun isItemViewSwipeEnabled(): Boolean = false
@@ -17279,6 +17492,23 @@ private fun QuickSubtitleItemsRecyclerList(
 
                 override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
 
+                override fun onChildDraw(
+                    c: android.graphics.Canvas,
+                    recyclerView: RecyclerView,
+                    viewHolder: RecyclerView.ViewHolder,
+                    dX: Float,
+                    dY: Float,
+                    actionState: Int,
+                    isCurrentlyActive: Boolean
+                ) {
+                    super.onChildDraw(c, recyclerView, viewHolder, dX, dY, actionState, isCurrentlyActive)
+                    if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && isCurrentlyActive) {
+                        edgeAutoScroller.update(recyclerView, viewHolder.itemView, dY, parentEdgeScrollBy)
+                    } else {
+                        edgeAutoScroller.stop()
+                    }
+                }
+
                 override fun onSelectedChanged(viewHolder: RecyclerView.ViewHolder?, actionState: Int) {
                     super.onSelectedChanged(viewHolder, actionState)
                     if (actionState == ItemTouchHelper.ACTION_STATE_DRAG && viewHolder != null) {
@@ -17286,6 +17516,7 @@ private fun QuickSubtitleItemsRecyclerList(
                         activeViewHolder = viewHolder
                         adapter.setDraggingPosition(viewHolder.bindingAdapterPosition)
                     } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
+                        edgeAutoScroller.stop()
                         activeViewHolder = null
                         adapter.clearDraggingItem()
                     }
@@ -17293,6 +17524,7 @@ private fun QuickSubtitleItemsRecyclerList(
                 }
 
                 override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+                    edgeAutoScroller.stop()
                     super.clearView(recyclerView, viewHolder)
                     if (activeViewHolder === viewHolder) activeViewHolder = null
                     adapter.isDragging = false
