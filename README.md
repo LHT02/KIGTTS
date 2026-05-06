@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="./ARTS/ScreenShoot/Design.png" alt="KIGTTS Android Design Preview" width="900">
+  <img src="./ARTS/banner.png" alt="KIGTTS Banner" width="900">
 </p>
 
 # KIGTTS
