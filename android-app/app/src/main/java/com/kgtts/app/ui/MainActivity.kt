@@ -4,6 +4,8 @@ package com.lhtstudio.kigtts.app.ui
 
 import android.annotation.SuppressLint
 import android.Manifest
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.app.Activity
 import android.content.ComponentName
 import android.content.ContentResolver
@@ -265,6 +267,7 @@ import com.lhtstudio.kigtts.app.service.VolumeHotkeyAccessibilityService
 import com.lhtstudio.kigtts.app.service.VolumeHotkeyService
 import com.lhtstudio.kigtts.app.util.AlipayScannerSupport
 import com.lhtstudio.kigtts.app.util.AppLogger
+import com.lhtstudio.kigtts.app.util.BluetoothMediaTitleBridge
 import com.lhtstudio.kigtts.app.util.ExternalShortcutCatalog
 import com.lhtstudio.kigtts.app.util.ExternalShortcutChoice
 import com.lhtstudio.kigtts.app.util.LauncherMenuShortcuts
@@ -640,6 +643,7 @@ data class UiState(
     val quickSubtitleAutoFit: Boolean = true,
     val quickSubtitleCompactControls: Boolean = false,
     val quickSubtitleKeepInputPreview: Boolean = true,
+    val bluetoothMediaTitleSubtitle: Boolean = false,
     val drawingKeepCanvasOrientationToDevice: Boolean = true,
     val pushToTalkPressed: Boolean = false,
     val pushToTalkStreamingText: String = "",
@@ -1019,6 +1023,7 @@ class MainViewModel(
         val item = RecognizedItem(id = historyId, text = normalized)
         val next = (listOf(item) + realtimeRecognized).take(MAX_RECOGNIZED_ITEMS)
         realtimeRecognized = next
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, normalized)
         val validIds = next.asSequence().map { it.id }.toSet()
         lastProgressUpdateAtMs.keys.retainAll(validIds)
         maybeTriggerSoundboardFromText(normalized, fromQuickText = fromQuickText)
@@ -1282,6 +1287,10 @@ class MainViewModel(
     private fun applySettingsSnapshot(settings: UserPrefs.AppSettings) {
         FontScaleBlockRuntime.mode = settings.fontScaleBlockMode
         SoundboardManager.setPlaybackGainPercent(settings.playbackGainPercent)
+        BluetoothMediaTitleBridge.setEnabled(appContext, settings.bluetoothMediaTitleSubtitle)
+        if (settings.bluetoothMediaTitleSubtitle) {
+            BluetoothMediaTitleBridge.updateSubtitle(appContext, quickSubtitleCurrentText)
+        }
         val needsSpeakerBackendReset =
             settings.speakerVerifyBackendVersion != UserPrefs.SPEAKER_VERIFY_BACKEND_SHERPA_V1 &&
                     (settings.speakerVerifyEnabled || settings.speakerVerifyProfileCsv.isNotBlank())
@@ -1374,6 +1383,7 @@ class MainViewModel(
             quickSubtitleAutoFit = settings.quickSubtitleAutoFit,
             quickSubtitleCompactControls = settings.quickSubtitleCompactControls,
             quickSubtitleKeepInputPreview = settings.quickSubtitleKeepInputPreview,
+            bluetoothMediaTitleSubtitle = settings.bluetoothMediaTitleSubtitle,
             drawingKeepCanvasOrientationToDevice = settings.drawingKeepCanvasOrientationToDevice,
             speakerVerifyEnabled = speakerVerifyEnabled,
             speakerVerifyThreshold = settings.speakerVerifyThreshold,
@@ -1460,6 +1470,9 @@ class MainViewModel(
         quickSubtitleRotated180 = textRotated180
         quickSubtitleShowActionButtons = showActionButtons
         quickSubtitleNextGroupId = maxOf(maxId + 1L, (finalGroups.maxOfOrNull { it.id } ?: 0L) + 1L)
+        if (uiState.bluetoothMediaTitleSubtitle) {
+            BluetoothMediaTitleBridge.updateSubtitle(appContext, currentText)
+        }
     }
 
     private fun saveQuickSubtitleConfig() {
@@ -1520,6 +1533,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
         markQuickSubtitleContentSubmitted()
         if (enqueueSpeak) {
             speakText(
@@ -1541,6 +1555,7 @@ class MainViewModel(
         val message = text.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
         markQuickSubtitleContentSubmitted()
         if (quickSubtitlePlayOnSend && hasVoice) {
             speakText(
@@ -1563,6 +1578,7 @@ class MainViewModel(
         val message = quickSubtitleInputText.trim()
         if (message.isEmpty()) return
         quickSubtitleCurrentText = message
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, message)
         markQuickSubtitleContentSubmitted()
         quickSubtitleInputText = ""
         if (playVoice) {
@@ -1738,6 +1754,7 @@ class MainViewModel(
             else -> {
                 if (normalized.isEmpty()) return
                 quickSubtitleCurrentText = normalized
+                BluetoothMediaTitleBridge.updateSubtitle(appContext, normalized)
                 markQuickSubtitleContentSubmitted()
                 saveQuickSubtitleConfig()
             }
@@ -1793,6 +1810,7 @@ class MainViewModel(
 
     fun clearQuickSubtitleText() {
         quickSubtitleCurrentText = QUICK_SUBTITLE_CLEARED_HINT
+        BluetoothMediaTitleBridge.updateSubtitle(appContext, QUICK_SUBTITLE_CLEARED_HINT)
         saveQuickSubtitleConfig()
     }
 
@@ -3805,6 +3823,17 @@ class MainViewModel(
         uiState = uiState.copy(quickSubtitleKeepInputPreview = enabled)
         viewModelScope.launch {
             UserPrefs.setQuickSubtitleKeepInputPreview(appContext, enabled)
+        }
+    }
+
+    fun setBluetoothMediaTitleSubtitle(enabled: Boolean) {
+        uiState = uiState.copy(bluetoothMediaTitleSubtitle = enabled)
+        BluetoothMediaTitleBridge.setEnabled(appContext, enabled)
+        if (enabled) {
+            BluetoothMediaTitleBridge.updateSubtitle(appContext, quickSubtitleCurrentText)
+        }
+        viewModelScope.launch {
+            UserPrefs.setBluetoothMediaTitleSubtitle(appContext, enabled)
         }
     }
 
@@ -12646,6 +12675,7 @@ private fun animateVoicePackStaggerEnter(view: View, position: Int) {
     val offsetY = 12f * density
     val delayMs = (position.coerceIn(0, 10) * 36L)
     view.animate().cancel()
+    view.animate().setListener(null)
     view.alpha = 0f
     view.translationY = offsetY
     view.animate()
@@ -12654,7 +12684,26 @@ private fun animateVoicePackStaggerEnter(view: View, position: Int) {
         .setStartDelay(delayMs)
         .setDuration(220L)
         .setInterpolator(FastOutSlowInInterpolator())
+        .setListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationCancel(animation: Animator) {
+                resetVoicePackStaggerView(view)
+            }
+
+            override fun onAnimationEnd(animation: Animator) {
+                resetVoicePackStaggerView(view)
+            }
+        })
         .start()
+    view.postDelayed(
+        { resetVoicePackStaggerView(view) },
+        delayMs + 300L
+    )
+}
+
+private fun resetVoicePackStaggerView(view: View) {
+    view.animate().setListener(null)
+    view.alpha = 1f
+    view.translationY = 0f
 }
 
 @Composable
@@ -20687,6 +20736,12 @@ fun SettingsScreen(
                         checked = state.quickSubtitleKeepInputPreview,
                         onCheckedChange = { viewModel.setQuickSubtitleKeepInputPreview(it) },
                         supportingText = "开启后输入框有内容时，键盘收起后大字幕仍显示输入预览；直到下一次语音或快捷文本提交前保持。"
+                    )
+                    Md2SettingSwitchRow(
+                        title = "蓝牙媒体标题字幕",
+                        checked = state.bluetoothMediaTitleSubtitle,
+                        onCheckedChange = { viewModel.setBluetoothMediaTitleSubtitle(it) },
+                        supportingText = "实验性兼容模式。开启后会把当前字幕写入系统媒体标题，部分蓝牙歌词屏、车机或小屏会把它显示为歌名；可能覆盖其它媒体标题。"
                     )
                     Text("画板保存路径（相册）", fontWeight = FontWeight.Bold)
                     Text(state.drawingSaveRelativePath, style = MaterialTheme.typography.bodySmall)

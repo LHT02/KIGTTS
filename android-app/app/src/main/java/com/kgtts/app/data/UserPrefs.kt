@@ -147,6 +147,8 @@ object UserPrefs {
     private val KEY_QUICK_SUBTITLE_COMPACT_CONTROLS = booleanPreferencesKey("quick_subtitle_compact_controls")
     private val KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW =
         booleanPreferencesKey("quick_subtitle_keep_input_preview")
+    private val KEY_BLUETOOTH_MEDIA_TITLE_SUBTITLE =
+        booleanPreferencesKey("bluetooth_media_title_subtitle")
     private val KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE =
         booleanPreferencesKey("drawing_keep_canvas_orientation_to_device")
     private val KEY_SPEAKER_VERIFY_ENABLED = booleanPreferencesKey("speaker_verify_enabled")
@@ -226,6 +228,7 @@ object UserPrefs {
         val quickSubtitleAutoFit: Boolean = true,
         val quickSubtitleCompactControls: Boolean = false,
         val quickSubtitleKeepInputPreview: Boolean = true,
+        val bluetoothMediaTitleSubtitle: Boolean = false,
         val drawingKeepCanvasOrientationToDevice: Boolean = true,
         val speakerVerifyEnabled: Boolean = false,
         val speakerVerifyThreshold: Float = 0.5f,
@@ -429,6 +432,7 @@ object UserPrefs {
             quickSubtitleAutoFit = this[KEY_QUICK_SUBTITLE_AUTO_FIT] ?: true,
             quickSubtitleCompactControls = this[KEY_QUICK_SUBTITLE_COMPACT_CONTROLS] ?: false,
             quickSubtitleKeepInputPreview = this[KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW] ?: true,
+            bluetoothMediaTitleSubtitle = this[KEY_BLUETOOTH_MEDIA_TITLE_SUBTITLE] ?: false,
             drawingKeepCanvasOrientationToDevice = this[KEY_DRAWING_KEEP_CANVAS_ORIENTATION_TO_DEVICE] ?: true,
             speakerVerifyEnabled = this[KEY_SPEAKER_VERIFY_ENABLED] ?: false,
             speakerVerifyThreshold = (this[KEY_SPEAKER_VERIFY_THRESHOLD] ?: 0.5f).coerceIn(0.05f, 0.95f),
@@ -843,6 +847,12 @@ object UserPrefs {
     suspend fun setQuickSubtitleKeepInputPreview(context: Context, enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[KEY_QUICK_SUBTITLE_KEEP_INPUT_PREVIEW] = enabled
+        }
+    }
+
+    suspend fun setBluetoothMediaTitleSubtitle(context: Context, enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_BLUETOOTH_MEDIA_TITLE_SUBTITLE] = enabled
         }
     }
 
