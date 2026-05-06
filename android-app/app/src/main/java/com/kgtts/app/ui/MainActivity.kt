@@ -9660,6 +9660,7 @@ fun AppScaffold(viewModel: MainViewModel) {
     var showBuiltinKokoroVoicePicker by remember { mutableStateOf(false) }
     var recognitionResourceSourceDialog by remember { mutableStateOf(false) }
     var kokoroSourceDialog by remember { mutableStateOf(false) }
+    var kokoroVoiceSettingsDialog by remember { mutableStateOf(false) }
     var recognitionResourceRequiredDialog by remember { mutableStateOf(false) }
     var startRealtimeAfterRecognitionResourceInstall by remember { mutableStateOf(false) }
     var quickCardWebMenuExpanded by rememberSaveable { mutableStateOf(false) }
@@ -10337,6 +10338,13 @@ fun AppScaffold(viewModel: MainViewModel) {
                 kokoroSourceDialog = false
                 viewModel.setKokoroSources(hfUrl, hfMirrorUrl, modelScopeUrl, preferredSource)
             }
+        )
+    }
+    if (kokoroVoiceSettingsDialog) {
+        KokoroVoiceSettingsDialog(
+            state = state,
+            onDismiss = { kokoroVoiceSettingsDialog = false },
+            onSpeakerChange = { viewModel.setKokoroSpeakerId(it) }
         )
     }
     if (recognitionResourceRequiredDialog) {
@@ -11110,7 +11118,8 @@ fun AppScaffold(viewModel: MainViewModel) {
                         onDownloadRecognitionResources = { viewModel.downloadRecognitionResources() },
                         onOpenKokoroSources = { kokoroSourceDialog = true },
                         onPickKokoroVoicePackage = { showBuiltinKokoroVoicePicker = true },
-                        onDownloadKokoroVoice = { viewModel.downloadKokoroVoice() }
+                        onDownloadKokoroVoice = { viewModel.downloadKokoroVoice() },
+                        onOpenKokoroVoiceSettings = { kokoroVoiceSettingsDialog = true }
                     )
                 }
             }
@@ -14437,7 +14446,8 @@ private fun SettingsNavHost(
     onDownloadRecognitionResources: () -> Unit,
     onOpenKokoroSources: () -> Unit,
     onPickKokoroVoicePackage: () -> Unit,
-    onDownloadKokoroVoice: () -> Unit
+    onDownloadKokoroVoice: () -> Unit,
+    onOpenKokoroVoiceSettings: () -> Unit
 ) {
     fun isSettingsSubPage(route: String?): Boolean = route != null && route != SettingsRoutes.Main
     NavHost(
@@ -14512,7 +14522,8 @@ private fun SettingsNavHost(
                 onDownloadRecognitionResources = onDownloadRecognitionResources,
                 onOpenKokoroSources = onOpenKokoroSources,
                 onPickKokoroVoicePackage = onPickKokoroVoicePackage,
-                onDownloadKokoroVoice = onDownloadKokoroVoice
+                onDownloadKokoroVoice = onDownloadKokoroVoice,
+                onOpenKokoroVoiceSettings = onOpenKokoroVoiceSettings
             )
         }
         composable(SettingsRoutes.Log) {
@@ -19531,7 +19542,8 @@ fun SettingsScreen(
     onDownloadRecognitionResources: () -> Unit,
     onOpenKokoroSources: () -> Unit,
     onPickKokoroVoicePackage: () -> Unit,
-    onDownloadKokoroVoice: () -> Unit
+    onDownloadKokoroVoice: () -> Unit,
+    onOpenKokoroVoiceSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -20318,9 +20330,19 @@ fun SettingsScreen(
                         }
                     } else if (isKokoroTtsSelected) {
                         Text(
-                            "Kokoro 使用语音包页的设置按钮选择音色。Piper 专属随机度参数在 Kokoro 下不生效。",
+                            "Kokoro 使用独立音色编号。Piper 专属随机度参数在 Kokoro 下不生效。",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        Text(
+                            "当前声音编号：${state.kokoroSpeakerId.coerceIn(UserPrefs.KOKORO_MIN_SPEAKER_ID, UserPrefs.KOKORO_MAX_SPEAKER_ID)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Md2Button(
+                            onClick = onOpenKokoroVoiceSettings,
+                            enabled = state.kokoroInstalled && !state.kokoroBusy
+                        ) {
+                            Text("选择 Kokoro 音色")
+                        }
                     } else {
                         Text("音色随机度：${String.format("%.3f", state.piperNoiseScale)}", style = MaterialTheme.typography.bodySmall)
                         Slider(
@@ -20365,7 +20387,7 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
-                        text = "Kokoro 是一套可选的离线朗读声音。安装后，你可以在“语音包”页面选择 Kokoro，并切换不同声音用于朗读。\n\n由于资源体积较大，Kokoro 需要单独下载或从本地安装，不会直接内置在安装包中。",
+                        text = "Kokoro 是一套可选的离线朗读声音。安装后，你可以在“语音包”页面选择 Kokoro，并在设置或语音包页面切换不同声音用于朗读。\n\n由于资源体积较大，Kokoro 需要单独下载或从本地安装，不会直接内置在安装包中。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
