@@ -37,6 +37,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.Editable
 import android.text.Layout
@@ -130,10 +131,18 @@ class FloatingOverlayService : Service() {
     private val screenStateReceiver =
         object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                if (!settings.floatingOverlayShowOnLockScreen) return
                 when (intent?.action) {
-                    Intent.ACTION_SCREEN_ON -> refreshOverlayForLockScreen()
-                    Intent.ACTION_USER_PRESENT -> applyOverlayWindowFlags()
+                    Intent.ACTION_SCREEN_OFF -> {
+                        healFabInteractionState("screen_off")
+                    }
+                    Intent.ACTION_SCREEN_ON -> {
+                        if (settings.floatingOverlayShowOnLockScreen) refreshOverlayForLockScreen()
+                        healFabInteractionState("screen_on")
+                    }
+                    Intent.ACTION_USER_PRESENT -> {
+                        applyOverlayWindowFlags()
+                        healFabInteractionState("user_present")
+                    }
                 }
             }
         }
@@ -252,6 +261,7 @@ class FloatingOverlayService : Service() {
     private var overlayDarkTheme = false
     private var overlayStatusExpanded = false
     private var fabIdleDockJob: Job? = null
+    private var fabStateWatchdogJob: Job? = null
     private var fabIdleDocked = false
     private var fabContainerAnimator: ValueAnimator? = null
     private var fabInnerFoldAnimator: ValueAnimator? = null
@@ -268,6 +278,7 @@ class FloatingOverlayService : Service() {
     private var downWinX = 0
     private var downWinY = 0
     private var draggingFab = false
+    private var lastFabTouchUptime = 0L
     private var realtimeHost: RealtimeHostService? = null
     private var realtimeHostBound = false
     private var realtimeHostState = RealtimeHostState()
@@ -1027,6 +1038,59 @@ class FloatingOverlayService : Service() {
         runCatching { windowManager.updateViewLayout(proxy, proxyParams) }
     }
 
+    private fun healFabInteractionState(reason: String) {
+        val root = fabRoot ?: return
+        if (!settings.floatingOverlayEnabled) return
+        val now = SystemClock.uptimeMillis()
+        if (draggingFab && now - lastFabTouchUptime > 3000L) {
+            AppLogger.w("FloatingOverlayService.heal stale fab drag reason=$reason")
+            draggingFab = false
+            fabTouchDockEdge = null
+            snapFabToEdge()
+        }
+        if (panelVisible || miniVisible) {
+            fabTouchProxy?.visibility = View.GONE
+            return
+        }
+        fabVisibilityTarget = true
+        if (root.visibility != View.VISIBLE) {
+            AppLogger.w("FloatingOverlayService.heal restore hidden fab reason=$reason")
+            root.visibility = View.VISIBLE
+        }
+        if (root.alpha <= 0.05f || root.scaleX < 0.95f || root.scaleY < 0.95f) {
+            AppLogger.w("FloatingOverlayService.heal reset fab transform reason=$reason")
+            root.animate().cancel()
+            root.alpha = if (fabIdleDocked) fabIdleDockAlpha else 1f
+            root.scaleX = 1f
+            root.scaleY = 1f
+        }
+        applyOverlayWindowFlags()
+        updateFabTouchProxyLayout()
+        if (fabTouchProxy?.visibility != View.VISIBLE) {
+            AppLogger.w("FloatingOverlayService.heal restore fab touch proxy reason=$reason")
+            fabTouchProxy?.visibility = View.VISIBLE
+            updateFabTouchProxyLayout()
+        }
+        if (settings.floatingOverlayAutoDock) {
+            refreshFabIdleDockState()
+        }
+    }
+
+    private fun startFabStateWatchdog() {
+        if (fabStateWatchdogJob?.isActive == true) return
+        fabStateWatchdogJob = scope.launch {
+            while (true) {
+                delay(2500L)
+                healFabInteractionState("watchdog")
+            }
+        }
+    }
+
+    private fun stopFabStateWatchdog() {
+        fabStateWatchdogJob?.cancel()
+        fabStateWatchdogJob = null
+    }
+
     private fun animateFabContainerTo(
         targetX: Int,
         targetY: Int,
@@ -1413,6 +1477,7 @@ class FloatingOverlayService : Service() {
         updateFabDisplaySnapshot()
         startForegroundInternal()
         registerScreenStateReceiver()
+        startFabStateWatchdog()
         ensureWindows()
         RealtimeRuntimeBridge.addListener(runtimeBridgeListener)
         observeSettings()
@@ -1466,6 +1531,7 @@ class FloatingOverlayService : Service() {
         settingsJob = null
         fabIdleDockJob?.cancel()
         fabIdleDockJob = null
+        stopFabStateWatchdog()
         if (realtimeHostBound) {
             runCatching { unbindService(realtimeHostConnection) }
             realtimeHostBound = false
@@ -1588,6 +1654,7 @@ class FloatingOverlayService : Service() {
     private fun registerScreenStateReceiver() {
         if (screenStateReceiverRegistered) return
         val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT)
         }
@@ -1616,6 +1683,7 @@ class FloatingOverlayService : Service() {
         fabRoot?.postDelayed({
             if (settings.floatingOverlayShowOnLockScreen && fabRoot != null) {
                 rebuildWindowsPreservingState()
+                healFabInteractionState("lock_screen_rebuild")
             }
         }, 80L)
     }
@@ -3273,7 +3341,19 @@ class FloatingOverlayService : Service() {
             prepareFabRestoreForVisibilityHide()
             fabTouchProxy?.visibility = View.GONE
         }
-        if (fabVisibilityTarget == show) return
+        if (fabVisibilityTarget == show) {
+            if (show) {
+                fabRoot?.visibility = View.VISIBLE
+                fabRoot?.alpha = if (fabIdleDocked) fabIdleDockAlpha else 1f
+                fabRoot?.scaleX = 1f
+                fabRoot?.scaleY = 1f
+                updateFabTouchProxyLayout()
+                refreshFabIdleDockState()
+            } else {
+                fabTouchProxy?.visibility = View.GONE
+            }
+            return
+        }
         fabVisibilityTarget = show
         animateFabVisibility(show)
         if (show) {
@@ -3602,6 +3682,7 @@ class FloatingOverlayService : Service() {
     @SuppressLint("ClickableViewAccessibility")
     private fun handleFabTouch(event: MotionEvent): Boolean {
         val params = fabParams ?: return false
+        lastFabTouchUptime = SystemClock.uptimeMillis()
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 performOverlayKeyHaptic(fabButton)
@@ -3646,7 +3727,8 @@ class FloatingOverlayService : Service() {
                     params.x = downWinX + dx
                     params.y = downWinY + dy
                     clampFabToScreen()
-                    windowManager.updateViewLayout(fabRoot, params)
+                    runCatching { windowManager.updateViewLayout(fabRoot, params) }
+                        .onFailure { AppLogger.e("FloatingOverlayService.handleFabTouch update failed", it) }
                     updateFabTouchProxyLayout()
                     if (!panelVisible) updatePanelPosition()
                     if (!miniVisible) updateMiniPanelPosition()
@@ -3776,15 +3858,23 @@ class FloatingOverlayService : Service() {
     }
 
     private fun hidePanel() {
-        if (!panelVisible) return
+        if (!panelVisible) {
+            if (panelRoot?.visibility == View.VISIBLE) forceHidePanelWindow("already_hidden")
+            return
+        }
         panelEditMode = false
         cancelPendingPanelPageSwitch()
         hideShortcutPicker()
+        panelVisible = false
         animateOverlayOut(panelContent) {
-            panelVisible = false
-            panelRoot?.visibility = View.GONE
-            updateFabUi()
+            forceHidePanelWindow("animation_end")
         }
+        panelContent?.postDelayed({
+            if (!panelVisible && panelRoot?.visibility == View.VISIBLE) {
+                forceHidePanelWindow("fallback")
+            }
+        }, 320L)
+        updateFabUi()
     }
 
     private fun showMiniPanel(mode: MiniOverlayMode = MiniOverlayMode.Subtitle) {
@@ -3838,16 +3928,46 @@ class FloatingOverlayService : Service() {
     }
 
     private fun hideMiniPanel() {
-        if (!miniVisible) return
+        if (!miniVisible) {
+            if (miniRoot?.visibility == View.VISIBLE) forceHideMiniWindow("already_hidden")
+            return
+        }
         if (miniMode == MiniOverlayMode.Subtitle) {
             saveMiniQuickItemsScrollState()
         }
         closeMiniPreview()
+        miniVisible = false
         animateOverlayOut(miniContent) {
-            miniVisible = false
-            miniRoot?.visibility = View.GONE
-            updateFabUi()
+            forceHideMiniWindow("animation_end")
         }
+        miniContent?.postDelayed({
+            if (!miniVisible && miniRoot?.visibility == View.VISIBLE) {
+                forceHideMiniWindow("fallback")
+            }
+        }, 320L)
+        updateFabUi()
+    }
+
+    private fun forceHidePanelWindow(reason: String) {
+        panelContent?.animate()?.cancel()
+        panelContent?.alpha = 1f
+        panelContent?.translationY = 0f
+        panelContent?.visibility = View.GONE
+        panelRoot?.visibility = View.GONE
+        panelVisible = false
+        updateFabUi()
+        healFabInteractionState("hide_panel_$reason")
+    }
+
+    private fun forceHideMiniWindow(reason: String) {
+        miniContent?.animate()?.cancel()
+        miniContent?.alpha = 1f
+        miniContent?.translationY = 0f
+        miniContent?.visibility = View.GONE
+        miniRoot?.visibility = View.GONE
+        miniVisible = false
+        updateFabUi()
+        healFabInteractionState("hide_mini_$reason")
     }
 
     private fun returnFromMiniToPanel() {
