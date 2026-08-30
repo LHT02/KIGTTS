@@ -37,6 +37,13 @@ string(REGEX REPLACE "\\\\([A-Za-z]:/)" "\\1" CONTENTS "${CONTENTS}")
 string(REGEX REPLACE "\n[^\n]*ooura_fft_sse2\\.cc[^\n]*" "" CONTENTS "${CONTENTS}")
 string(REGEX REPLACE "\n[^\n]*ooura_fft_mips\\.cc[^\n]*" "" CONTENTS "${CONTENTS}")
 
+# WebRTC selects its SSE implementations on Android x86_64, so add the
+# corresponding sources back after the broad Android exclusions above.
+if(NOT CONTENTS MATCHES "KIGTTS Android x86_64 SSE sources")
+    set(X86_SSE_SOURCES "\n# KIGTTS Android x86_64 SSE sources\nif(ANDROID AND CMAKE_ANDROID_ARCH_ABI STREQUAL \"x86_64\")\n  target_sources(webrtc_aec3 PRIVATE\n    \${CMAKE_CURRENT_SOURCE_DIR}/audio_processing/utility/ooura_fft_sse2.cc\n    \${CMAKE_CURRENT_SOURCE_DIR}/audio_processing/resampler/sinc_resampler_sse.cc\n  )\nendif()\n")
+    set(CONTENTS "${CONTENTS}${X86_SSE_SOURCES}")
+endif()
+
 # Ensure Android definitions exist.
 if(NOT CONTENTS MATCHES "WEBRTC_ANDROID")
     set(EXTRA "\nif(ANDROID)\n  add_definitions(-DWEBRTC_POSIX -DWEBRTC_ANDROID)\nendif()\n")
